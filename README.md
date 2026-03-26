@@ -81,7 +81,7 @@ You can configure the agent's name, model, and prompts in their profile like `an
 
 For more comprehensive model configuration and syntax, see [Model Specifications](#model-specifications).
 
-For local models, we recommend you use **LM Studio** for the Andy series of models.
+For local models, we recommend you use **LM Studio** for the Andy series of models. Ollama breaks current models, and should be avoided.
 Please see our [huggingface page for more info.](https://huggingface.co/collections/Mindcraft-CE)
 
 ## Online Servers
