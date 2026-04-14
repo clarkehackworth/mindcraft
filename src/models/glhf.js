@@ -5,7 +5,7 @@ export class GLHF {
     static prefix = 'glhf';
     constructor(model_name, url) {
         this.model_name = model_name;
-        const apiKey = getKey('GHLF_API_KEY');
+        const apiKey = getKey('GLHF_API_KEY');
         if (!apiKey) {
             throw new Error('API key not found. Please check keys.json and ensure GHLF_API_KEY is defined.');
         }
