@@ -70,7 +70,7 @@ export class Prompter {
         let chat_model_profile = selectAPI(this.profile.model);
         this.chat_model = createModel(chat_model_profile);
 
-        if (this.profile.code_model) {
+        if (hasModelSelection(this.profile.code_model)) {
             let code_model_profile = selectAPI(this.profile.code_model);
             this.code_model = createModel(code_model_profile);
         }
@@ -78,7 +78,7 @@ export class Prompter {
             this.code_model = this.chat_model;
         }
 
-        if (this.profile.vision_model) {
+        if (hasModelSelection(this.profile.vision_model)) {
             let vision_model_profile = selectAPI(this.profile.vision_model);
             this.vision_model = createModel(vision_model_profile);
         }
@@ -88,7 +88,7 @@ export class Prompter {
 
         
         let embedding_model_profile = null;
-        if (this.profile.embedding) {
+        if (hasModelSelection(this.profile.embedding)) {
             try {
                 embedding_model_profile = selectEmbeddingAPI(this.profile.embedding);
             } catch (e) {
@@ -247,7 +247,9 @@ export class Prompter {
 
             try {
                 const tools = this.isNativeToolMode() ? getCommandToolDefinitions(this.agent) : null;
+                this.agent.history.traceLLMRequest('conversation', this.chat_model, prompt, messages, tools);
                 generation = await this.chat_model.sendRequest(messages, prompt, '***', tools);
+                this.agent.history.traceLLMResponse('conversation', this.chat_model, generation);
                 if (isNativeToolResponse(generation)) {
                     await this._saveLog(prompt, messages, JSON.stringify(generation), 'conversation');
                     return generation;
@@ -260,6 +262,7 @@ export class Prompter {
                 await this._saveLog(prompt, messages, generation, 'conversation');
 
             } catch (error) {
+                this.agent.history.traceLLMError('conversation', this.chat_model, error);
                 console.error('Error during message generation or file writing:', error);
                 continue;
             }
@@ -304,7 +307,9 @@ export class Prompter {
         let prompt = this.profile.coding;
         prompt = await this.replaceStrings(prompt, messages, this.coding_examples);
 
+        this.agent.history.traceLLMRequest('coding', this.code_model, prompt, messages);
         let resp = await this.code_model.sendRequest(messages, prompt);
+        this.agent.history.traceLLMResponse('coding', this.code_model, resp);
         this.awaiting_coding = false;
         await this._saveLog(prompt, messages, resp, 'coding');
         return resp;
@@ -314,7 +319,9 @@ export class Prompter {
         await this.checkCooldown();
         let prompt = this.profile.saving_memory;
         prompt = await this.replaceStrings(prompt, null, null, to_summarize);
+        this.agent.history.traceLLMRequest('memSaving', this.chat_model, prompt, to_summarize);
         let resp = await this.chat_model.sendRequest([], prompt);
+        this.agent.history.traceLLMResponse('memSaving', this.chat_model, resp);
         await this._saveLog(prompt, to_summarize, resp, 'memSaving');
         if (resp?.includes('</think>')) {
             const [_, afterThink] = resp.split('</think>');
@@ -329,7 +336,9 @@ export class Prompter {
         let messages = this.agent.history.getHistory();
         messages.push({role: 'user', content: new_message});
         prompt = await this.replaceStrings(prompt, null, null, messages);
+        this.agent.history.traceLLMRequest('botResponder', this.chat_model, prompt, messages);
         let res = await this.chat_model.sendRequest([], prompt);
+        this.agent.history.traceLLMResponse('botResponder', this.chat_model, res);
         return res.trim().toLowerCase() === 'respond';
     }
 
@@ -337,7 +346,10 @@ export class Prompter {
         await this.checkCooldown();
         let prompt = this.profile.image_analysis;
         prompt = await this.replaceStrings(prompt, messages, null, null, null);
-        return await this.vision_model.sendVisionRequest(messages, prompt, imageBuffer);
+        this.agent.history.traceLLMRequest('vision', this.vision_model, prompt, messages);
+        const res = await this.vision_model.sendVisionRequest(messages, prompt, imageBuffer);
+        this.agent.history.traceLLMResponse('vision', this.vision_model, res);
+        return res;
     }
 
     async promptGoalSetting(messages, last_goals) {
@@ -350,7 +362,9 @@ export class Prompter {
         user_message = await this.replaceStrings(user_message, messages, null, null, last_goals);
         let user_messages = [{role: 'user', content: user_message}];
 
+        this.agent.history.traceLLMRequest('goalSetting', this.chat_model, system_message, user_messages);
         let res = await this.chat_model.sendRequest(user_messages, system_message);
+        this.agent.history.traceLLMResponse('goalSetting', this.chat_model, res);
 
         let goal = null;
         try {
@@ -433,4 +447,16 @@ function resolvePromptPath(promptPath, defaultBaseDir) {
     } catch {
         return path.resolve(promptPath);
     }
+}
+
+function hasModelSelection(profile) {
+    if (typeof profile === 'string' || profile instanceof String) {
+        return profile.trim().length > 0;
+    }
+    if (!profile || typeof profile !== 'object') {
+        return false;
+    }
+    return ['provider', 'api', 'model'].some(key =>
+        typeof profile[key] === 'string' && profile[key].trim().length > 0
+    );
 }

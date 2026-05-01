@@ -3,5 +3,17 @@
     "model": {
         "provider": "mistral",
         "model": "mistral-medium-latest"
+    },
+    "embedding": {
+        "provider": "",
+        "model": ""
+    },
+    "code_model": {
+        "provider": "",
+        "model": ""
+    },
+    "vision_model": {
+        "provider": "",
+        "model": ""
     }
 }

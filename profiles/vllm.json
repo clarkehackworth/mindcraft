@@ -3,5 +3,17 @@
     "model": {
         "provider": "vllm",
         "model": "Qwen/Qwen2.5-1.5B-Instruct"
+    },
+    "embedding": {
+        "provider": "",
+        "model": ""
+    },
+    "code_model": {
+        "provider": "",
+        "model": ""
+    },
+    "vision_model": {
+        "provider": "",
+        "model": ""
     }
 }

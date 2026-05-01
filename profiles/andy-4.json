@@ -7,5 +7,13 @@
     "embedding": {
         "provider": "ollama_local",
         "model": "embeddinggemma"
+    },
+    "code_model": {
+        "provider": "",
+        "model": ""
+    },
+    "vision_model": {
+        "provider": "",
+        "model": ""
     }
 }

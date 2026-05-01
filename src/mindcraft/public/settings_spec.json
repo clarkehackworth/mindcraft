@@ -51,11 +51,6 @@
         "description": "Whether to enable text-to-speech reading on the host machine",
         "default": false
     },
-    "language": {
-        "type": "string",
-        "description": "The language to automatically translate to and from using google translate",
-        "default": "en"
-    },
     "allow_vision": {
         "type": "boolean",
         "description": "Whether to allow vision capabilities",

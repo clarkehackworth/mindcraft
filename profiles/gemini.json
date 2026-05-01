@@ -5,5 +5,17 @@
         "model": "gemini-3.1-pro-preview"
     },
     "speak_model": "google_relay/gemini-3.1-pro-preview/Kore",
-    "cooldown": 2000
+    "cooldown": 2000,
+    "embedding": {
+        "provider": "",
+        "model": ""
+    },
+    "code_model": {
+        "provider": "",
+        "model": ""
+    },
+    "vision_model": {
+        "provider": "",
+        "model": ""
+    }
 }

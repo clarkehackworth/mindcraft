@@ -8,5 +8,13 @@
     "embedding": {
         "provider": "qwen_cn",
         "model": "text-embedding-v3"
+    },
+    "code_model": {
+        "provider": "",
+        "model": ""
+    },
+    "vision_model": {
+        "provider": "",
+        "model": ""
     }
 }

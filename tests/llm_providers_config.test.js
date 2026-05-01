@@ -133,4 +133,5 @@ test('codex provider stores auth in the unified project config instead of a fixe
     assert.equal(example.models.codex.params.keysPath, 'llm_providers.json');
     assert.equal('authPath' in example.models.codex.params, false);
     assert.ok(Object.hasOwn(example.keys, 'CODEX_CHATGPT_AUTH'));
+    assert.deepEqual(example.keys.CODEX_CHATGPT_AUTH, {});
 });

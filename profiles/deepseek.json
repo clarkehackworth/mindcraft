@@ -3,5 +3,17 @@
     "model": {
         "provider": "deepseek",
         "model": "deepseek-v4-pro"
+    },
+    "embedding": {
+        "provider": "",
+        "model": ""
+    },
+    "code_model": {
+        "provider": "",
+        "model": ""
+    },
+    "vision_model": {
+        "provider": "",
+        "model": ""
     }
 }
