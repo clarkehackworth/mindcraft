@@ -51,6 +51,31 @@ test('kimi uses the documented Anthropic-compatible coding endpoint', () => {
     });
 });
 
+test('PR 752 OpenAI-compatible providers live in the shared registry', () => {
+    const providers = {
+        ai21: ['AI21_API_KEY', 'https://api.ai21.com/studio/v1', 'jamba-1.5-large'],
+        anyscale: ['ANYSCALE_API_KEY', 'https://api.endpoints.anyscale.com/v1', 'meta-llama/Meta-Llama-3-70B-Instruct'],
+        cohere: ['COHERE_API_KEY', 'https://api.cohere.com/v1', 'command-r-plus'],
+        deepinfra: ['DEEPINFRA_API_KEY', 'https://api.deepinfra.com/v1/openai', 'meta-llama/Meta-Llama-3-70B-Instruct'],
+        fireworks: ['FIREWORKS_API_KEY', 'https://api.fireworks.ai/inference/v1', 'accounts/fireworks/models/llama-v3p1-70b-instruct'],
+        nvidia: ['NVIDIA_API_KEY', 'https://integrate.api.nvidia.com/v1', 'meta/llama3-70b-instruct'],
+        perplexity: ['PERPLEXITY_API_KEY', 'https://api.perplexity.ai', 'llama-3-sonar-large-32k-online'],
+        together: ['TOGETHER_API_KEY', 'https://api.together.xyz/v1', 'meta-llama/Llama-3-70b-chat-hf']
+    };
+
+    for (const [id, [keyName, baseUrl, defaultModel]] of Object.entries(providers)) {
+        assert.deepEqual(config.models[id], {
+            format: 'openai-completions',
+            baseUrl,
+            keyName,
+            defaultModel
+        });
+        assert.equal(example.models[id].format, 'openai-completions');
+        assert.equal(example.models[id].keyName, keyName);
+        assert.ok(Object.hasOwn(example.keys, keyName), `example keys must include ${keyName}`);
+    }
+});
+
 test('remote llm providers explicitly declare which key they use', () => {
     const localOrLogin = new Set(['codex', 'ollama_local', 'vllm']);
     for (const [id, provider] of Object.entries(config.models)) {

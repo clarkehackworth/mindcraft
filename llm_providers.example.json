@@ -26,7 +26,15 @@
         "MY_EMBEDDING_API_KEY": "",
         "OLLAMA_API_KEY": "",
         "CODEX_CHATGPT_AUTH": {},
-        "REPLICATE_API_KEY": ""
+        "REPLICATE_API_KEY": "",
+        "AI21_API_KEY": "",
+        "ANYSCALE_API_KEY": "",
+        "COHERE_API_KEY": "",
+        "DEEPINFRA_API_KEY": "",
+        "FIREWORKS_API_KEY": "",
+        "NVIDIA_API_KEY": "",
+        "PERPLEXITY_API_KEY": "",
+        "TOGETHER_API_KEY": ""
     },
     "models": {
         "openai": {
@@ -175,6 +183,54 @@
             "format": "openai-responses",
             "baseUrl": "https://api.example.com/v1",
             "keyName": "MY_RESPONSES_API_KEY"
+        },
+        "ai21": {
+            "format": "openai-completions",
+            "baseUrl": "https://api.ai21.com/studio/v1",
+            "keyName": "AI21_API_KEY",
+            "defaultModel": "jamba-1.5-large"
+        },
+        "anyscale": {
+            "format": "openai-completions",
+            "baseUrl": "https://api.endpoints.anyscale.com/v1",
+            "keyName": "ANYSCALE_API_KEY",
+            "defaultModel": "meta-llama/Meta-Llama-3-70B-Instruct"
+        },
+        "cohere": {
+            "format": "openai-completions",
+            "baseUrl": "https://api.cohere.com/v1",
+            "keyName": "COHERE_API_KEY",
+            "defaultModel": "command-r-plus"
+        },
+        "deepinfra": {
+            "format": "openai-completions",
+            "baseUrl": "https://api.deepinfra.com/v1/openai",
+            "keyName": "DEEPINFRA_API_KEY",
+            "defaultModel": "meta-llama/Meta-Llama-3-70B-Instruct"
+        },
+        "fireworks": {
+            "format": "openai-completions",
+            "baseUrl": "https://api.fireworks.ai/inference/v1",
+            "keyName": "FIREWORKS_API_KEY",
+            "defaultModel": "accounts/fireworks/models/llama-v3p1-70b-instruct"
+        },
+        "nvidia": {
+            "format": "openai-completions",
+            "baseUrl": "https://integrate.api.nvidia.com/v1",
+            "keyName": "NVIDIA_API_KEY",
+            "defaultModel": "meta/llama3-70b-instruct"
+        },
+        "perplexity": {
+            "format": "openai-completions",
+            "baseUrl": "https://api.perplexity.ai",
+            "keyName": "PERPLEXITY_API_KEY",
+            "defaultModel": "llama-3-sonar-large-32k-online"
+        },
+        "together": {
+            "format": "openai-completions",
+            "baseUrl": "https://api.together.xyz/v1",
+            "keyName": "TOGETHER_API_KEY",
+            "defaultModel": "meta-llama/Llama-3-70b-chat-hf"
         }
     },
     "embeddings": {
