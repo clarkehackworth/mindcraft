@@ -1,0 +1,11 @@
+{
+    "name": "replicate",
+    "model": {
+        "provider": "replicate",
+        "model": "google/gemini-2.5-flash"
+    },
+    "embedding": {
+        "provider": "replicate",
+        "model": "mark3labs/embeddings-gte-base"
+    }
+}

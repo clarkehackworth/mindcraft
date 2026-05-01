@@ -1,0 +1,7 @@
+{
+    "name": "novita",
+    "model": {
+        "provider": "novita",
+        "model": "deepseek/deepseek-v4-flash"
+    }
+}

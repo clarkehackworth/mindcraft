@@ -1,0 +1,7 @@
+{
+    "name": "kimi",
+    "model": {
+        "provider": "kimi",
+        "model": "kimi-k2.6"
+    }
+}

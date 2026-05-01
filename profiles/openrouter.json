@@ -1,0 +1,7 @@
+{
+    "name": "openrouter",
+    "model": {
+        "provider": "openrouter",
+        "model": "moonshotai/kimi-k2.6"
+    }
+}

@@ -1,0 +1,7 @@
+{
+    "name": "cerebras",
+    "model": {
+        "provider": "cerebras",
+        "model": "gpt-oss-120b"
+    }
+}

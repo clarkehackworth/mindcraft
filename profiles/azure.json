@@ -1,19 +1,7 @@
 {
     "name": "azure",
     "model": {
-        "api": "azure",
-        "url": "https://<your-resource>.openai.azure.com",
-        "model": "<chat-deployment-name>",
-        "params": { 
-            "apiVersion": "2024-08-01-preview" 
-        }
-    },
-    "embedding": {
-        "api": "azure",
-        "url": "https://<your-resource>.openai.azure.com",
-        "model": "<embedding-deployment-name>",
-        "params": { 
-            "apiVersion": "2024-08-01-preview" 
-        }
+        "provider": "azure",
+        "model": "gpt-5-nano"
     }
-  }
+}

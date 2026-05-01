@@ -3,3 +3,4 @@ node_modules
 bots/*/
 !bots/*
 keys.json
+llm_providers.json

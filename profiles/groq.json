@@ -1,0 +1,7 @@
+{
+    "name": "groq",
+    "model": {
+        "provider": "groq",
+        "model": "qwen/qwen3-32b"
+    }
+}

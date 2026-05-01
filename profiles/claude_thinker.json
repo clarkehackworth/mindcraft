@@ -1,7 +1,7 @@
 {
     "name": "claude_thinker",
-
     "model": {
+        "provider": "anthropic",
         "model": "claude-sonnet-4-6",
         "params": {
             "thinking": {
@@ -9,7 +9,5 @@
                 "budget_tokens": 4000
             }
         }
-    },
-    
-    "embedding": "openai"
+    }
 }

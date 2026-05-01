@@ -2,8 +2,8 @@ import { exec, spawn } from 'child_process';
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
-import { TTSConfig as gptTTSConfig } from '../models/gpt.js';
-import { TTSConfig as geminiTTSConfig } from '../models/gemini.js';
+import { TTSConfig as gptTTSConfig } from '../models/openai_compatible.js';
+import { TTSConfig as geminiTTSConfig } from '../models/google_generative_ai.js';
 
 let speakingQueue = []; // each item: {text, model, audioData, ready}
 let isSpeaking = false;
@@ -17,13 +17,13 @@ export function speak(text, speak_model) {
         // no preprocessing needed
         item.ready = Promise.resolve();
     } else {
-    item.ready = fetchRemoteAudio(text, model)
-        .then(data => { item.audioData = data; })
-        .catch(err => { item.error = err; });
+        item.ready = fetchRemoteAudio(text, model)
+            .then(data => { item.audioData = data; })
+            .catch(err => { item.error = err; });
     }
 
     speakingQueue.push(item);
-    if (!isSpeaking) processQueue();
+    if (!isSpeaking) void processQueue();
 }
 
 async function fetchRemoteAudio(txt, model) {
@@ -64,7 +64,7 @@ async function processQueue() {
     const { text: txt, model, audioData } = item;
     if (txt.trim() === '') {
         isSpeaking = false;
-        processQueue();
+        void processQueue();
         return;
     }
 
@@ -78,7 +78,7 @@ async function processQueue() {
     } catch (err) {
         console.error('[TTS] preprocess error', err);
         isSpeaking = false;
-        processQueue();
+        void processQueue();
         return;
     }
 
@@ -95,7 +95,7 @@ async function processQueue() {
         exec(cmd, err => {
             if (err) console.error('TTS error', err);
             isSpeaking = false;
-            processQueue();
+            void processQueue();
         });
 
     } 
@@ -106,7 +106,7 @@ async function processQueue() {
         if (!audioData) {
             console.error('[TTS] No audio data ready');
             isSpeaking = false;
-            processQueue();
+            void processQueue();
             return;
         }
 
@@ -120,14 +120,14 @@ async function processQueue() {
                 });
                 player.on('error', async (err) => {
                     console.error('[TTS] ffplay error', err);
-                    try { await fs.unlink(tmpPath); } catch {}
+                    try { await fs.unlink(tmpPath); } catch (unlinkError) { console.warn('[TTS] cleanup error', unlinkError); }
                     isSpeaking = false;
-                    processQueue();
+                    void processQueue();
                 });
                 player.on('exit', async () => {
-                    try { await fs.unlink(tmpPath); } catch {}
+                    try { await fs.unlink(tmpPath); } catch (unlinkError) { console.warn('[TTS] cleanup error', unlinkError); }
                     isSpeaking = false;
-                    processQueue();
+                    void processQueue();
                 });
 
             } else {
@@ -138,13 +138,13 @@ async function processQueue() {
                 player.stdin.end();
                 player.on('exit', () => {
                     isSpeaking = false;
-                    processQueue();
+                    void processQueue();
                 });
             }
         } catch (e) {
             console.error('[TTS] Audio error', e);
             isSpeaking = false;
-            processQueue();
+            void processQueue();
         }
     }
 }

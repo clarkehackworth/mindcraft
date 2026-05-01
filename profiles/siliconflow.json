@@ -1,0 +1,7 @@
+{
+    "name": "siliconflow",
+    "model": {
+        "provider": "siliconflow",
+        "model": "deepseek-ai/DeepSeek-V4-Flash"
+    }
+}

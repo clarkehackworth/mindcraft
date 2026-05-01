@@ -1,5 +1,6 @@
 {
     "OPENAI_API_KEY": "",
+    "SILICONFLOW_API_KEY": "",
     "OPENAI_ORG_ID": "",
     "GEMINI_API_KEY": "",
     "ANTHROPIC_API_KEY": "",
@@ -14,5 +15,16 @@
     "NOVITA_API_KEY": "",
     "OPENROUTER_API_KEY": "",
     "CEREBRAS_API_KEY": "",
-    "MERCURY_API_KEY":""
+    "MERCURY_API_KEY": "",
+    "CODEX_CHATGPT_AUTH": {
+        "auth_mode": "chatgpt",
+        "OPENAI_API_KEY": null,
+        "tokens": {
+            "id_token": "",
+            "access_token": "",
+            "refresh_token": "",
+            "account_id": ""
+        },
+        "last_refresh": ""
+    }
 }

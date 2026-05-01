@@ -38,12 +38,15 @@
         "yargs": "^17.7.2"
     },
     "overrides": {
-      "canvas": "^3.1.0",
-      "gl": "^8.1.6"
+        "canvas": "^3.1.0",
+        "gl": "^8.1.6"
     },
     "scripts": {
         "postinstall": "patch-package",
         "start": "node main.js",
+        "test": "node --test tests/*.test.js",
+        "dev:tool-loop": "node tests/smoke/dev_native_tool_loop.js",
+        "test:live:function-calls": "node tests/smoke/live_function_call_smoke.js",
         "reinstall": "npm run clean:modules && npm install",
         "clean:modules": "node -e \"const fs=require('fs');const p=require('path');['node_modules','package-lock.json'].forEach(f=>{if(fs.existsSync(f)){if(fs.lstatSync(f).isDirectory()){fs.rmSync(f,{recursive:true,force:true});}else{fs.unlinkSync(f);}}});\""
     },

@@ -1,0 +1,12 @@
+{
+    "name": "qwen",
+    "cooldown": 5000,
+    "model": {
+        "provider": "qwen_cn",
+        "model": "qwen-max"
+    },
+    "embedding": {
+        "provider": "qwen_cn",
+        "model": "text-embedding-v3"
+    }
+}
