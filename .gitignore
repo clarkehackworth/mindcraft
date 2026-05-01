@@ -3,6 +3,7 @@
 node_modules/
 package-lock.json
 code_records/
+docs/
 scratch.js
 bots/**/action-code/**
 bots/**/
