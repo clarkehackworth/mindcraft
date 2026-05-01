@@ -4,6 +4,7 @@
         "ANTHROPIC_API_KEY": "",
         "GEMINI_API_KEY": "",
         "GOOGLE_API_KEY": "",
+        "GEMINI_RELAY_API_KEY": "",
         "AZURE_OPENAI_API_KEY": "",
         "KIMI_API_KEY": "",
         "OPENROUTER_API_KEY": "",
@@ -51,6 +52,16 @@
             "format": "google-generative-ai",
             "keyName": "GEMINI_API_KEY",
             "baseUrl": "https://generativelanguage.googleapis.com"
+        },
+        "google_relay": {
+            "format": "google-generative-ai",
+            "keyName": "GEMINI_RELAY_API_KEY",
+            "baseUrl": "https://mydamoxing.cn",
+            "defaultModel": "gemini-3.1-pro-preview",
+            "params": {
+                "apiVersion": "v1beta"
+            },
+            "comment": "Gemini protocol relay. Direct endpoint would be https://mydamoxing.cn/v1beta/models/gemini-3.1-pro-preview:generateContent; keep baseUrl at the host because the SDK appends /v1beta/models/{model}:generateContent."
         },
         "replicate": {
             "format": "replicate",

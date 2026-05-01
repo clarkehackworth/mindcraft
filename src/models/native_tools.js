@@ -10,6 +10,33 @@ export function createNativeToolResponse(toolCalls, provider = 'unknown') {
     };
 }
 
+export function createNativeToolCallTurn(toolCall, content = '') {
+    const [normalized] = normalizeOpenAIToolCalls([toolCall]);
+    return {
+        role: 'assistant',
+        content,
+        native_tool_calls: normalized ? [normalized] : []
+    };
+}
+
+export function createNativeToolResultTurn(toolCall, result) {
+    const [normalized] = normalizeOpenAIToolCalls([toolCall]);
+    return {
+        role: 'tool',
+        content: stringifyToolResult(result),
+        tool_call_id: normalized?.id || toolCall?.id,
+        name: normalized?.name || toolCall?.name || toolCall?.function?.name
+    };
+}
+
+export function hasNativeToolCalls(turn) {
+    return Array.isArray(turn?.native_tool_calls) && turn.native_tool_calls.length > 0;
+}
+
+export function isNativeToolResultTurn(turn) {
+    return turn?.role === 'tool';
+}
+
 export function normalizeOpenAIToolCalls(toolCalls = []) {
     return toolCalls.map((call, index) => {
         const fn = call.function || {};
@@ -61,6 +88,14 @@ export function normalizeArguments(args) {
         return args;
     }
     return JSON.stringify(args || {});
+}
+
+export function parseNormalizedArguments(args) {
+    try {
+        return parseToolArguments(args);
+    } catch {
+        return {};
+    }
 }
 
 export function parseToolArguments(args) {
@@ -135,6 +170,287 @@ export function toGeminiFunctionDeclarations(tools = []) {
         description: tool.function.description,
         parameters: cleanGeminiSchema(tool.function.parameters)
     }));
+}
+
+export function stringifyToolResult(result) {
+    if (result == null) return '';
+    if (typeof result === 'string') return result;
+    try {
+        return JSON.stringify(result);
+    } catch {
+        return String(result);
+    }
+}
+
+export function repairNativeToolTurns(turns = [], { synthesizeMissingResults = false } = {}) {
+    const repaired = [];
+    const pending = new Map();
+
+    for (const turn of turns || []) {
+        if (hasNativeToolCalls(turn)) {
+            if (synthesizeMissingResults && pending.size > 0) {
+                for (const call of pending.values()) {
+                    repaired.push({
+                        role: 'tool',
+                        tool_call_id: call.id,
+                        name: call.name,
+                        content: 'Tool result was not recorded.'
+                    });
+                }
+            }
+            pending.clear();
+            repaired.push(turn);
+            for (const call of turn.native_tool_calls) {
+                pending.set(call.id, call);
+            }
+            continue;
+        }
+
+        if (isNativeToolResultTurn(turn)) {
+            if (!turn.tool_call_id || !pending.has(turn.tool_call_id)) {
+                continue;
+            }
+            const call = pending.get(turn.tool_call_id);
+            repaired.push({
+                ...turn,
+                name: turn.name || call.name
+            });
+            pending.delete(turn.tool_call_id);
+            continue;
+        }
+
+        if (synthesizeMissingResults && pending.size > 0) {
+            for (const call of pending.values()) {
+                repaired.push({
+                    role: 'tool',
+                    tool_call_id: call.id,
+                    name: call.name,
+                    content: 'Tool result was not recorded.'
+                });
+            }
+        }
+        pending.clear();
+        repaired.push(turn);
+    }
+
+    if (synthesizeMissingResults && pending.size > 0) {
+        for (const call of pending.values()) {
+            repaired.push({
+                role: 'tool',
+                tool_call_id: call.id,
+                name: call.name,
+                content: 'Tool result was not recorded.'
+            });
+        }
+    }
+
+    return repaired;
+}
+
+export function toOpenAIChatMessages(turns = [], systemMessage = '') {
+    const messages = [];
+    if (systemMessage) {
+        messages.push({ role: 'system', content: systemMessage });
+    }
+    for (const turn of repairNativeToolTurns(turns, { synthesizeMissingResults: true })) {
+        if (hasNativeToolCalls(turn)) {
+            messages.push({
+                role: 'assistant',
+                content: turn.content || null,
+                tool_calls: turn.native_tool_calls.map(toOpenAIChatToolCall)
+            });
+        } else if (isNativeToolResultTurn(turn)) {
+            messages.push({
+                role: 'tool',
+                tool_call_id: turn.tool_call_id,
+                content: stringifyToolResult(turn.content)
+            });
+        } else if (turn?.role === 'system') {
+            messages.push({ role: 'system', content: stringifyToolResult(turn.content) });
+        } else if (turn?.role === 'assistant' || turn?.role === 'user') {
+            messages.push({ role: turn.role, content: stringifyToolResult(turn.content) });
+        }
+    }
+    if (messages.length === 0 || messages.every(message => message.role === 'system')) {
+        messages.push({ role: 'user', content: '_' });
+    }
+    return messages;
+}
+
+export function toResponsesInputItems(turns = []) {
+    const items = [];
+    for (const turn of repairNativeToolTurns(turns, { synthesizeMissingResults: true })) {
+        if (hasNativeToolCalls(turn)) {
+            for (const call of turn.native_tool_calls) {
+                items.push({
+                    type: 'function_call',
+                    call_id: call.id,
+                    name: call.name,
+                    arguments: normalizeArguments(call.arguments)
+                });
+            }
+        } else if (isNativeToolResultTurn(turn)) {
+            items.push({
+                type: 'function_call_output',
+                call_id: turn.tool_call_id,
+                output: stringifyToolResult(turn.content)
+            });
+        } else if (turn?.role === 'assistant' || turn?.role === 'user') {
+            items.push({
+                type: 'message',
+                role: turn.role,
+                content: [{ type: turn.role === 'assistant' ? 'output_text' : 'input_text', text: stringifyToolResult(turn.content) }]
+            });
+        } else if (turn?.role === 'system') {
+            items.push({
+                type: 'message',
+                role: 'user',
+                content: [{ type: 'input_text', text: `SYSTEM: ${stringifyToolResult(turn.content)}` }]
+            });
+        }
+    }
+    if (items.length === 0) {
+        items.push({ type: 'message', role: 'user', content: [{ type: 'input_text', text: '_' }] });
+    }
+    return items;
+}
+
+export function toAnthropicMessages(turns = []) {
+    const messages = [];
+    for (const turn of repairNativeToolTurns(turns, { synthesizeMissingResults: true })) {
+        if (hasNativeToolCalls(turn)) {
+            const content = [];
+            if (turn.content) {
+                content.push({ type: 'text', text: turn.content });
+            }
+            for (const call of turn.native_tool_calls) {
+                content.push({
+                    type: 'tool_use',
+                    id: call.id,
+                    name: call.name,
+                    input: parseNormalizedArguments(call.arguments)
+                });
+            }
+            messages.push({ role: 'assistant', content });
+        } else if (isNativeToolResultTurn(turn)) {
+            messages.push({
+                role: 'user',
+                content: [{
+                    type: 'tool_result',
+                    tool_use_id: turn.tool_call_id,
+                    content: stringifyToolResult(turn.content)
+                }]
+            });
+        } else if (turn?.role === 'assistant') {
+            messages.push({ role: 'assistant', content: stringifyToolResult(turn.content) });
+        } else if (turn?.role === 'user') {
+            messages.push({ role: 'user', content: stringifyToolResult(turn.content) });
+        } else if (turn?.role === 'system') {
+            messages.push({ role: 'user', content: `SYSTEM: ${stringifyToolResult(turn.content)}` });
+        }
+    }
+    return normalizeAlternatingMessages(messages);
+}
+
+export function toGeminiContents(turns = []) {
+    const contents = [];
+    for (const turn of repairNativeToolTurns(turns, { synthesizeMissingResults: true })) {
+        if (hasNativeToolCalls(turn)) {
+            const parts = [];
+            if (turn.content) {
+                parts.push({ text: turn.content });
+            }
+            for (const call of turn.native_tool_calls) {
+                parts.push({
+                    functionCall: {
+                        name: call.name,
+                        args: parseNormalizedArguments(call.arguments)
+                    }
+                });
+            }
+            contents.push({ role: 'model', parts });
+        } else if (isNativeToolResultTurn(turn)) {
+            contents.push({
+                role: 'user',
+                parts: [{
+                    functionResponse: {
+                        name: turn.name,
+                        response: { result: stringifyToolResult(turn.content) }
+                    }
+                }]
+            });
+        } else if (turn?.role === 'assistant') {
+            contents.push({ role: 'model', parts: [{ text: stringifyToolResult(turn.content) }] });
+        } else if (turn?.role === 'user') {
+            contents.push({ role: 'user', parts: [{ text: stringifyToolResult(turn.content) }] });
+        } else if (turn?.role === 'system') {
+            contents.push({ role: 'user', parts: [{ text: `SYSTEM: ${stringifyToolResult(turn.content)}` }] });
+        }
+    }
+    if (contents.length === 0) {
+        contents.push({ role: 'user', parts: [{ text: '_' }] });
+    }
+    return normalizeGeminiContents(contents);
+}
+
+function toOpenAIChatToolCall(call) {
+    return {
+        id: call.id,
+        type: 'function',
+        function: {
+            name: call.name,
+            arguments: normalizeArguments(call.arguments)
+        }
+    };
+}
+
+function normalizeAlternatingMessages(messages) {
+    const normalized = [];
+    for (const message of messages) {
+        const previous = normalized[normalized.length - 1];
+        if (previous && previous.role === message.role && canMergeAnthropicContent(previous.content, message.content)) {
+            previous.content = mergeAnthropicContent(previous.content, message.content);
+        } else {
+            normalized.push(message);
+        }
+    }
+    if (normalized.length === 0 || normalized[0].role !== 'user') {
+        normalized.unshift({ role: 'user', content: '_' });
+    }
+    return normalized;
+}
+
+function canMergeAnthropicContent(left, right) {
+    return (typeof left === 'string' || Array.isArray(left)) && (typeof right === 'string' || Array.isArray(right));
+}
+
+function mergeAnthropicContent(left, right) {
+    if (typeof left === 'string' && typeof right === 'string') {
+        return `${left}\n${right}`;
+    }
+    return [
+        ...toAnthropicContentBlocks(left),
+        ...toAnthropicContentBlocks(right)
+    ];
+}
+
+function toAnthropicContentBlocks(content) {
+    if (Array.isArray(content)) return content;
+    if (typeof content === 'string') return [{ type: 'text', text: content }];
+    return [{ type: 'text', text: stringifyToolResult(content) }];
+}
+
+function normalizeGeminiContents(contents) {
+    const normalized = [];
+    for (const content of contents) {
+        const previous = normalized[normalized.length - 1];
+        if (previous && previous.role === content.role) {
+            previous.parts.push(...(content.parts || []));
+        } else {
+            normalized.push(content);
+        }
+    }
+    return normalized;
 }
 
 function cleanGeminiSchema(schema) {

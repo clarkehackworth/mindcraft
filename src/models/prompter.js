@@ -242,15 +242,14 @@ export class Prompter {
             }
 
             let prompt = this.profile.conversing;
-            const promptMessages = this.isNativeToolMode() ? sanitizeNativeToolHistory(messages) : messages;
-            prompt = await this.replaceStrings(prompt, promptMessages, this.convo_examples);
+            prompt = await this.replaceStrings(prompt, messages, this.convo_examples);
             let generation;
 
             try {
                 const tools = this.isNativeToolMode() ? getCommandToolDefinitions(this.agent) : null;
-                generation = await this.chat_model.sendRequest(promptMessages, prompt, '***', tools);
+                generation = await this.chat_model.sendRequest(messages, prompt, '***', tools);
                 if (isNativeToolResponse(generation)) {
-                    await this._saveLog(prompt, promptMessages, JSON.stringify(generation), 'conversation');
+                    await this._saveLog(prompt, messages, JSON.stringify(generation), 'conversation');
                     return generation;
                 }
                 if (typeof generation !== 'string') {
@@ -258,7 +257,7 @@ export class Prompter {
                     throw new Error('Generated response is not a string');
                 }
                 console.log("Generated response:", generation);
-                await this._saveLog(prompt, promptMessages, generation, 'conversation');
+                await this._saveLog(prompt, messages, generation, 'conversation');
 
             } catch (error) {
                 console.error('Error during message generation or file writing:', error);
@@ -404,33 +403,6 @@ export function sanitizeNativeToolExamples(examples = []) {
     return examples.filter(example =>
         Array.isArray(example) && !example.some(turn => containsLegacyToolSyntax(turn?.content))
     );
-}
-
-export function sanitizeNativeToolHistory(turns = []) {
-    if (!Array.isArray(turns)) return [];
-    return turns.map(turn => {
-        if (turn?.role !== 'assistant' || typeof turn.content !== 'string') {
-            return { ...turn };
-        }
-        return { ...turn, content: sanitizeNativeToolAssistantContent(turn.content) };
-    });
-}
-
-function sanitizeNativeToolAssistantContent(content) {
-    const usedTool = content.trim().match(/^\*used\s+([A-Za-z_][A-Za-z0-9_-]*)\*$/i);
-    if (usedTool) {
-        return `Used native tool ${usedTool[1]}.`;
-    }
-
-    if (!containsLegacyToolSyntax(content)) {
-        return content;
-    }
-
-    const beforeCommand = content.split(/(^|\s)![A-Za-z_][A-Za-z0-9_]*\b/)[0].trim();
-    if (beforeCommand.length > 0) {
-        return beforeCommand;
-    }
-    return 'Requested an action using legacy text command syntax; use native tool calls for actions.';
 }
 
 function containsLegacyToolSyntax(content) {

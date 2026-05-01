@@ -272,6 +272,40 @@ test('Codex adapter sends native-login Responses request and normalizes tool cal
     }
 });
 
+test('Codex adapter keeps prompt cache key stable across multi-turn tool replay', () => {
+    const model = new CodexChatGPT('gpt-5.5', 'https://example.test/backend-api/codex', {
+        keysPath: 'llm_providers.json',
+        sessionId: 'stable-cache-session'
+    });
+    const turns = [
+        { role: 'user', content: 'inspect inventory' },
+        {
+            role: 'assistant',
+            content: '*used inventory*',
+            native_tool_calls: [{ id: 'call_1', type: 'function', name: 'inventory', arguments: '{}' }]
+        },
+        { role: 'tool', tool_call_id: 'call_1', name: 'inventory', content: '{"oak_log":0}' },
+        { role: 'user', content: 'collect wood' },
+        {
+            role: 'assistant',
+            content: '*used collectBlocks*',
+            native_tool_calls: [{ id: 'call_2', type: 'function', name: 'collectBlocks', arguments: '{"block":"oak_log","count":2}' }]
+        },
+        { role: 'tool', tool_call_id: 'call_2', name: 'collectBlocks', content: 'Collected 2 oak logs.' }
+    ];
+
+    const first = model.buildRequestBody('gpt-5.5', turns, 'Use tools.', [tool]);
+    const second = model.buildRequestBody('gpt-5.5', turns, 'Use tools.', [tool]);
+
+    assert.equal(first.prompt_cache_key, 'stable-cache-session');
+    assert.equal(second.prompt_cache_key, 'stable-cache-session');
+    assert.deepEqual(second.input, first.input);
+    assert.deepEqual(
+        first.input.filter(item => item.type === 'function_call' || item.type === 'function_call_output').map(item => item.call_id),
+        ['call_1', 'call_1', 'call_2', 'call_2']
+    );
+});
+
 async function waitFor(fn, timeoutMs = 1000) {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {

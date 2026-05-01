@@ -2,7 +2,7 @@ import { AzureOpenAI } from 'openai';
 import { getKey } from '../utils/keys.js';
 import { OpenAICompletions } from './openai_compatible.js';
 
-// OpenClaw-style Azure OpenAI protocol implementation.
+// Azure OpenAI protocol implementation.
 export class AzureOpenAIResponses extends OpenAICompletions {
     static prefix = 'azure-openai-responses';
 

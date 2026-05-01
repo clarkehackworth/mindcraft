@@ -1,7 +1,6 @@
 import OpenAIApi from 'openai';
 import { getKey, hasKey } from '../utils/keys.js';
-import { strictFormat } from '../utils/text.js';
-import { createNativeToolResponse } from './native_tools.js';
+import { createNativeToolResponse, toOpenAIChatMessages } from './native_tools.js';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 
 function getProxyAgent() {
@@ -13,7 +12,7 @@ function getProxyAgent() {
 }
 
 /**
- * OpenClaw-style OpenAI Chat Completions protocol implementation.
+ * OpenAI Chat Completions protocol implementation.
  *
  * This is the single transport used by OpenAI and OpenAI-compatible hosted
  * providers such as OpenRouter, SiliconFlow, Qwen, DeepSeek, Groq, Mistral,
@@ -63,7 +62,7 @@ export class OpenAICompletions {
         let res = null;
 
         try {
-            const messages = strictFormat([{ role: 'system', content: systemMessage }].concat(turns));
+            const messages = toOpenAIChatMessages(turns, systemMessage);
             const pack = {
                 model,
                 messages,
@@ -130,7 +129,7 @@ export class OpenAICompletions {
 }
 
 // Backward-compatible alias for old configs/tests. New configs should use
-// the OpenClaw protocol name: openai-completions.
+// the protocol name: openai-completions.
 export class OpenAICompatible extends OpenAICompletions {
     static prefix = 'openai-compatible';
 }

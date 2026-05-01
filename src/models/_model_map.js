@@ -125,7 +125,7 @@ function normalizeProviderConfig(providerName, provider) {
 function apiFromFormat(format) {
     const normalized = String(format || '').toLowerCase();
     const aliases = {
-        // Canonical OpenClaw-style protocol names used by llm_providers.json.
+        // Canonical protocol names used by llm_providers.json.
         'openai-completions': 'openai-completions',
         'openai-responses': 'openai-responses',
         'anthropic-messages': 'anthropic-messages',

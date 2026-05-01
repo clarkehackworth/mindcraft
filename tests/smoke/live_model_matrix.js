@@ -116,8 +116,8 @@ async function runToolCheck(testCase) {
         const model = createModel(selectAPI(testCase.profileModel));
         const response = await withTimeout(
             model.sendRequest(
-                [{ role: 'user', content: `Call report_status with status ok and provider ${testCase.provider || testCase.profile}. Do not answer in text.` }],
-                'You are running a live native function-calling smoke test. Use the provided function.',
+                [{ role: 'user', content: `report status ok for ${testCase.provider || testCase.profile}` }],
+                'Use report_status.',
                 '***',
                 [tool]
             ),
@@ -164,6 +164,7 @@ mkdirSync(OUTPUT_DIR, { recursive: true });
 writeFileSync(OUTPUT_FILE, toCsv(rows));
 const summary = summarize(rows);
 console.log(JSON.stringify({ output: OUTPUT_FILE, selected: selected.length, summary }, null, 2));
+process.exit(summary.failed > 0 ? 1 : 0);
 
 function loadProviderDefaultCases() {
     return Object.entries(providerConfig.models || {})

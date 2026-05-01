@@ -1,6 +1,7 @@
 import { writeFileSync, readFileSync, mkdirSync, existsSync } from 'fs';
 import { NPCData } from './npc/data.js';
 import settings from './settings.js';
+import { createNativeToolCallTurn, createNativeToolResultTurn } from '../models/native_tools.js';
 
 
 export class History {
@@ -67,11 +68,23 @@ export class History {
             role = 'user';
             content = `${name}: ${content}`;
         }
-        this.turns.push({role, content});
+        await this._pushTurn({role, content});
+    }
+
+    async addNativeToolCall(toolCall, content) {
+        await this._pushTurn(createNativeToolCallTurn(toolCall, content));
+    }
+
+    async addNativeToolResult(toolCall, result) {
+        await this._pushTurn(createNativeToolResultTurn(toolCall, result));
+    }
+
+    async _pushTurn(turn) {
+        this.turns.push(turn);
 
         if (this.turns.length >= this.max_messages) {
             let chunk = this.turns.splice(0, this.summary_chunk_size);
-            while (this.turns.length > 0 && this.turns[0].role === 'assistant')
+            while (this.turns.length > 0 && ['assistant', 'tool'].includes(this.turns[0].role))
                 chunk.push(this.turns.shift()); // remove until turns starts with system/user message
 
             await this.summarizeMemories(chunk);

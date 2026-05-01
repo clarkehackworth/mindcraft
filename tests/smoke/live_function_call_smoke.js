@@ -89,8 +89,8 @@ for (const testCase of selectedCases) {
         const model = testCase.create();
         const response = await withTimeout(
             model.sendRequest(
-                [{ role: 'user', content: `Call report_status with status ok and provider ${testCase.name}. Do not answer in text.` }],
-                'You are running a live function-calling smoke test. Use the provided function.',
+                [{ role: 'user', content: `report status ok for ${testCase.name}` }],
+                'Use report_status.',
                 '***',
                 tools
             ),

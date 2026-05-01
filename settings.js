@@ -16,7 +16,7 @@ const settings = {
         "profiles/codex.json",        // openai-codex-responses -> codex:gpt-5.5
         "profiles/openrouter.json",   // openai-completions -> openrouter:moonshotai/kimi-k2.6
         "profiles/kimi.json",         // anthropic-messages -> kimi:kimi-k2.6
-        "profiles/gemini.json",       // google-generative-ai -> google:gemini-3-flash-preview
+        "profiles/gemini.json",       // google-generative-ai -> google_relay:gemini-3.1-pro-preview
 
         // using more than 1 profile requires you to /msg each bot indivually
         // individual profiles override values from the base profile

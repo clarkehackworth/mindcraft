@@ -3,8 +3,7 @@ import path from 'path';
 import { createServer } from 'http';
 import { createHash, randomBytes, randomUUID } from 'crypto';
 import open from 'open';
-import { strictFormat } from '../utils/text.js';
-import { createNativeToolResponse } from './native_tools.js';
+import { createNativeToolResponse, toResponsesInputItems } from './native_tools.js';
 
 const DEFAULT_CODEX_BASE_URL = 'https://chatgpt.com/backend-api/codex';
 const DEFAULT_KEYS_PATH = 'llm_providers.json';
@@ -118,11 +117,10 @@ export class CodexChatGPT {
     }
 
     buildRequestBody(model, turns, systemMessage, tools=null) {
-        const messages = strictFormat(turns || []);
         const body = {
             model,
             instructions: systemMessage || '',
-            input: messages.map(toCodexResponseItem),
+            input: toResponsesInputItems(turns || []),
             tools: toCodexResponsesTools(tools || []),
             parallel_tool_calls: this.params.parallel_tool_calls ?? true,
             reasoning: this.params.reasoning ?? null,

@@ -1,5 +1,5 @@
 import Replicate from 'replicate';
-import { toSinglePrompt } from '../utils/text.js';
+import { strictTextFormat, toSinglePrompt } from '../utils/text.js';
 import { getKey } from '../utils/keys.js';
 import { createNativeToolResponse } from './native_tools.js';
 
@@ -75,7 +75,7 @@ export class ReplicateAPI {
     async sendToolRequest(modelName, turns, systemMessage, tools) {
         const messages = [
             { role: 'system', content: systemMessage },
-            ...turns
+            ...strictTextFormat(turns)
         ];
         const prompt = toSinglePrompt(turns, systemMessage, '<|EOT|>');
         const input = {

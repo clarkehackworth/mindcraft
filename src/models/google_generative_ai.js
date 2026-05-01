@@ -1,7 +1,6 @@
 import { GoogleGenAI } from '@google/genai';
-import { strictFormat } from '../utils/text.js';
 import { getKey } from '../utils/keys.js';
-import { createNativeToolResponse, normalizeGeminiFunctionCalls, toGeminiFunctionDeclarations } from './native_tools.js';
+import { createNativeToolResponse, normalizeGeminiFunctionCalls, toGeminiContents, toGeminiFunctionDeclarations } from './native_tools.js';
 import { ProxyAgent, setGlobalDispatcher } from 'undici';
 
 function setupGeminiProxy() {
@@ -12,13 +11,66 @@ function setupGeminiProxy() {
 }
 setupGeminiProxy();
 
-// OpenClaw-style Google Generative AI protocol implementation.
+const GEMINI_API_VERSION_PATTERN = /^v\d+(?:alpha|beta)?$/i;
+
+function splitGeminiBaseUrl(rawUrl) {
+    if (!rawUrl) {
+        return {};
+    }
+    const parsed = new URL(rawUrl);
+    const segments = parsed.pathname.split('/').filter(Boolean);
+    const versionIndex = segments.findIndex(segment => GEMINI_API_VERSION_PATTERN.test(segment));
+    if (versionIndex === -1) {
+        parsed.pathname = parsed.pathname.replace(/\/$/, '') || '/';
+        parsed.search = '';
+        parsed.hash = '';
+        return { baseUrl: parsed.toString().replace(/\/$/, '') };
+    }
+
+    const baseSegments = segments.slice(0, versionIndex);
+    parsed.pathname = baseSegments.length > 0 ? `/${baseSegments.join('/')}` : '/';
+    parsed.search = '';
+    parsed.hash = '';
+    return {
+        baseUrl: parsed.toString().replace(/\/$/, ''),
+        apiVersion: segments[versionIndex]
+    };
+}
+
+export function normalizeGeminiHttpOptions(url, params = {}) {
+    const nextParams = { ...(params || {}) };
+    const httpOptions = { ...(nextParams.httpOptions || nextParams.http_options || {}) };
+    const configuredUrl = url || httpOptions.baseUrl;
+    if (configuredUrl) {
+        const normalized = splitGeminiBaseUrl(configuredUrl);
+        httpOptions.baseUrl = normalized.baseUrl;
+        if (normalized.apiVersion && !httpOptions.apiVersion) {
+            httpOptions.apiVersion = normalized.apiVersion;
+        }
+    }
+    if (nextParams.apiVersion || nextParams.api_version) {
+        httpOptions.apiVersion = nextParams.apiVersion || nextParams.api_version;
+    }
+
+    delete nextParams.httpOptions;
+    delete nextParams.http_options;
+    delete nextParams.apiVersion;
+    delete nextParams.api_version;
+
+    return {
+        params: nextParams,
+        httpOptions: Object.fromEntries(Object.entries(httpOptions).filter(([, value]) => value !== undefined && value !== null))
+    };
+}
+
+// Google Generative AI protocol implementation.
 export class GoogleGenerativeAI {
     static prefix = 'google-generative-ai';
 
     constructor(model_name, url, params) {
         this.model_name = model_name;
-        this.params = params || {};
+        const { params: generationParams, httpOptions } = normalizeGeminiHttpOptions(url, params || {});
+        this.params = generationParams;
         const apiKeyName = this.params.apiKeyName || this.params.api_key_name || 'GEMINI_API_KEY';
         delete this.params.apiKeyName;
         delete this.params.api_key_name;
@@ -30,7 +82,11 @@ export class GoogleGenerativeAI {
             { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
         ];
 
-        this.genAI = new GoogleGenAI({ apiKey: getKey(apiKeyName) });
+        const clientConfig = { apiKey: getKey(apiKeyName) };
+        if (Object.keys(httpOptions).length > 0) {
+            clientConfig.httpOptions = httpOptions;
+        }
+        this.genAI = new GoogleGenAI(clientConfig);
         this.provider = 'google';
         this.supportsNativeToolCalls = true;
     }
@@ -38,11 +94,7 @@ export class GoogleGenerativeAI {
     async sendRequest(turns, systemMessage, stop_seq='***', tools=null) {
         console.log(tools?.length ? `Awaiting Google API response with native tool calling (${tools.length} tools)...` : 'Awaiting Google API response...');
 
-        turns = strictFormat(turns);
-        const contents = turns.map(turn => ({
-            role: turn.role === 'assistant' ? 'model' : 'user',
-            parts: [{ text: turn.content }]
-        }));
+        const contents = toGeminiContents(turns);
 
         const requestConfig = {
             model: this.model_name || 'gemini-2.5-flash',
@@ -63,6 +115,10 @@ export class GoogleGenerativeAI {
             return createNativeToolResponse(toolCalls, this.provider);
         }
         const response = await result.text;
+        if (!response && result.candidates?.[0]?.finishReason) {
+            console.log('Received.');
+            return `No response from Google Gemini. finishReason=${result.candidates[0].finishReason}`;
+        }
 
         console.log('Received.');
         return response;
@@ -76,11 +132,7 @@ export class GoogleGenerativeAI {
             }
         };
 
-        turns = strictFormat(turns);
-        const contents = turns.map(turn => ({
-            role: turn.role === 'assistant' ? 'model' : 'user',
-            parts: [{ text: turn.content }]
-        }));
+        const contents = toGeminiContents(turns);
         contents.push({
             role: 'user',
             parts: [{ text: 'SYSTEM: Vision response' }, imagePart]

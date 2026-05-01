@@ -1,8 +1,7 @@
 import { OpenAICompletions } from './openai_compatible.js';
-import { strictFormat } from '../utils/text.js';
-import { createNativeToolResponse } from './native_tools.js';
+import { createNativeToolResponse, toResponsesInputItems } from './native_tools.js';
 
-// OpenClaw-style OpenAI Responses protocol. For native tool calls this class
+// OpenAI Responses protocol. For native tool calls this class
 // uses Responses API function-call items directly instead of the legacy GPT file.
 export class OpenAIResponses extends OpenAICompletions {
     static prefix = 'openai-responses';
@@ -10,7 +9,10 @@ export class OpenAIResponses extends OpenAICompletions {
     async sendRequest(turns, systemMessage, stop_seq='***', tools=null) {
         const model = this.model_name || this.default_model;
         const hasTools = Array.isArray(tools) && tools.length > 0;
-        const input = strictFormat(turns).map(message => ({ ...message, content: stop_seq && !hasTools ? message.content + stop_seq : message.content }));
+        const input = toResponsesInputItems(turns);
+        if (stop_seq && !hasTools) {
+            appendStopSequence(input, stop_seq);
+        }
         const request = {
             model,
             instructions: systemMessage,
@@ -42,6 +44,15 @@ export class OpenAIResponses extends OpenAICompletions {
             console.log(err);
             return 'My brain disconnected, try again.';
         }
+    }
+}
+
+function appendStopSequence(input, stopSeq) {
+    const last = input[input.length - 1];
+    const content = last?.content;
+    if (Array.isArray(content)) {
+        const textPart = [...content].reverse().find(part => typeof part?.text === 'string');
+        if (textPart) textPart.text += stopSeq;
     }
 }
 

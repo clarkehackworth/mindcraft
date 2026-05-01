@@ -18,7 +18,7 @@ const tool = {
     }
 };
 
-test('OpenClaw openai-completions API format can be selected by profile', () => {
+test('openai-completions API format can be selected by profile', () => {
     const profile = selectAPI({
         api: 'openai-completions',
         url: 'https://example.test/v1',
@@ -170,7 +170,8 @@ test('openai-compatible transport sends Chat Completions tools and normalizes to
     );
 
     assert.equal(requestPack.model, 'provider-model');
-    assert.equal(requestPack.messages[0].role, 'user');
+    assert.equal(requestPack.messages[0].role, 'system');
+    assert.equal(requestPack.messages[1].role, 'user');
     assert.equal(requestPack.tools[0].function.name, 'report_status');
     assert.equal(Object.prototype.hasOwnProperty.call(requestPack, 'tool_choice'), false);
     assert.equal(isNativeToolResponse(response), true);

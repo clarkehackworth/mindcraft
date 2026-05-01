@@ -17,8 +17,8 @@ test('llm provider config uses readable format/baseUrl/keyName schema', () => {
             assert.equal('name' in provider, false, `${sectionName}.${id} should use the provider id instead of a duplicate name`);
             assert.equal('url' in provider, false, `${sectionName}.${id} should use baseUrl, not url`);
             assert.equal('apiKeyName' in provider, false, `${sectionName}.${id} should use keyName, not apiKeyName`);
-            assert.notEqual(provider.format, 'openai-compatible', `${sectionName}.${id} should use OpenClaw protocol names such as openai-completions`);
-            assert.notEqual(provider.format, 'openai-chat-completions', `${sectionName}.${id} should use OpenClaw protocol name openai-completions`);
+            assert.notEqual(provider.format, 'openai-compatible', `${sectionName}.${id} should use protocol names such as openai-completions`);
+            assert.notEqual(provider.format, 'openai-chat-completions', `${sectionName}.${id} should use protocol name openai-completions`);
         }
     }
 });
@@ -48,6 +48,19 @@ test('kimi uses the documented Anthropic-compatible coding endpoint', () => {
             max_tokens: 32768,
             provider: 'kimi'
         }
+    });
+});
+
+test('google relay uses Gemini base URL, not a full generateContent endpoint', () => {
+    assert.deepEqual(config.models.google_relay, {
+        format: 'google-generative-ai',
+        keyName: 'GEMINI_RELAY_API_KEY',
+        baseUrl: 'https://mydamoxing.cn',
+        defaultModel: 'gemini-3.1-pro-preview',
+        params: {
+            apiVersion: 'v1beta'
+        },
+        comment: 'Gemini protocol relay. Direct endpoint would be https://mydamoxing.cn/v1beta/models/gemini-3.1-pro-preview:generateContent; keep baseUrl at the host because the SDK appends /v1beta/models/{model}:generateContent.'
     });
 });
 

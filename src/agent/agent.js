@@ -343,7 +343,8 @@ export class Agent {
 
             if (command_name) { // contains query or command
                 if (this.prompter.isNativeToolMode()) {
-                    this.history.add('system', `The assistant attempted to write text command ${command_name}, but it was not executed. AI actions must use native tool calls; human !command syntax is still supported.`);
+                    this.history.add(this.name, res);
+                    this.history.add('system', `Text command ${command_name} was not executed. AI actions must use native tool calls; human !command syntax is still supported.`);
                     console.warn('Agent produced text command while native tool mode is enabled:', command_name);
                     continue;
                 }
@@ -405,28 +406,23 @@ export class Agent {
             const commandName = toolCall.name ? (toolCall.name.startsWith('!') ? toolCall.name : `!${toolCall.name}`) : null;
             if (!commandName || !commandExists(commandName)) {
                 const msg = `Native tool ${toolCall.name || '<missing>'} does not map to a command.`;
-                this.history.add('system', msg);
+                await this.history.addNativeToolCall(toolCall);
+                await this.history.addNativeToolResult(toolCall, msg);
                 console.warn(msg);
                 continue;
             }
 
             this.self_prompter.handleUserPromptedCmd(self_prompt, isAction(commandName));
             const display = `*used ${toolCall.name}*`;
-            this.history.add(this.name, display);
-
-            if (settings.show_command_syntax !== "none") {
-                this.routeResponse(source, display);
-            }
+            await this.history.addNativeToolCall(toolCall);
+            this.routeResponse(source, display);
 
             console.log(`[native-tool] calling ${commandName} args=${formatToolArgsForLog(toolCall.arguments)}`);
             const execute_res = await executeCommandToolCall(this, toolCall);
             console.log(`[native-tool] ${commandName} result=${formatToolResultForLog(execute_res.result)}`);
             executedAny = true;
 
-            this.history.add('system', `Native tool call completed: ${toolCall.name}.`);
-            if (execute_res.result) {
-                this.history.add('system', execute_res.result);
-            }
+            await this.history.addNativeToolResult(toolCall, formatNativeToolResultForModel(toolCall, execute_res));
         }
         return executedAny;
     }
@@ -630,6 +626,18 @@ function formatToolArgsForLog(args) {
 function formatToolResultForLog(result) {
     if (result == null || result === '') return '<empty>';
     return truncateForLog(typeof result === 'string' ? result : JSON.stringify(result));
+}
+
+function formatNativeToolResultForModel(toolCall, executeResult) {
+    const result = executeResult?.result;
+    if (result != null && result !== '') {
+        return result;
+    }
+    const name = toolCall?.name || toolCall?.function?.name || 'tool';
+    if (executeResult?.ok === false) {
+        return `Tool ${name} failed without returning details.`;
+    }
+    return `Tool ${name} completed.`;
 }
 
 function truncateForLog(value, max = 500) {

@@ -19,8 +19,8 @@ test('native prompt markdown rejects text-command and fake tool-call examples', 
     const botResponder = readFileSync('profiles/defaults/prompts/_default/bot_responder.md', 'utf8');
 
     assert.match(conversing, /native tool\/function/i);
-    assert.match(conversing, /Do NOT write command text/i);
-    assert.match(conversing, /\*used collectBlocks\*/);
+    assert.match(conversing, /Do NOT write legacy text commands/i);
+    assert.doesNotMatch(conversing, legacyToolSyntax);
     assert.doesNotMatch(botResponder, legacyToolSyntax);
 });
 

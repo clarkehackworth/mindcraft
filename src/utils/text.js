@@ -2,7 +2,18 @@ export function stringifyTurns(turns) {
     let res = '';
     for (let turn of turns) {
         if (turn.role === 'assistant') {
-            res += `\nYour output:\n${turn.content}`;
+            if (Array.isArray(turn.native_tool_calls) && turn.native_tool_calls.length > 0) {
+                if (turn.content) {
+                    res += `\nYour output:\n${turn.content}`;
+                }
+                for (const call of turn.native_tool_calls) {
+                    res += `\nTool call (${call.name}): ${formatToolArgumentsForSummary(call.arguments)}`;
+                }
+            } else {
+                res += `\nYour output:\n${turn.content}`;
+            }
+        } else if (turn.role === 'tool') {
+            res += `\nTool result${turn.name ? ` (${turn.name})` : ''}: ${turn.content}`;
         } else if (turn.role === 'system') {
             res += `\nSystem output: ${turn.content}`;
         } else {
@@ -11,6 +22,22 @@ export function stringifyTurns(turns) {
         }
     }
     return res.trim();
+}
+
+function formatToolArgumentsForSummary(args) {
+    if (args == null || args === '') return '{}';
+    if (typeof args === 'string') {
+        try {
+            return JSON.stringify(JSON.parse(args));
+        } catch {
+            return args;
+        }
+    }
+    try {
+        return JSON.stringify(args);
+    } catch {
+        return String(args);
+    }
 }
 
 export function toSinglePrompt(turns, system=null, stop_seq='***', model_nickname='assistant') {
@@ -75,4 +102,22 @@ export function strictFormat(turns) {
         messages.push(filler);
     }
     return messages;
+}
+
+export function strictTextFormat(turns) {
+    return strictFormat(turns.map(turn => {
+        if (turn?.role === 'tool') {
+            return {
+                role: 'system',
+                content: `Tool result${turn.name ? ` (${turn.name})` : ''}: ${turn.content || ''}`
+            };
+        }
+        if (Array.isArray(turn?.native_tool_calls) && turn.native_tool_calls.length > 0) {
+            return {
+                role: 'assistant',
+                content: turn.content || turn.native_tool_calls.map(call => `Used native tool ${call.name}.`).join('\n')
+            };
+        }
+        return { ...turn };
+    }));
 }

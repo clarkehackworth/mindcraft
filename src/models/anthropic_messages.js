@@ -1,9 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { strictFormat } from '../utils/text.js';
 import { getKey } from '../utils/keys.js';
-import { createNativeToolResponse, normalizeAnthropicToolUse, toAnthropicTools } from './native_tools.js';
+import { createNativeToolResponse, normalizeAnthropicToolUse, toAnthropicMessages, toAnthropicTools } from './native_tools.js';
 
-// OpenClaw-style Anthropic Messages protocol implementation.
+// Anthropic Messages protocol implementation.
 export class AnthropicMessages {
     static prefix = 'anthropic-messages';
 
@@ -28,7 +27,7 @@ export class AnthropicMessages {
     }
 
     async sendRequest(turns, systemMessage, stop_seq='***', tools=null) {
-        const messages = strictFormat(turns);
+        const messages = toAnthropicMessages(turns);
         let res = null;
         try {
             console.log(tools?.length ? `Awaiting anthropic response with native tool calling (${tools.length} tools) from ${this.model_name}...` : `Awaiting anthropic response from ${this.model_name}...`);
