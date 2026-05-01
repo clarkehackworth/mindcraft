@@ -9,25 +9,21 @@ const settings = {
     "auto_open_ui": true, // opens UI in browser on startup
     
     "base_profile": "assistant", // survival, assistant, creative, or god_mode
+    "llm_providers": "llm_providers.json", // project-level LLM keys/model/embedding registry
     "profiles": [
-        "./andy.json",
-        // "./profiles/gpt.json",
-        // "./profiles/claude.json",
-        // "./profiles/gemini.json",
-        // "./profiles/llama.json",
-        // "./profiles/qwen.json",
-        // "./profiles/grok.json",
-        // "./profiles/mistral.json",
-        // "./profiles/deepseek.json",
-        // "./profiles/mercury.json",
-        // "./profiles/andy-4.json", // Supports up to 75 messages!
+        // Protocol representative native-tool smoke profiles.
+        "profiles/gpt.json",          // openai-responses -> openai:gpt-5.5
+        "profiles/codex.json",        // openai-codex-responses -> codex:gpt-5.5
+        "profiles/openrouter.json",   // openai-completions -> openrouter:moonshotai/kimi-k2.6
+        "profiles/kimi.json",         // anthropic-messages -> kimi:kimi-k2.6
+        "profiles/gemini.json",       // google-generative-ai -> google:gemini-3-flash-preview
 
         // using more than 1 profile requires you to /msg each bot indivually
         // individual profiles override values from the base profile
     ],
 
     "load_memory": false, // load memory from previous session
-    "init_message": "Respond with hello world and your name", // sends to all on spawn
+    "init_message": "Use native tool calling to check your inventory, then say: native tool check complete.", // sends to all on spawn
     "only_chat_with": [], // users that the bots listen to and send general messages to. if empty it will chat publicly
 
     "speak": false,
@@ -40,7 +36,7 @@ const settings = {
     "language": "en", // translate to/from this language. Supports these language names: https://cloud.google.com/translate/docs/languages
     "render_bot_view": false, // show bot's view in browser at localhost:3000, 3001...
 
-    "allow_insecure_coding": false, // allows newAction command and model can write/run code on your computer. enable at own risk
+    "allow_insecure_coding": true, // allows newAction command and model can write/run code on your computer. enable at own risk
     "allow_vision": false, // allows vision model to interpret screenshots as inputs
     "blocked_actions" : ["!checkBlueprint", "!checkBlueprintLevel", "!getBlueprint", "!getBlueprintLevel"] , // commands to disable and remove from docs. Ex: ["!setMode"]
     "code_timeout_mins": -1, // minutes code is allowed to run. -1 for no timeout

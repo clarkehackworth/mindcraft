@@ -5,6 +5,8 @@ import { Prompter } from '../models/prompter.js';
 import { initModes } from './modes.js';
 import { initBot } from '../utils/mcdata.js';
 import { containsCommand, commandExists, executeCommand, truncCommandMessage, isAction, blacklistCommands } from './commands/index.js';
+import { executeCommandToolCall } from './commands/tool_adapter.js';
+import { isNativeToolResponse } from '../models/native_tools.js';
 import { ActionManager } from './action_manager.js';
 import { NPCContoller } from './npc/controller.js';
 import { MemoryBank } from './memory_bank.js';
@@ -166,7 +168,7 @@ export class Agent {
                 console.log(this.name, 'received message from', username, ':', message);
 
                 if (convoManager.isOtherAgent(username)) {
-                    console.warn('received whisper from other bot??')
+                    console.warn('received whisper from other bot??');
                 }
                 else {
                     let translation = await handleEnglishTranslation(message);
@@ -175,7 +177,7 @@ export class Agent {
             } catch (error) {
                 console.error('Error handling message:', error);
             }
-        }
+        };
 
 		this.respondFunc = respondFunc;
 
@@ -319,22 +321,38 @@ export class Agent {
             let history = this.history.getHistory();
             let res = await this.prompter.promptConvo(history);
 
+            if (isNativeToolResponse(res)) {
+                console.log(`${this.name} native tool calls from ${source}: ${formatNativeToolCallsForLog(res.tool_calls)}`);
+
+                if (checkInterrupt()) break;
+                const executedAny = await this._executeNativeToolCalls(res, source, self_prompt);
+                if (!executedAny) break;
+                used_command = true;
+                this.history.save();
+                continue;
+            }
+
             console.log(`${this.name} full response to ${source}: ""${res}""`);
 
             if (res.trim().length === 0) {
-                console.warn('no response')
+                console.warn('no response');
                 break; // empty response ends loop
             }
 
             let command_name = containsCommand(res);
 
             if (command_name) { // contains query or command
+                if (this.prompter.isNativeToolMode()) {
+                    this.history.add('system', `The assistant attempted to write text command ${command_name}, but it was not executed. AI actions must use native tool calls; human !command syntax is still supported.`);
+                    console.warn('Agent produced text command while native tool mode is enabled:', command_name);
+                    continue;
+                }
                 res = truncCommandMessage(res); // everything after the command is ignored
                 this.history.add(this.name, res);
                 
                 if (!commandExists(command_name)) {
                     this.history.add('system', `Command ${command_name} does not exist.`);
-                    console.warn('Agent hallucinated command:', command_name)
+                    console.warn('Agent hallucinated command:', command_name);
                     continue;
                 }
 
@@ -379,6 +397,38 @@ export class Agent {
         }
 
         return used_command;
+    }
+
+    async _executeNativeToolCalls(nativeToolResponse, source, self_prompt) {
+        let executedAny = false;
+        for (const toolCall of nativeToolResponse.tool_calls) {
+            const commandName = toolCall.name ? (toolCall.name.startsWith('!') ? toolCall.name : `!${toolCall.name}`) : null;
+            if (!commandName || !commandExists(commandName)) {
+                const msg = `Native tool ${toolCall.name || '<missing>'} does not map to a command.`;
+                this.history.add('system', msg);
+                console.warn(msg);
+                continue;
+            }
+
+            this.self_prompter.handleUserPromptedCmd(self_prompt, isAction(commandName));
+            const display = `*used ${toolCall.name}*`;
+            this.history.add(this.name, display);
+
+            if (settings.show_command_syntax !== "none") {
+                this.routeResponse(source, display);
+            }
+
+            console.log(`[native-tool] calling ${commandName} args=${formatToolArgsForLog(toolCall.arguments)}`);
+            const execute_res = await executeCommandToolCall(this, toolCall);
+            console.log(`[native-tool] ${commandName} result=${formatToolResultForLog(execute_res.result)}`);
+            executedAny = true;
+
+            this.history.add('system', `Native tool call completed: ${toolCall.name}.`);
+            if (execute_res.result) {
+                this.history.add('system', execute_res.result);
+            }
+        }
+        return executedAny;
     }
 
     async routeResponse(to_player, message) {
@@ -550,4 +600,39 @@ export class Agent {
     killAll() {
         serverProxy.shutdown();
     }
+}
+
+function formatNativeToolCallsForLog(toolCalls = []) {
+    if (!Array.isArray(toolCalls) || toolCalls.length === 0) {
+        return '<none>';
+    }
+    return toolCalls
+        .map((call, index) => `${index + 1}. ${call.name || '<missing>'}(${formatToolArgsForLog(call.arguments)})`)
+        .join('; ');
+}
+
+function formatToolArgsForLog(args) {
+    if (args == null || args === '') return '{}';
+    if (typeof args === 'string') {
+        try {
+            return truncateForLog(JSON.stringify(JSON.parse(args)));
+        } catch {
+            return truncateForLog(args);
+        }
+    }
+    try {
+        return truncateForLog(JSON.stringify(args));
+    } catch {
+        return truncateForLog(String(args));
+    }
+}
+
+function formatToolResultForLog(result) {
+    if (result == null || result === '') return '<empty>';
+    return truncateForLog(typeof result === 'string' ? result : JSON.stringify(result));
+}
+
+function truncateForLog(value, max = 500) {
+    const text = String(value);
+    return text.length > max ? `${text.slice(0, max)}...` : text;
 }

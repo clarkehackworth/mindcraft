@@ -1,6 +1,8 @@
 import { readFileSync, mkdirSync, writeFileSync} from 'fs';
 import { Examples } from '../utils/examples.js';
 import { getCommandDocs } from '../agent/commands/index.js';
+import { getCommandToolDefinitions, getNativeToolDocs } from '../agent/commands/tool_adapter.js';
+import { isNativeToolResponse } from './native_tools.js';
 import { SkillLibrary } from "../agent/library/skill_library.js";
 import { stringifyTurns } from '../utils/text.js';
 import { getCommand } from '../agent/commands/index.js';
@@ -8,10 +10,18 @@ import settings from '../agent/settings.js';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { selectAPI, createModel } from './_model_map.js';
+import { selectAPI, selectEmbeddingAPI, createModel } from './_model_map.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const PROMPT_FILE_KEYS = [
+    'conversing',
+    'coding',
+    'saving_memory',
+    'bot_responder',
+    'image_analysis',
+    'goal_setting'
+];
 
 export class Prompter {
     constructor(agent, profile) {
@@ -42,6 +52,7 @@ export class Prompter {
                 this.profile[key] = base_profile[key];
         }
         // base overrides default, individual overrides base
+        resolvePromptFileRefs(this.profile, defaults_dir);
 
         this.convo_examples = null;
         this.coding_examples = null;
@@ -79,7 +90,7 @@ export class Prompter {
         let embedding_model_profile = null;
         if (this.profile.embedding) {
             try {
-                embedding_model_profile = selectAPI(this.profile.embedding);
+                embedding_model_profile = selectEmbeddingAPI(this.profile.embedding);
             } catch (e) {
                 embedding_model_profile = null;
             }
@@ -88,7 +99,7 @@ export class Prompter {
             this.embedding_model = createModel(embedding_model_profile);
         }
         else {
-            this.embedding_model = createModel({api: chat_model_profile.api});
+            this.embedding_model = null;
         }
 
         this.skill_libary = new SkillLibrary(agent, this.embedding_model);
@@ -109,14 +120,21 @@ export class Prompter {
         return this.profile.modes;
     }
 
+    isNativeToolMode() {
+        return this.profile.use_native_tools !== false && Boolean(this.chat_model?.supportsNativeToolCalls);
+    }
+
     async initExamples() {
         try {
             this.convo_examples = new Examples(this.embedding_model, settings.num_examples);
             this.coding_examples = new Examples(this.embedding_model, settings.num_examples);
+            const conversationExamples = this.isNativeToolMode()
+                ? sanitizeNativeToolExamples(this.profile.conversation_examples)
+                : this.profile.conversation_examples;
             
             // Wait for both examples to load before proceeding
             await Promise.all([
-                this.convo_examples.load(this.profile.conversation_examples),
+                this.convo_examples.load(conversationExamples),
                 this.coding_examples.load(this.profile.coding_examples),
                 this.skill_libary.initSkillLibrary()
             ]).catch(error => {
@@ -150,8 +168,10 @@ export class Prompter {
         if (prompt.includes('$ACTION')) {
             prompt = prompt.replaceAll('$ACTION', this.agent.actions.currentActionLabel);
         }
-        if (prompt.includes('$COMMAND_DOCS'))
-            prompt = prompt.replaceAll('$COMMAND_DOCS', getCommandDocs(this.agent));
+        if (prompt.includes('$COMMAND_DOCS')) {
+            const docs = this.isNativeToolMode() ? getNativeToolDocs(this.agent) : this.getTextCommandFallbackDocs();
+            prompt = prompt.replaceAll('$COMMAND_DOCS', docs);
+        }
         if (prompt.includes('$CODE_DOCS')) {
             const code_task_content = messages.slice().reverse().find(msg =>
                 msg.role !== 'system' && msg.content.includes('!newAction(')
@@ -179,9 +199,9 @@ export class Prompter {
             let goal_text = '';
             for (let goal in last_goals) {
                 if (last_goals[goal])
-                    goal_text += `You recently successfully completed the goal ${goal}.\n`
+                    goal_text += `You recently successfully completed the goal ${goal}.\n`;
                 else
-                    goal_text += `You recently failed to complete the goal ${goal}.\n`
+                    goal_text += `You recently failed to complete the goal ${goal}.\n`;
             }
             prompt = prompt.replaceAll('$LAST_GOALS', goal_text.trim());
         }
@@ -222,17 +242,23 @@ export class Prompter {
             }
 
             let prompt = this.profile.conversing;
-            prompt = await this.replaceStrings(prompt, messages, this.convo_examples);
+            const promptMessages = this.isNativeToolMode() ? sanitizeNativeToolHistory(messages) : messages;
+            prompt = await this.replaceStrings(prompt, promptMessages, this.convo_examples);
             let generation;
 
             try {
-                generation = await this.chat_model.sendRequest(messages, prompt);
+                const tools = this.isNativeToolMode() ? getCommandToolDefinitions(this.agent) : null;
+                generation = await this.chat_model.sendRequest(promptMessages, prompt, '***', tools);
+                if (isNativeToolResponse(generation)) {
+                    await this._saveLog(prompt, promptMessages, JSON.stringify(generation), 'conversation');
+                    return generation;
+                }
                 if (typeof generation !== 'string') {
                     console.error('Error: Generated response is not a string', generation);
                     throw new Error('Generated response is not a string');
                 }
                 console.log("Generated response:", generation);
-                await this._saveLog(prompt, messages, generation, 'conversation');
+                await this._saveLog(prompt, promptMessages, generation, 'conversation');
 
             } catch (error) {
                 console.error('Error during message generation or file writing:', error);
@@ -251,14 +277,22 @@ export class Prompter {
             }
 
             if (generation?.includes('</think>')) {
-                const [_, afterThink] = generation.split('</think>')
-                generation = afterThink
+                const [_, afterThink] = generation.split('</think>');
+                generation = afterThink;
             }
 
             return generation;
         }
 
         return '';
+    }
+
+    getTextCommandFallbackDocs() {
+        const docs = getCommandDocs(this.agent);
+        if (this.profile.use_native_tools === false) {
+            return docs;
+        }
+        return '\n*NATIVE TOOL FALLBACK WARNING\nThis model adapter does not advertise native tool calling support, so Mindcraft is temporarily falling back to text !command syntax for AI actions. Prefer a native-tool-capable provider when available. Human users may still type !commands.*\n' + docs;
     }
 
     async promptCoding(messages) {
@@ -284,7 +318,7 @@ export class Prompter {
         let resp = await this.chat_model.sendRequest([], prompt);
         await this._saveLog(prompt, to_summarize, resp, 'memSaving');
         if (resp?.includes('</think>')) {
-            const [_, afterThink] = resp.split('</think>')
+            const [_, afterThink] = resp.split('</think>');
             resp = afterThink;
         }
         return resp;
@@ -313,7 +347,7 @@ export class Prompter {
         system_message = await this.replaceStrings(system_message, messages);
 
         let user_message = 'Use the below info to determine what goal to target next\n\n';
-        user_message += '$LAST_GOALS\n$STATS\n$INVENTORY\n$CONVO'
+        user_message += '$LAST_GOALS\n$STATS\n$INVENTORY\n$CONVO';
         user_message = await this.replaceStrings(user_message, messages, null, null, last_goals);
         let user_messages = [{role: 'user', content: user_message}];
 
@@ -362,5 +396,69 @@ export class Prompter {
 
         logFile = path.join(logDir, logFile);
         await fs.appendFile(logFile, String(logEntry), 'utf-8');
+    }
+}
+
+export function sanitizeNativeToolExamples(examples = []) {
+    if (!Array.isArray(examples)) return [];
+    return examples.filter(example =>
+        Array.isArray(example) && !example.some(turn => containsLegacyToolSyntax(turn?.content))
+    );
+}
+
+export function sanitizeNativeToolHistory(turns = []) {
+    if (!Array.isArray(turns)) return [];
+    return turns.map(turn => {
+        if (turn?.role !== 'assistant' || typeof turn.content !== 'string') {
+            return { ...turn };
+        }
+        return { ...turn, content: sanitizeNativeToolAssistantContent(turn.content) };
+    });
+}
+
+function sanitizeNativeToolAssistantContent(content) {
+    const usedTool = content.trim().match(/^\*used\s+([A-Za-z_][A-Za-z0-9_-]*)\*$/i);
+    if (usedTool) {
+        return `Used native tool ${usedTool[1]}.`;
+    }
+
+    if (!containsLegacyToolSyntax(content)) {
+        return content;
+    }
+
+    const beforeCommand = content.split(/(^|\s)![A-Za-z_][A-Za-z0-9_]*\b/)[0].trim();
+    if (beforeCommand.length > 0) {
+        return beforeCommand;
+    }
+    return 'Requested an action using legacy text command syntax; use native tool calls for actions.';
+}
+
+function containsLegacyToolSyntax(content) {
+    if (typeof content !== 'string') return false;
+    return /(^|\s)![A-Za-z_][A-Za-z0-9_]*\b|\*used\s+[A-Za-z_][A-Za-z0-9_]*\*/i.test(content);
+}
+
+function resolvePromptFileRefs(profile, defaultBaseDir) {
+    for (const key of PROMPT_FILE_KEYS) {
+        const value = profile[key];
+        const promptPath = getPromptPath(value);
+        if (!promptPath) continue;
+        profile[key] = readFileSync(resolvePromptPath(promptPath, defaultBaseDir), 'utf8');
+    }
+}
+
+function getPromptPath(value) {
+    if (!value || typeof value !== 'object') return null;
+    return value.prompt_file || value.file || value.path || null;
+}
+
+function resolvePromptPath(promptPath, defaultBaseDir) {
+    if (path.isAbsolute(promptPath)) return promptPath;
+    const defaultRelativePath = path.join(defaultBaseDir, promptPath);
+    try {
+        readFileSync(defaultRelativePath, 'utf8');
+        return defaultRelativePath;
+    } catch {
+        return path.resolve(promptPath);
     }
 }
