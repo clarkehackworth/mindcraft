@@ -232,7 +232,13 @@ function shouldRenderInlineHistoryEvent(event, requestMessages, hasToolRuns) {
 function getTurnModelLabel(turn) {
     const request = turn?.request;
     const response = turn?.response;
-    return request?.model?.model || request?.model?.api || response?.model?.model || response?.model?.api || 'model';
+    return request?.model?.display_label
+        || response?.model?.display_label
+        || request?.model?.model
+        || request?.model?.api
+        || response?.model?.model
+        || response?.model?.api
+        || 'model';
 }
 
 

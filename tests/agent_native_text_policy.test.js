@@ -432,6 +432,13 @@ test('chat UI and trace projection render model thinking separately', () => {
     assert.equal(html.includes('renderThinking(item.event?.thinking)'), false);
 });
 
+test('chat trace projection can show reasoning effort in the model label', () => {
+    const projector = readFileSync('src/mindcraft/public/chat_trace_projector.js', 'utf8');
+
+    assert.ok(projector.includes('display_label'));
+    assert.ok(projector.includes("request?.model?.display_label"));
+});
+
 test('chat request cards avoid duplicate per-message role labels', () => {
     const html = readFileSync('src/mindcraft/public/index.html', 'utf8');
     const renderRequestMessagesSection = html.slice(html.indexOf('function renderRequestMessages'), html.indexOf('function selectVisibleRequestMessages'));

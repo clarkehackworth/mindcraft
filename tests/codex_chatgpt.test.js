@@ -432,6 +432,18 @@ test('Codex adapter keeps prompt cache key stable across multi-turn tool replay'
     );
 });
 
+test('Codex adapter requests reasoning summaries when reasoning effort is configured', () => {
+    const model = new CodexChatGPT('gpt-5.5', 'https://example.test/backend-api/codex', {
+        keysPath: 'settings_llm_providers.json',
+        reasoning: { effort: 'high' }
+    });
+
+    const body = model.buildRequestBody('gpt-5.5', [{ role: 'user', content: 'think then act' }], 'Use tools.', [tool]);
+
+    assert.deepEqual(body.reasoning, { effort: 'high', summary: 'auto' });
+    assert.ok(body.include.includes('reasoning.encrypted_content'));
+});
+
 test('Codex adapter replays turn-state across conversation scope for sticky cache routing', async () => {
     const { keysPath, cleanup } = writeTempKeys();
     const originalFetch = globalThis.fetch;

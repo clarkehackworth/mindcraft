@@ -446,10 +446,19 @@ function describeModel(model) {
     if (!model || typeof model !== 'object') {
         return null;
     }
+    const modelName = model.model_name || model.default_model || null;
+    const reasoning = model.params?.reasoning && typeof model.params.reasoning === 'object'
+        ? model.params.reasoning
+        : null;
+    const reasoningEffort = reasoning?.effort || null;
+    const reasoningSummary = reasoning?.summary || null;
     return {
         api: model.constructor?.prefix || model.api || null,
         provider: model.provider || model.params?.provider || null,
-        model: model.model_name || model.default_model || null,
+        model: modelName,
+        reasoning_effort: reasoningEffort,
+        reasoning_summary: reasoningSummary,
+        display_label: [modelName, reasoningEffort].filter(Boolean).join(' ') || null,
         supports_native_tool_calls: Boolean(model.supportsNativeToolCalls)
     };
 }

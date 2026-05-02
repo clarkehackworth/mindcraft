@@ -145,16 +145,18 @@ export class CodexChatGPT {
 
     buildRequestBody(model, turns, systemMessage, tools=null, options = {}) {
         const promptCacheKey = buildScopedPromptCacheKey(this.sessionId, options?.cacheScope);
+        const reasoning = buildCodexReasoning(this.params.reasoning);
+        const include = buildCodexInclude(this.params.include, reasoning);
         const body = {
             model,
             instructions: systemMessage || '',
             input: toResponsesInputItems(turns || []),
             tools: toCodexResponsesTools(tools || []),
             parallel_tool_calls: this.params.parallel_tool_calls ?? true,
-            reasoning: this.params.reasoning ?? null,
+            reasoning,
             store: false,
             stream: true,
-            include: this.params.include || [],
+            include,
             prompt_cache_key: promptCacheKey
         };
 
@@ -998,6 +1000,27 @@ function extractErrorMessage(body) {
     } catch {
         return body.slice(0, 300);
     }
+}
+
+function buildCodexReasoning(reasoning) {
+    if (reasoning === false || reasoning === null) return null;
+    if (typeof reasoning === 'string') {
+        return { effort: reasoning, summary: 'auto' };
+    }
+    if (!reasoning || typeof reasoning !== 'object') return null;
+    const result = { ...reasoning };
+    if (result.effort && result.summary === undefined) {
+        result.summary = 'auto';
+    }
+    return Object.keys(result).length > 0 ? result : null;
+}
+
+function buildCodexInclude(include, reasoning) {
+    const values = Array.isArray(include) ? [...include] : [];
+    if (reasoning && !values.includes('reasoning.encrypted_content')) {
+        values.push('reasoning.encrypted_content');
+    }
+    return values;
 }
 
 function isAbortError(err) {
