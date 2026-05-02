@@ -156,15 +156,71 @@ test('new human message interrupts and drops a stale pending LLM response', asyn
     const second = agent.handleMessage('Steve', 'second', 1);
     await new Promise(resolve => setTimeout(resolve, 10));
 
-    assert.equal(requests.length, 2);
+    assert.equal(requests.length, 1);
     assert.equal(signals[0].aborted, true);
-    assert.equal(signals[1].aborted, false);
     releaseFirst();
     await Promise.all([first, second]);
 
     assert.equal(requests.length, 2);
+    assert.equal(signals[1].aborted, false);
     assert.deepEqual(requests[1].map(turn => turn.content), ['Steve: first', 'Steve: second']);
     assert.deepEqual(turns.map(turn => turn.content), ['Steve: first', 'Steve: second', 'reply 2']);
+});
+
+test('new human message skips stale queued self prompt before consuming a ReAct turn', async () => {
+    const { Agent } = await import('../src/agent/agent.js');
+    const turns = [];
+    const requests = [];
+    const turnStateKeys = [];
+    let releaseQueue;
+    const blockedQueue = new Promise(resolve => {
+        releaseQueue = resolve;
+    });
+    const agent = Object.create(Agent.prototype);
+    agent.name = 'bot';
+    agent.shut_up = false;
+    agent.last_sender = null;
+    agent.active_message_handlers = 0;
+    agent.active_native_tool_calls = new Map();
+    agent.message_interrupt_epoch = 0;
+    agent.message_handler_queue = blockedQueue;
+    agent.human_message_queue = [];
+    agent.human_message_interrupt_promise = Promise.resolve();
+    agent.checkTaskDone = async () => {};
+    agent.self_prompter = {
+        shouldInterrupt: () => false,
+        isActive: () => false,
+        handleUserPromptedCmd: () => {}
+    };
+    agent.bot = { modes: { flushBehaviorLog: () => '' } };
+    agent.history = {
+        addUserContext: async content => turns.push({ role: 'user', content }),
+        add: async (name, content) => turns.push(name === agent.name ? { role: 'assistant', content } : { role: 'user', content: `${name}: ${content}` }),
+        save: () => {},
+        getHistory: () => turns.map(turn => ({ ...turn }))
+    };
+    agent.prompter = {
+        promptConvo: async (messages, options = {}) => {
+            requests.push(messages.map(turn => ({ ...turn })));
+            turnStateKeys.push(options.turnStateKey);
+            return 'reply';
+        },
+        consumeLastConversationResponseMetadata: () => ({})
+    };
+    agent.routeResponse = () => {};
+
+    const staleSelfPrompt = agent.handleMessage('system', 'continue old goal', 1, { transient: true });
+    const humanMessage = agent.handleMessage('Steve', 'new request', 1);
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    assert.equal(requests.length, 0);
+    releaseQueue();
+    await Promise.all([staleSelfPrompt, humanMessage]);
+
+    assert.equal(requests.length, 1);
+    assert.deepEqual(requests[0].map(turn => turn.content), ['Steve: new request']);
+    assert.deepEqual(turnStateKeys, ['react-1']);
+    assert.deepEqual(turns.map(turn => turn.content), ['Steve: new request', 'reply']);
 });
 
 

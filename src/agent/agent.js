@@ -280,10 +280,15 @@ export class Agent {
             this.abortActiveLLMRequest('Interrupted by human command.');
             return this._runMessageHandler(source, message, max_responses, options);
         }
+        return this._enqueueMessageHandler(source, message, max_responses, options);
+    }
+
+    _enqueueMessageHandler(source, message, max_responses=null, options={}) {
+        const interruptEpoch = this.message_interrupt_epoch || 0;
         const previous = this.message_handler_queue || Promise.resolve();
         const queued = previous
             .catch(() => {})
-            .then(() => this._runMessageHandler(source, message, max_responses, options));
+            .then(() => this._runMessageHandler(source, message, max_responses, options, { interruptEpoch }));
         this.message_handler_queue = queued.catch(() => {});
         return queued;
     }
@@ -302,10 +307,13 @@ export class Agent {
             resolveQueued = resolve;
             rejectQueued = reject;
         });
+        this.message_interrupt_epoch = (this.message_interrupt_epoch || 0) + 1;
         this.human_message_queue.push({ source, message, max_responses, options, resolveQueued, rejectQueued });
         if ((this.active_message_handlers || 0) > 0) {
-            this.message_interrupt_epoch = (this.message_interrupt_epoch || 0) + 1;
-            this.human_message_interrupt_promise = this._interruptActiveTurnForNewHumanMessage()
+            const previousInterrupt = this.human_message_interrupt_promise || Promise.resolve();
+            this.human_message_interrupt_promise = previousInterrupt
+                .catch(error => console.warn('Failed to interrupt active turn for new user message:', error))
+                .then(() => this._interruptActiveTurnForNewHumanMessage())
                 .catch(error => console.warn('Failed to interrupt active turn for new user message:', error));
         }
         if (!this.human_message_flush_timer) {
@@ -324,7 +332,7 @@ export class Agent {
         if (batch.length === 0) return false;
         const compiled = this._compileHumanMessageBatch(batch);
         try {
-            const result = await this._runMessageHandler(compiled.source, compiled.message, compiled.max_responses, compiled.options);
+            const result = await this._enqueueMessageHandler(compiled.source, compiled.message, compiled.max_responses, compiled.options);
             for (const item of batch) item.resolveQueued?.(result);
             return result;
         } catch (error) {
@@ -380,10 +388,10 @@ export class Agent {
         return true;
     }
 
-    async _runMessageHandler(source, message, max_responses=null, options={}) {
+    async _runMessageHandler(source, message, max_responses=null, options={}, runOptions={}) {
         this.active_message_handlers = (this.active_message_handlers || 0) + 1;
         try {
-            return await this._handleMessageImpl(source, message, max_responses, options);
+            return await this._handleMessageImpl(source, message, max_responses, options, runOptions);
         } finally {
             this.active_message_handlers = Math.max(0, (this.active_message_handlers || 1) - 1);
         }
@@ -396,7 +404,7 @@ export class Agent {
         return ['!stop', '!stfu', '!restart'].includes(commandName);
     }
 
-    async _handleMessageImpl(source, message, max_responses=null, options={}) {
+    async _handleMessageImpl(source, message, max_responses=null, options={}, runOptions={}) {
         await this.checkTaskDone();
         if (!source || !message) {
             console.warn('Received empty message from', source);
@@ -439,9 +447,16 @@ export class Agent {
 
         console.log('received message from', source, ':', message);
 
-        const interruptEpoch = this.message_interrupt_epoch || 0;
+        const interruptEpoch = Number.isFinite(runOptions?.interruptEpoch)
+            ? runOptions.interruptEpoch
+            : (this.message_interrupt_epoch || 0);
         const isStaleTurn = () => interruptEpoch !== (this.message_interrupt_epoch || 0);
         const checkInterrupt = () => isStaleTurn() || this.self_prompter.shouldInterrupt(self_prompt) || this.shut_up || convoManager.responseScheduledFor(source);
+
+        if (checkInterrupt()) {
+            console.log(`${this.name} skipped stale message from ${source} before starting a ReAct turn.`);
+            return used_command;
+        }
         
         if (!this.react_messages) {
             this.react_messages = new ReactMessageManager(this);
@@ -452,7 +467,7 @@ export class Agent {
         if (!self_prompt && this.self_prompter.isActive()) // message is from user during self-prompting
             max_responses = 1; // force only respond to this message, then let self-prompting take over
         for (let i=0; i<max_responses; i++) {
-            if (checkInterrupt()) break;
+            if (i > 0 && checkInterrupt()) break;
             let history = await reactTurn.buildRequestMessages();
             const llmAbortController = this.beginActiveLLMRequest();
             let res;
