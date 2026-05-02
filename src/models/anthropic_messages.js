@@ -1,5 +1,4 @@
 import Anthropic from '@anthropic-ai/sdk';
-import https from 'node:https';
 import { getKey } from '../utils/keys.js';
 import { createNativeToolResponse, normalizeAnthropicToolUse, toAnthropicMessages, toAnthropicTools } from './native_tools.js';
 import { setLastTokenUsage } from './token_usage.js';
@@ -19,11 +18,6 @@ export class AnthropicMessages {
         delete this.params.apiKeyName;
         delete this.params.api_key_name;
         config.apiKey = getKey(apiKeyName);
-        if (this.params.forceIPv4 || this.params.force_ipv4) {
-            config.httpAgent = new https.Agent({ family: 4 });
-        }
-        delete this.params.forceIPv4;
-        delete this.params.force_ipv4;
 
         this.anthropic = new Anthropic(config);
         this.provider = this.params.provider || this.params.providerName || this.params.provider_name || 'anthropic';
