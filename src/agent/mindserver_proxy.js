@@ -134,3 +134,11 @@ export function sendBotChatToServer(agentName, json) {
 export function sendOutputToServer(agentName, message) {
     serverProxy.getSocket().emit('bot-output', agentName, message);
 }
+
+// for sending structured observability events to the UI
+export function sendTraceEventToServer(agentName, event) {
+    const socket = serverProxy.getSocket();
+    if (socket?.connected) {
+        socket.emit('agent-trace', agentName, event);
+    }
+}

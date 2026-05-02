@@ -28,12 +28,14 @@ export class Coder {
         mkdirSync('.' + this.fp, { recursive: true });
     }
 
-    async generateCode(agent_history) {
+    async generateCode(prompt) {
         this.agent.bot.modes.pause('unstuck');
         lockdown();
-        // this message history is transient and only maintained in this function
-        let messages = agent_history.getHistory(); 
-        messages.push({role: 'system', content: 'Code generation started. Write code in codeblock in your response:'});
+        // Code generation uses its own transient request context. Do not replay the
+        // main conversation history here: newAction runs inside a native tool call,
+        // and replaying the chat history makes the coding request look like another
+        // user turn while also defeating prompt-cache prefix stability.
+        let messages = createCodeGenerationMessages(prompt);
 
         const MAX_ATTEMPTS = 5;
         const MAX_NO_CODE = 3;
@@ -51,19 +53,19 @@ export class Coder {
             if (!contains_code) {
                 if (res.indexOf('!newAction') !== -1) {
                     messages.push({
-                        role: 'assistant', 
+                        role: 'assistant',
                         content: res.substring(0, res.indexOf('!newAction'))
                     });
                     continue; // using newaction will continue the loop
                 }
-                
+
                 if (no_code_failures >= MAX_NO_CODE) {
                     console.warn("Action failed, agent would not write code.");
                     return 'Action failed, agent would not write code.';
                 }
                 messages.push({
-                    role: 'system', 
-                    content: 'Error: no code provided. Write code in codeblock in your response. ``` // example ```'}
+                    role: 'user',
+                    content: 'System: Error: no code provided. Write code in codeblock in your response. ``` // example ```'}
                 );
                 console.warn("No code block generated. Trying again.");
                 no_code_failures++;
@@ -76,7 +78,7 @@ export class Coder {
             if (lintResult) {
                 const message = 'Error: Code lint error:'+'\n'+lintResult+'\nPlease try again.';
                 console.warn("Linting error:"+'\n'+lintResult+'\n');
-                messages.push({ role: 'system', content: message });
+                messages.push({ role: 'user', content: `System: ${message}` });
                 continue;
             }
             if (!executionModule) {
@@ -94,7 +96,7 @@ export class Coder {
             } catch (e) {
                 if (this.agent.bot.interrupt_code)
                     return null;
-                
+
                 console.warn('Generated code threw error: ' + e.toString());
                 console.warn('trying again...');
 
@@ -105,14 +107,14 @@ export class Coder {
                     content: res
                 });
                 messages.push({
-                    role: 'system',
-                    content: `Code Output:\n${code_output}\nCODE EXECUTION THREW ERROR: ${e.toString()}\n Please try again:`
+                    role: 'user',
+                    content: `System: Code Output:\n${code_output}\nCODE EXECUTION THREW ERROR: ${e.toString()}\n Please try again:`
                 });
             }
         }
         return `Code generation failed after ${MAX_ATTEMPTS} attempts.`;
     }
-    
+
     async  _lintCode(code) {
         let result = '#### CODE ERROR INFO ###\n';
         const codeNoComments = code.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
@@ -181,7 +183,7 @@ export class Coder {
         //     });
         // } commented for now, useful to keep files for debugging
         this.file_counter++;
-        
+
         let write_result = await this._writeFilePromise('.' + this.fp + filename, src);
         // This is where we determine the environment the agent's code should be exposed to.
         // It will only have access to these things, (in addition to basic javascript objects like Array, Object, etc.)
@@ -193,7 +195,7 @@ export class Coder {
             Vec3,
         });
         const mainFn = compartment.evaluate(src);
-        
+
         if (write_result) {
             console.error('Error writing code execution file: ' + write_result);
             return null;
@@ -225,4 +227,12 @@ export class Coder {
             });
         });
     }
+}
+
+export function createCodeGenerationMessages(prompt) {
+    const task = String(prompt || '').trim() || 'Continue the requested custom action.';
+    return [{
+        role: 'user',
+        content: `Code generation task:\n${task}\n\nWrite the implementation as a JavaScript code block.`
+    }];
 }

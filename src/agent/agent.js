@@ -11,6 +11,7 @@ import { ActionManager } from './action_manager.js';
 import { NPCContoller } from './npc/controller.js';
 import { MemoryBank } from './memory_bank.js';
 import { SelfPrompter } from './self_prompter.js';
+import { buildStateSnapshotDiff } from './state_snapshot.js';
 import convoManager from './conversation.js';
 import { addBrowserViewer } from './vision/browser_viewer.js';
 import { serverProxy, sendOutputToServer } from './mindserver_proxy.js';
@@ -24,6 +25,7 @@ export class Agent {
         this.last_sender = null;
         this.count_id = count_id;
         this._disconnectHandled = false;
+        this.active_message_handlers = 0;
 
         // Initialize components
         this.actions = new ActionManager(this);
@@ -46,7 +48,7 @@ export class Agent {
         this.memory_bank = new MemoryBank();
         this.self_prompter = new SelfPrompter(this);
         convoManager.initAgent(this);
-        await this.prompter.initExamples();
+        await this.prompter.initPromptResources();
 
         // load mem first before doing task
         let save_data = null;
@@ -195,9 +197,6 @@ export class Agent {
         };
 
         if (save_data?.self_prompt) {
-            if (init_message) {
-                this.history.add('system', init_message);
-            }
             await this.self_prompter.handleLoad(save_data.self_prompt, save_data.self_prompting_state);
         }
         if (save_data?.last_sender) {
@@ -210,10 +209,10 @@ export class Agent {
                 convoManager.receiveFromBot(this.last_sender, msg_package);
             }
         }
-        else if (init_message) {
+        else if (init_message && !hasLoadedConversation(save_data)) {
             await this.handleMessage('system', init_message, 2);
         }
-        else {
+        else if (!hasLoadedConversation(save_data)) {
             this.openChat("Hello world! I am "+this.name);
         }
     }
@@ -232,10 +231,18 @@ export class Agent {
 
     requestInterrupt() {
         this.bot.interrupt_code = true;
+        this.bot.emit('mindcraft_interrupt');
         this.bot.stopDigging();
-        this.bot.collectBlock.cancelTask();
         this.bot.pathfinder.stop();
         this.bot.pvp.stop();
+        if (!this.collectBlockCancelPromise) {
+            this.collectBlockCancelPromise = this.bot.collectBlock.cancelTask()
+                .catch(() => {})
+                .finally(() => {
+                    this.collectBlockCancelPromise = null;
+                });
+        }
+        return this.collectBlockCancelPromise;
     }
 
     clearBotLogs() {
@@ -251,7 +258,20 @@ export class Agent {
         convoManager.endAllConversations();
     }
 
-    async handleMessage(source, message, max_responses=null) {
+    async handleSelfPrompt(message, max_responses=null) {
+        return this.handleMessage('system', message, max_responses, { transient: true });
+    }
+
+    async handleMessage(source, message, max_responses=null, options={}) {
+        this.active_message_handlers = (this.active_message_handlers || 0) + 1;
+        try {
+            return await this._handleMessageImpl(source, message, max_responses, options);
+        } finally {
+            this.active_message_handlers = Math.max(0, (this.active_message_handlers || 1) - 1);
+        }
+    }
+
+    async _handleMessageImpl(source, message, max_responses=null, options={}) {
         await this.checkTaskDone();
         if (!source || !message) {
             console.warn('Received empty message from', source);
@@ -296,6 +316,10 @@ export class Agent {
 
         const checkInterrupt = () => this.self_prompter.shouldInterrupt(self_prompt) || this.shut_up || convoManager.responseScheduledFor(source);
         
+        // Runtime behavior notes are request context. For non-transient user turns
+        // they are persisted with the outbound message so future prompts remain
+        // append-only for prompt-cache stability.
+        const transientMessages = [];
         let behavior_log = this.bot.modes.flushBehaviorLog().trim();
         if (behavior_log.length > 0) {
             const MAX_LOG = 500;
@@ -303,19 +327,60 @@ export class Agent {
                 behavior_log = '...' + behavior_log.substring(behavior_log.length - MAX_LOG);
             }
             behavior_log = 'Recent behaviors log: \n' + behavior_log;
-            await this.history.add('system', behavior_log);
+            transientMessages.push(createTransientSystemUserMessage(behavior_log));
         }
 
-        // Handle other user messages
-        await this.history.add(source, message);
-        this.history.save();
+        // Handle other user messages. Self-prompt continuation nudges stay
+        // transient, but normal user/runtime context is persisted exactly as it is
+        // sent to the model. Prompt caches are append-only sensitive: if we send a
+        // state update in one request and omit it from future history, the next
+        // request rewrites the prior prefix and cache reads can drop to zero.
+        let pendingPersistedParts = [];
+        if (options.transient) {
+            transientMessages.push(createTransientSystemUserMessage(message));
+        }
+        else {
+            pendingPersistedParts.push(createHistoryUserMessageForRequest(source, message, this.name).content);
+            if (transientMessages.length > 0) {
+                pendingPersistedParts.push(...transientMessages.map(message => message?.content ?? message));
+                transientMessages.length = 0;
+            }
+        }
 
         if (!self_prompt && this.self_prompter.isActive()) // message is from user during self-prompting
             max_responses = 1; // force only respond to this message, then let self-prompting take over
+        let includeTransientMessages = transientMessages.length > 0;
         for (let i=0; i<max_responses; i++) {
             if (checkInterrupt()) break;
+            const transientParts = [];
+            const stateDiff = buildStateSnapshotDiff(this);
+            if (stateDiff) {
+                if (pendingPersistedParts.length > 0) {
+                    pendingPersistedParts.push(stateDiff);
+                }
+                else if (!options.transient) {
+                    await this.history.addUserContext(stateDiff);
+                    this.history.save();
+                }
+                else {
+                    transientParts.push(stateDiff);
+                }
+            }
+            if (pendingPersistedParts.length > 0) {
+                await this.history.addUserContext(pendingPersistedParts.join('\n\n'));
+                this.history.save();
+                pendingPersistedParts = [];
+            }
+            if (includeTransientMessages) {
+                transientParts.push(...transientMessages.map(message => message?.content ?? message));
+            }
             let history = this.history.getHistory();
+            const transientRequest = createTransientRequestMessage(transientParts);
+            if (transientRequest) {
+                history.push(transientRequest);
+            }
             let res = await this.prompter.promptConvo(history);
+            includeTransientMessages = false;
 
             if (isNativeToolResponse(res)) {
                 console.log(`${this.name} native tool calls from ${source}: ${formatNativeToolCallsForLog(res.tool_calls)}`);
@@ -444,15 +509,9 @@ export class Agent {
     }
 
     async openChat(message) {
-        let spokenMessage = message;
-        let remaining = '';
-        let command_name = containsCommand(message);
-        let commandStart = command_name ? message.indexOf(command_name) : -1;
-        if (commandStart !== -1) {
-            spokenMessage = spokenMessage.substring(0, commandStart);
-            remaining = message.substring(commandStart);
-        }
-        message = spokenMessage.trim() + " " + remaining;
+        const output = prepareChatMessageForOutput(message);
+        const spokenMessage = output.spokenMessage;
+        message = output.chatMessage;
         // newlines are interpreted as separate chats, which triggers spam filters. replace them with spaces
         message = message.replaceAll('\n', ' ');
 
@@ -568,10 +627,14 @@ export class Agent {
     isIdle() {
         return !this.actions.executing;
     }
+
+    isHandlingMessage() {
+        return (this.active_message_handlers || 0) > 0;
+    }
     
 
     cleanKill(msg='Killing agent process...', code=1) {
-        this.history.add('system', msg);
+        this.history.traceEvent('lifecycle_event', { message: msg, exit_code: code });
         this.bot.chat(code > 1 ? 'Restarting.': 'Exiting.');
         this.history.save();
         process.exit(code);
@@ -593,6 +656,54 @@ export class Agent {
         serverProxy.shutdown();
     }
 }
+
+
+function hasLoadedConversation(saveData) {
+    return Boolean(saveData)
+        && (Boolean(saveData.memory)
+            || (Array.isArray(saveData.turns) && saveData.turns.length > 0));
+}
+
+export function prepareChatMessageForOutput(message) {
+    let spokenMessage = String(message ?? '');
+    let remaining = '';
+    let command_name = containsCommand(spokenMessage);
+    if (command_name && !commandExists(command_name)) {
+        command_name = null;
+    }
+    const commandStart = command_name ? spokenMessage.indexOf(command_name) : -1;
+    if (commandStart !== -1) {
+        remaining = spokenMessage.substring(commandStart);
+        spokenMessage = spokenMessage.substring(0, commandStart);
+    }
+    return {
+        spokenMessage,
+        chatMessage: `${spokenMessage.trim()} ${remaining}`
+    };
+}
+
+function createHistoryUserMessageForRequest(source, message, agentName) {
+    const content = source === 'system'
+        ? `System: ${message}`
+        : source !== agentName
+            ? `${source}: ${message}`
+            : message;
+    return { role: 'user', content };
+}
+
+
+function createTransientSystemUserMessage(message) {
+    return { role: 'user', content: `System: ${message}` };
+}
+
+function createTransientRequestMessage(parts) {
+    const content = parts
+        .map(part => String(part || '').trim())
+        .filter(Boolean)
+        .join('\n\n');
+    return content ? { role: 'user', content } : null;
+}
+
 
 function formatNativeToolCallsForLog(toolCalls = []) {
     if (!Array.isArray(toolCalls) || toolCalls.length === 0) {

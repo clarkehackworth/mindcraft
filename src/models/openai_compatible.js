@@ -2,6 +2,7 @@ import OpenAIApi from 'openai';
 import { getKey, hasKey } from '../utils/keys.js';
 import { createNativeToolResponse, toOpenAIChatMessages } from './native_tools.js';
 import { HttpsProxyAgent } from 'https-proxy-agent';
+import { setLastTokenUsage } from './token_usage.js';
 
 function getProxyAgent() {
     const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy;
@@ -17,7 +18,7 @@ function getProxyAgent() {
  * This is the single transport used by OpenAI and OpenAI-compatible hosted
  * providers such as OpenRouter, SiliconFlow, Qwen, DeepSeek, Groq, Mistral,
  * Mercury, Hyperbolic, Novita, HuggingFace router, Ollama /v1, vLLM /v1.
- * Provider identity, baseUrl and keyName live in llm_providers.json; profiles
+ * Provider identity, baseUrl and keyName live in settings_llm_providers.json; profiles
  * only select provider/model.
  */
 export class OpenAICompletions {
@@ -57,6 +58,7 @@ export class OpenAICompletions {
     }
 
     async sendRequest(turns, systemMessage, stop_seq='***', tools=null) {
+        this.lastTokenUsage = null;
         const model = this.model_name || this.default_model;
         const hasTools = Array.isArray(tools) && tools.length > 0;
         let res = null;
@@ -84,6 +86,7 @@ export class OpenAICompletions {
             if (!choice) return 'No response received.';
             if (choice.finish_reason === 'length') throw new Error('Context length exceeded');
             console.log('Received.');
+            setLastTokenUsage(this, completion?.usage);
             const message = choice.message;
             if (message?.tool_calls?.length) {
                 return createNativeToolResponse(message.tool_calls, this.provider);
@@ -109,8 +112,8 @@ export class OpenAICompletions {
         imageMessages.push({
             role: 'user',
             content: [
-                { type: 'input_text', text: systemMessage },
-                { type: 'input_image', image_url: `data:image/jpeg;base64,${imageBuffer.toString('base64')}` }
+                { type: 'text', text: systemMessage },
+                { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageBuffer.toString('base64')}` } }
             ]
         });
         return this.sendRequest(imageMessages, systemMessage);

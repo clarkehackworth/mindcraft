@@ -33,7 +33,6 @@ export const actionsList = [
             'prompt': { type: 'string', description: 'A natural language prompt to guide code generation. Make a detailed step-by-step plan.' }
         },
         perform: async function(agent, prompt) {
-            // just ignore prompt - it is now in context in chat history
             if (!settings.allow_insecure_coding) { 
                 agent.openChat('newAction is disabled. Enable with allow_insecure_coding=true in settings.js');
                 return "newAction not allowed! Code writing is disabled in settings. Notify the user.";
@@ -41,7 +40,7 @@ export const actionsList = [
             let result = "";
             const actionFn = async () => {
                 try {
-                    result = await agent.coder.generateCode(agent.history);
+                    result = await agent.coder.generateCode(prompt);
                 } catch (e) {
                     result = 'Error generating code: ' + e.toString();
                 }
@@ -54,10 +53,7 @@ export const actionsList = [
         name: '!stop',
         description: 'Force stop all actions and commands that are currently executing.',
         perform: async function (agent) {
-            const stopped = await agent.actions.stop();
-            if (!stopped) {
-                return 'Stop requested, but the current action did not finish within 10 seconds. The agent process was kept alive.';
-            }
+            await agent.actions.stop();
             agent.clearBotLogs();
             agent.actions.cancelResume();
             agent.bot.emit('idle');
@@ -268,10 +264,10 @@ export const actionsList = [
     },
     {
         name: '!craftRecipe',
-        description: 'Craft the given recipe a given number of times.',
+        description: 'Craft the requested number of output items from a recipe.',
         params: {
             'recipe_name': { type: 'ItemName', description: 'The name of the output item to craft.' },
-            'num': { type: 'int', description: 'The number of times to craft the recipe. This is NOT the number of output items, as it may craft many more items depending on the recipe.', domain: [1, Number.MAX_SAFE_INTEGER] }
+            'num': { type: 'int', description: 'The desired number of output items to craft. For recipes that output multiple items, the agent will run the recipe only as many times as needed.', domain: [1, Number.MAX_SAFE_INTEGER] }
         },
         perform: runAsAction(async (agent, recipe_name, num) => {
             await skills.craftRecipe(agent.bot, recipe_name, num);

@@ -32,16 +32,15 @@ export class ActionManager {
 
     async stop({ timeoutMs = 10000 } = {}) {
         if (!this.executing) return true;
-        const startedAt = Date.now();
+        const timeout = setTimeout(() => {
+            this.agent.cleanKill(`Code execution refused stop after ${timeoutMs}ms. Killing process.`);
+        }, timeoutMs);
         while (this.executing) {
             this.agent.requestInterrupt();
             console.log('waiting for code to finish executing...');
-            if (Date.now() - startedAt >= timeoutMs) {
-                console.warn(`Code execution did not stop after ${timeoutMs}ms; leaving current action running.`);
-                return false;
-            }
             await new Promise(resolve => setTimeout(resolve, 300));
         }
+        clearTimeout(timeout);
         return true;
     } 
 
@@ -96,16 +95,7 @@ export class ActionManager {
             if (this.executing) {
                 console.log(`action "${actionLabel}" trying to interrupt current action "${this.currentActionLabel}"`);
             }
-            const previousActionLabel = this.currentActionLabel;
-            const stopped = await this.stop();
-            if (!stopped) {
-                return {
-                    success: false,
-                    message: `Action "${previousActionLabel}" is still running; could not start "${actionLabel}". Stop was requested, but the current action did not finish within 10 seconds.`,
-                    interrupted: true,
-                    timedout: false
-                };
-            }
+            await this.stop();
 
             // clear bot logs and reset interrupt code
             this.agent.clearBotLogs();

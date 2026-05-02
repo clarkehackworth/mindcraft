@@ -144,6 +144,11 @@ test('openai-compatible transport sends Chat Completions tools and normalizes to
                 create: async pack => {
                     requestPack = pack;
                     return {
+                        usage: {
+                            prompt_tokens: 100,
+                            completion_tokens: 12,
+                            prompt_tokens_details: { cached_tokens: 70 }
+                        },
                         choices: [{
                             message: {
                                 tool_calls: [{
@@ -177,6 +182,9 @@ test('openai-compatible transport sends Chat Completions tools and normalizes to
     assert.equal(isNativeToolResponse(response), true);
     assert.equal(response.provider, 'example-provider');
     assert.equal(response.tool_calls[0].name, 'report_status');
+    assert.equal(model.lastTokenUsage.input_uncached, 30);
+    assert.equal(model.lastTokenUsage.input_cached, 70);
+    assert.equal(model.lastTokenUsage.output, 12);
 });
 
 test('openai-completions transport strips tool choice even if configured', async () => {

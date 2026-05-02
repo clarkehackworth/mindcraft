@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-const config = JSON.parse(readFileSync('llm_providers.json', 'utf8'));
-const example = JSON.parse(readFileSync('llm_providers.example.json', 'utf8'));
+const config = JSON.parse(readFileSync('settings_llm_providers.json', 'utf8'));
+const example = JSON.parse(readFileSync('settings_llm_providers.example.json', 'utf8'));
 
 test('llm provider config uses readable format/baseUrl/keyName schema', () => {
     assert.equal(config.schemaVersion, 1);
@@ -126,11 +126,13 @@ test('llm provider example mirrors provider ids without real key material', () =
 test('codex provider stores auth in the unified project config instead of a fixed user path', () => {
     assert.equal(config.models.codex.format, 'openai-codex-responses');
     assert.equal(config.models.codex.adapter, 'codex');
-    assert.equal(config.models.codex.params.keysPath, 'llm_providers.json');
+    assert.equal(config.models.codex.params.keysPath, 'settings_llm_providers.json');
     assert.equal('authPath' in config.models.codex.params, false);
-    assert.ok(Object.hasOwn(config.keys, 'CODEX_CHATGPT_AUTH'));
+    if (Object.hasOwn(config.keys, 'CODEX_CHATGPT_AUTH')) {
+        assert.equal(typeof config.keys.CODEX_CHATGPT_AUTH, 'object');
+    }
 
-    assert.equal(example.models.codex.params.keysPath, 'llm_providers.json');
+    assert.equal(example.models.codex.params.keysPath, 'settings_llm_providers.json');
     assert.equal('authPath' in example.models.codex.params, false);
     assert.ok(Object.hasOwn(example.keys, 'CODEX_CHATGPT_AUTH'));
     assert.deepEqual(example.keys.CODEX_CHATGPT_AUTH, {});

@@ -2,6 +2,7 @@ import { GoogleGenAI } from '@google/genai';
 import { getKey } from '../utils/keys.js';
 import { createNativeToolResponse, normalizeGeminiFunctionCalls, toGeminiContents, toGeminiFunctionDeclarations } from './native_tools.js';
 import { ProxyAgent, setGlobalDispatcher } from 'undici';
+import { setLastTokenUsage } from './token_usage.js';
 
 function setupGeminiProxy() {
     const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy;
@@ -92,6 +93,7 @@ export class GoogleGenerativeAI {
     }
 
     async sendRequest(turns, systemMessage, stop_seq='***', tools=null) {
+        this.lastTokenUsage = null;
         console.log(tools?.length ? `Awaiting Google API response with native tool calling (${tools.length} tools)...` : 'Awaiting Google API response...');
 
         const contents = toGeminiContents(turns);
@@ -109,6 +111,7 @@ export class GoogleGenerativeAI {
             requestConfig.config.tools = [{ functionDeclarations: toGeminiFunctionDeclarations(tools) }];
         }
         const result = await this.genAI.models.generateContent(requestConfig);
+        setLastTokenUsage(this, result?.usageMetadata);
         const parts = result.candidates?.[0]?.content?.parts || [];
         const toolCalls = normalizeGeminiFunctionCalls(parts);
         if (toolCalls.length > 0) {
@@ -125,6 +128,7 @@ export class GoogleGenerativeAI {
     }
 
     async sendVisionRequest(turns, systemMessage, imageBuffer) {
+        this.lastTokenUsage = null;
         const imagePart = {
             inlineData: {
                 data: imageBuffer.toString('base64'),
@@ -150,6 +154,7 @@ export class GoogleGenerativeAI {
                 },
                 systemInstruction: systemMessage
             });
+            setLastTokenUsage(this, result?.usageMetadata);
             res = await result.text;
             console.log('Received.');
         } catch (err) {

@@ -1,5 +1,6 @@
 import { OpenAICompletions } from './openai_compatible.js';
 import { createNativeToolResponse, toResponsesInputItems } from './native_tools.js';
+import { setLastTokenUsage } from './token_usage.js';
 
 // OpenAI Responses protocol. For native tool calls this class
 // uses Responses API function-call items directly instead of the legacy GPT file.
@@ -7,6 +8,7 @@ export class OpenAIResponses extends OpenAICompletions {
     static prefix = 'openai-responses';
 
     async sendRequest(turns, systemMessage, stop_seq='***', tools=null) {
+        this.lastTokenUsage = null;
         const model = this.model_name || this.default_model;
         const hasTools = Array.isArray(tools) && tools.length > 0;
         const input = toResponsesInputItems(turns);
@@ -29,6 +31,7 @@ export class OpenAIResponses extends OpenAICompletions {
                 : `Awaiting ${this.provider} Responses API from model ${model}`);
             const response = await this.openai.responses.create(request);
             console.log('Received.');
+            setLastTokenUsage(this, response?.usage);
             const toolCalls = normalizeResponsesToolCalls(response);
             if (toolCalls.length > 0) {
                 return createNativeToolResponse(toolCalls, this.provider);
@@ -44,6 +47,18 @@ export class OpenAIResponses extends OpenAICompletions {
             console.log(err);
             return 'My brain disconnected, try again.';
         }
+    }
+
+    async sendVisionRequest(messages, systemMessage, imageBuffer) {
+        const imageMessages = [...messages];
+        imageMessages.push({
+            role: 'user',
+            content: [
+                { type: 'input_text', text: systemMessage },
+                { type: 'input_image', image_url: `data:image/jpeg;base64,${imageBuffer.toString('base64')}` }
+            ]
+        });
+        return this.sendRequest(imageMessages, systemMessage);
     }
 }
 

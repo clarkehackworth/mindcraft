@@ -8,12 +8,12 @@ import { hasKey } from '../../src/utils/keys.js';
 
 const TIMEOUT_MS = Number.parseInt(process.env.LIVE_MODEL_MATRIX_TIMEOUT_MS || '60000', 10);
 const CONCURRENCY = Number.parseInt(process.env.LIVE_MODEL_MATRIX_CONCURRENCY || '6', 10);
-const OUTPUT_DIR = process.env.LIVE_MODEL_MATRIX_OUTPUT_DIR || 'tests/results';
+const OUTPUT_DIR = process.env.LIVE_MODEL_MATRIX_OUTPUT_DIR || 'results/live-model-matrix';
 const OUTPUT_FILE = process.env.LIVE_MODEL_MATRIX_OUTPUT || path.join(OUTPUT_DIR, `live-model-matrix-${new Date().toISOString().replace(/[:.]/g, '-')}.csv`);
 const INCLUDE = process.env.LIVE_MODEL_MATRIX_INCLUDE ? new RegExp(process.env.LIVE_MODEL_MATRIX_INCLUDE, 'i') : null;
 const EXCLUDE = process.env.LIVE_MODEL_MATRIX_EXCLUDE ? new RegExp(process.env.LIVE_MODEL_MATRIX_EXCLUDE, 'i') : null;
 
-const providerConfig = JSON.parse(readFileSync('llm_providers.json', 'utf8'));
+const providerConfig = JSON.parse(readFileSync('settings_llm_providers.json', 'utf8'));
 const profilesDir = path.resolve('profiles');
 
 const tool = {

@@ -112,7 +112,8 @@ function getAvailableCommands(agent) {
     if (!agent?.blocked_actions) {
         return commands;
     }
-    return commands.filter(command => !agent.blocked_actions.includes(command.name));
+    const blocked = new Set(agent.blocked_actions);
+    return commands.filter(command => !blocked.has(command.name));
 }
 
 function paramToJsonSchema(param) {

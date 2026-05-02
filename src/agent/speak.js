@@ -67,9 +67,7 @@ async function processQueue() {
         void processQueue();
         return;
     }
-
-    const isWin = process.platform === 'win32';
-    const isMac = process.platform === 'darwin';
+    console.log(`[TTS] speaking ${txt.length} chars: ${txt}`);
 
     // wait for preprocessing if needed
     try {
@@ -83,20 +81,28 @@ async function processQueue() {
     }
 
     if (model === 'system') {
-        // system TTS
-        const cmd = isWin
-            ? `powershell -NoProfile -Command "Add-Type -AssemblyName System.Speech; \
-            $s=New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Rate=2; \
-            $s.Speak('${txt.replace(/'/g,"''")}'); $s.Dispose()"`
-            : isMac
-            ? `say "${txt.replace(/"/g,'\\"')}"`
-            : `espeak "${txt.replace(/"/g,'\\"')}"`;
-
-        exec(cmd, err => {
-            if (err) console.error('TTS error', err);
-            isSpeaking = false;
-            void processQueue();
-        });
+        // Use argv-based system TTS on macOS/Linux so punctuation such as
+        // "hello world, codex" or "hello world! I am codex" cannot be
+        // truncated or reinterpreted by a shell command line.
+        const invocation = buildSystemTTSInvocation(txt, process.platform);
+        if (invocation.mode === 'exec') {
+            exec(invocation.command, err => {
+                if (err) console.error('TTS error', err);
+                isSpeaking = false;
+                void processQueue();
+            });
+        } else {
+            const player = spawn(invocation.command, invocation.args, { stdio: 'ignore' });
+            player.on('error', err => {
+                console.error('TTS error', err);
+                isSpeaking = false;
+                void processQueue();
+            });
+            player.on('exit', () => {
+                isSpeaking = false;
+                void processQueue();
+            });
+        }
 
     } 
     else {
@@ -147,4 +153,29 @@ async function processQueue() {
             void processQueue();
         }
     }
+}
+
+export function buildSystemTTSInvocation(text, platform = process.platform) {
+    const txt = String(text ?? '');
+    if (platform === 'win32') {
+        return {
+            mode: 'exec',
+            command: `powershell -NoProfile -Command "Add-Type -AssemblyName System.Speech; \
+            $s=New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Rate=2; \
+            $s.Speak('${txt.replace(/'/g,"''")}'); $s.Dispose()"`
+        };
+    }
+    if (platform === 'darwin') {
+        const voice = process.env.MINDCRAFT_SYSTEM_TTS_VOICE;
+        return {
+            mode: 'spawn',
+            command: 'say',
+            args: voice ? ['-v', voice, txt] : [txt]
+        };
+    }
+    return {
+        mode: 'spawn',
+        command: 'espeak',
+        args: [txt]
+    };
 }

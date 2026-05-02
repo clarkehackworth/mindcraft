@@ -1,21 +1,21 @@
 {
     "cooldown": 3000,
     "conversing": {
-        "prompt_file": "prompts/_default/conversing.md"
+        "prompt_file": "prompts/conversing.md"
     },
     "coding": {
-        "prompt_file": "prompts/_default/coding.md"
+        "prompt_file": "prompts/coding.md"
     },
     "saving_memory": {
-        "prompt_file": "prompts/_default/saving_memory.md"
+        "prompt_file": "prompts/saving_memory.md"
     },
     "bot_responder": {
-        "prompt_file": "prompts/_default/bot_responder.md"
+        "prompt_file": "prompts/bot_responder.md"
     },
     "image_analysis": {
-        "prompt_file": "prompts/_default/image_analysis.md"
+        "prompt_file": "prompts/image_analysis.md"
     },
-    "speak_model": "openai/tts-1/echo",
+    "speak_model": "system",
     "modes": {
         "self_preservation": true,
         "unstuck": true,
@@ -27,185 +27,5 @@
         "elbow_room": true,
         "idle_staring": true,
         "cheat": false
-    },
-    "conversation_examples": [
-        [
-            {
-                "role": "user",
-                "content": "miner_32: Hey! What are you up to?"
-            },
-            {
-                "role": "assistant",
-                "content": "Nothing much miner_32, what do you need?"
-            }
-        ],
-        [
-            {
-                "role": "user",
-                "content": "alex: Can you help me gather wood?"
-            },
-            {
-                "role": "assistant",
-                "content": "On it. I will use the right tool to gather wood."
-            }
-        ],
-        [
-            {
-                "role": "user",
-                "content": "sam: Please stop what you are doing and come back."
-            },
-            {
-                "role": "assistant",
-                "content": "Okay, I will stop and head back."
-            }
-        ],
-        [
-            {
-                "role": "user",
-                "content": "builder: What do you see nearby?"
-            },
-            {
-                "role": "assistant",
-                "content": "I will check my surroundings."
-            }
-        ],
-        [
-            {
-                "role": "user",
-                "content": "farmer: Do you have food?"
-            },
-            {
-                "role": "assistant",
-                "content": "I will check my inventory."
-            }
-        ],
-        [
-            {
-                "role": "user",
-                "content": "rupert: Let us work together on a small house."
-            },
-            {
-                "role": "assistant",
-                "content": "Sure, I can coordinate with you and handle my part."
-            },
-            {
-                "role": "user",
-                "content": "rupert: I will build the walls if you prepare materials."
-            },
-            {
-                "role": "assistant",
-                "content": "Sounds good. I will prepare materials first."
-            }
-        ]
-    ],
-    "coding_examples": [
-        [
-            {
-                "role": "user",
-                "content": "greg: Collect 10 wood"
-            },
-            {
-                "role": "assistant",
-                "content": "```await skills.collectBlock(bot, 'oak_log', 10);\n```"
-            },
-            {
-                "role": "system",
-                "content": "Successfully collected 9 wood."
-            },
-            {
-                "role": "assistant",
-                "content": "I collected 9 oak logs, what next?"
-            }
-        ],
-        [
-            {
-                "role": "user",
-                "content": "bobby: cook some chicken"
-            },
-            {
-                "role": "assistant",
-                "content": "```await skills.smeltItem(bot, 'chicken', 8);\n```"
-            },
-            {
-                "role": "system",
-                "content": "Successfully smelted 8 chicken into 8 cooked_chicken."
-            },
-            {
-                "role": "assistant",
-                "content": "I have cooked 8 chicken."
-            }
-        ],
-        [
-            {
-                "role": "user",
-                "content": "zZZn98: come here"
-            },
-            {
-                "role": "assistant",
-                "content": "```await skills.goToPlayer(bot, 'zZZn98');\n```"
-            },
-            {
-                "role": "system",
-                "content": "Code execution finished successfully."
-            },
-            {
-                "role": "assistant",
-                "content": "Here!"
-            }
-        ],
-        [
-            {
-                "role": "user",
-                "content": "maya: go to the nearest oak log"
-            },
-            {
-                "role": "assistant",
-                "content": "```await skills.goToPosition(bot, nearestOakLog.x, nearestOakLog.y, nearestOakLog.z);\n```"
-            },
-            {
-                "role": "system",
-                "content": "Code output:\n!!Code threw exception!!  Error: ReferenceError: nearestOakLog is not defined\n Write code to fix the problem and try again."
-            },
-            {
-                "role": "assistant",
-                "content": "Apologies, I made an error. Let me try that again.```\n// I am navigating to the nearest oak log.\nlet position = world.getNearestBlock(bot, 'oak_log', 20);\nawait skills.goToPosition(bot, position.x, position.y, position.z);\n```"
-            },
-            {
-                "role": "system",
-                "content": "Arrived at location."
-            },
-            {
-                "role": "assistant",
-                "content": "I found an oak log and I am now standing next to it. What next?"
-            }
-        ],
-        [
-            {
-                "role": "user",
-                "content": "234jeb: build a little tower with a torch on the side"
-            },
-            {
-                "role": "assistant",
-                "content": "```let pos = bot.entity.position;\nfor (let i = 0; i < 5; i++) {\n    await skills.placeBlock(bot, 'dirt', pos.x, pos.y + i, pos.z);\n}\nawait skills.placeBlock(bot, 'torch', pos.x + 1, pos.y + 4, pos.z, 'side');\n```"
-            },
-            {
-                "role": "system",
-                "content": "Successfully placed 5 dirt."
-            },
-            {
-                "role": "assistant",
-                "content": "I built a little tower!"
-            }
-        ],
-        [
-            {
-                "role": "user",
-                "content": "brug: build a dirt house"
-            },
-            {
-                "role": "assistant",
-                "content": "```js\nconst position = world.getPosition(bot);\nconst startX = position.x;\nconst startY = position.y;\nconst startZ = position.z;\nconst width = 7;\nconst depth = 7;\nconst height = 4;\n\n// Build front wall (z = startZ)\nfor (let x = startX; x < startX + width; x++) {\n  for (let y = startY; y < startY + height; y++) {\n    await skills.placeBlock(bot, 'oak_planks', x, y, startZ);\n  }\n}\n\n// Build back wall (z = startZ + depth - 1)\nfor (let x = startX; x < startX + width; x++) {\n  for (let y = startY; y < startY + height; y++) {\n    await skills.placeBlock(bot, 'oak_planks', x, y, startZ + depth - 1);\n  }\n}\n\n// Build left wall (x = startX)\nfor (let z = startZ; z < startZ + depth; z++) {\n  for (let y = startY; y < startY + height; y++) {\n    await skills.placeBlock(bot, 'oak_planks', startX, y, z);\n  }\n}\n\n// Build right wall (x = startX + width - 1)\nfor (let z = startZ; z < startZ + depth; z++) {\n  for (let y = startY; y < startY + height; y++) {\n    await skills.placeBlock(bot, 'oak_planks', startX + width - 1, y, z);\n  }\n}\n\n// Build floor (y = startY)\nfor (let x = startX; x < startX + width; x++) {\n  for (let z = startZ; z < startZ + depth; z++) {\n    await skills.placeBlock(bot, 'oak_planks', x, startY, z);\n  }\n}\n\n// Build ceiling (y = startY + height - 1)\nfor (let x = startX; x < startX + width; x++) {\n  for (let z = startZ; z < startZ + depth; z++) {\n    await skills.placeBlock(bot, 'oak_planks', x, startY + height - 1, z);\n  }\n}\n```"
-            }
-        ]
-    ]
+    }
 }

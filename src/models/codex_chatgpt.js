@@ -1,12 +1,15 @@
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import path from 'path';
+import { tmpdir } from 'os';
+import { spawn } from 'child_process';
 import { createServer } from 'http';
 import { createHash, randomBytes, randomUUID } from 'crypto';
 import open from 'open';
 import { createNativeToolResponse, toResponsesInputItems } from './native_tools.js';
+import { setLastTokenUsage } from './token_usage.js';
 
 const DEFAULT_CODEX_BASE_URL = 'https://chatgpt.com/backend-api/codex';
-const DEFAULT_KEYS_PATH = 'llm_providers.json';
+const DEFAULT_KEYS_PATH = 'settings_llm_providers.json';
 const CODEX_REFRESH_TOKEN_URL = 'https://auth.openai.com/oauth/token';
 const CODEX_ISSUER = 'https://auth.openai.com';
 const CODEX_OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
@@ -14,6 +17,7 @@ const CODEX_AUTH_KEY = 'CODEX_CHATGPT_AUTH';
 const DEFAULT_ORIGINATOR = 'codex_cli_rs';
 const LOGIN_TIMEOUT_MS = 15 * 60 * 1000;
 const DEFAULT_LOGIN_PORT = 1455;
+const DEFAULT_FETCH = globalThis.fetch;
 
 export class CodexChatGPT {
     static prefix = 'codex';
@@ -70,6 +74,7 @@ export class CodexChatGPT {
     }
 
     async sendRequest(turns, systemMessage, stop_seq='***', tools=null) {
+        this.lastTokenUsage = null;
         const model = this.model_name || this.default_model;
         const hasTools = Array.isArray(tools) && tools.length > 0;
         const body = this.buildRequestBody(model, turns, systemMessage, tools);
@@ -102,6 +107,7 @@ export class CodexChatGPT {
 
             const parsed = await parseCodexResponsesSse(await response.text());
             console.log('Received.');
+            setLastTokenUsage(this, parsed.usage);
             if (parsed.toolCalls.length > 0) {
                 return createNativeToolResponse(parsed.toolCalls, this.provider);
             }
@@ -114,6 +120,19 @@ export class CodexChatGPT {
             console.log(sanitizeCodexError(err));
             return 'My brain disconnected, try again.';
         }
+    }
+
+    async sendVisionRequest(turns, systemMessage, imageBuffer) {
+        const imageMessages = [...(turns || [])];
+        imageMessages.push({
+            role: 'user',
+            content: [
+                { type: 'input_text', text: '<image>' },
+                { type: 'input_image', image_url: `data:image/jpeg;base64,${imageBuffer.toString('base64')}` },
+                { type: 'input_text', text: `</image>\n${systemMessage || 'Describe the image.'}` }
+            ]
+        });
+        return this.sendRequest(imageMessages, systemMessage);
     }
 
     buildRequestBody(model, turns, systemMessage, tools=null) {
@@ -139,7 +158,7 @@ export class CodexChatGPT {
     }
 
     async fetchResponses(endpoint, body, auth) {
-        return await fetch(endpoint, {
+        return await codexFetch(endpoint, {
             method: 'POST',
             headers: this.buildHeaders(auth),
             body: JSON.stringify(body)
@@ -212,7 +231,7 @@ export async function refreshCodexChatGPTAuth(auth, authPath = auth.authPath || 
     if (!auth.refreshToken) {
         throw new Error('Codex ChatGPT auth has no refresh token. Login again from this project.');
     }
-    const response = await fetch(CODEX_REFRESH_TOKEN_URL, {
+    const response = await codexFetch(CODEX_REFRESH_TOKEN_URL, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
@@ -307,9 +326,11 @@ export function writeKeysCodexAuth(authPath, authJson) {
         const section = getKeysSection(existing, true);
         section[CODEX_AUTH_KEY] = normalized;
         writeFileSync(resolvedAuthPath, `${JSON.stringify(existing, null, 4)}\n`, { mode: 0o600 });
+        console.log(`Saved Codex ChatGPT auth to ${resolvedAuthPath} at keys.${CODEX_AUTH_KEY}`);
         return;
     }
     writeFileSync(resolvedAuthPath, `${JSON.stringify(normalized, null, 4)}\n`, { mode: 0o600 });
+    console.log(`Saved Codex ChatGPT auth to ${resolvedAuthPath}`);
 }
 
 function extractCodexAuth(config) {
@@ -364,6 +385,7 @@ export async function parseCodexResponsesSse(sseText) {
     const toolCalls = [];
     const textDeltas = [];
     const messageTexts = [];
+    let usage = null;
     const events = sseText.split(/\n\n+/);
     for (const eventBlock of events) {
         const dataLines = eventBlock
@@ -396,17 +418,22 @@ export async function parseCodexResponsesSse(sseText) {
         if (event.type === 'response.output_item.done' && item?.type === 'message') {
             messageTexts.push(extractMessageText(item));
         }
+        if (event.response?.usage) {
+            usage = event.response.usage;
+        } else if (event.usage) {
+            usage = event.usage;
+        }
         if (event.type === 'response.failed') {
             const message = event.response?.error?.message || 'Codex Responses stream failed';
             throw new Error(message);
         }
     }
     const text = textDeltas.length > 0 ? textDeltas.join('') : messageTexts.join('');
-    return { text, toolCalls };
+    return { text, toolCalls, usage };
 }
 
 async function requestDeviceCode(baseUrl, clientId) {
-    const response = await fetch(`${baseUrl}/api/accounts/deviceauth/usercode`, {
+    const response = await codexFetch(`${baseUrl}/api/accounts/deviceauth/usercode`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ client_id: clientId })
@@ -426,7 +453,7 @@ async function requestDeviceCode(baseUrl, clientId) {
 async function pollDeviceAuthorization(baseUrl, device) {
     const started = Date.now();
     while (Date.now() - started < LOGIN_TIMEOUT_MS) {
-        const response = await fetch(`${baseUrl}/api/accounts/deviceauth/token`, {
+        const response = await codexFetch(`${baseUrl}/api/accounts/deviceauth/token`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -453,7 +480,7 @@ async function exchangeAuthorizationCodeForTokens(baseUrl, clientId, redirectUri
         client_id: clientId,
         code_verifier: pkce.code_verifier
     });
-    const response = await fetch(`${baseUrl}/oauth/token`, {
+    const response = await codexFetch(`${baseUrl}/oauth/token`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body
@@ -595,7 +622,7 @@ function waitForOAuthCallback(serverInfo, expectedState) {
                 finish(res, 400, '<h1>Codex login failed</h1><p>Missing authorization code.</p>', () => reject(new Error('Codex browser login callback did not include an authorization code.')));
                 return;
             }
-            finish(res, 200, '<!doctype html><meta charset="utf-8"><title>Login Successful</title><script>window.close();</script><body style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;padding:24px"><h1>Login Successful</h1><p>If this page does not close automatically, you can close it manually.</p></body>', () => resolve(code));
+            finish(res, 200, codexLoginClosePage(), () => resolve(code));
         };
 
         server.on('request', onRequest);
@@ -689,6 +716,30 @@ You will be redirected back to Mindcraft after login; waiting for login to compl
 `);
 }
 
+
+function codexLoginClosePage() {
+    return '<!doctype html>'
+        + '<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+        + '<title>Codex login complete</title>'
+        + '<style>'
+        + ':root{color-scheme:light dark}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:radial-gradient(circle at 50% 10%,#f7fbff 0,#f8fafc 45%,#e8edf3 100%);font-family:"OpenAI Sans",Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#111827;overflow:hidden}'
+        + '.card{position:relative;z-index:3;width:min(440px,calc(100vw - 40px));text-align:center;background:rgba(255,255,255,.9);border:1px solid rgba(148,163,184,.32);border-radius:22px;padding:34px 32px;box-shadow:0 22px 70px rgba(15,23,42,.14);backdrop-filter:blur(10px)}'
+        + '.mark{width:56px;height:56px;margin:0 auto 18px;border-radius:17px;display:grid;place-items:center;background:#111827;color:white;font-size:29px;box-shadow:0 12px 30px rgba(15,23,42,.18)}h1{font-size:26px;line-height:1.2;margin:0 0 10px;font-weight:650;letter-spacing:-.03em}p{margin:6px 0;color:#475569;font-size:15px;letter-spacing:-.01em}.hint{margin-top:18px;font-size:13px;color:#64748b}'
+        + '.confetti{position:fixed;bottom:18px;width:5px;height:9px;border-radius:1.5px;opacity:0;z-index:4;animation:confettiFly 2.7s cubic-bezier(.16,.82,.22,1) both;will-change:transform,opacity;pointer-events:none}.confetti.left{left:38px}.confetti.right{right:38px}@keyframes confettiFly{0%{opacity:0;transform:translate(0,0) rotate(0deg) scale(.7)}6%{opacity:.95}58%{opacity:.9}78%{opacity:.18}100%{opacity:0;transform:translate(var(--x),var(--y)) rotate(var(--r)) scale(.9)}}'
+        + '@media (prefers-color-scheme:dark){body{background:radial-gradient(circle at 50% 10%,#172033 0,#0f172a 48%,#020617 100%);color:#f8fafc}.card{background:rgba(15,23,42,.78);border-color:rgba(148,163,184,.22)}.mark{background:#f8fafc;color:#111827}p{color:#cbd5e1}.hint{color:#94a3b8}}'
+        + '</style>'
+        + '<body><div class="card"><div class="mark">✓</div><h1>Codex login complete</h1><p>Mindcraft is connected to ChatGPT/Codex.</p><p class="hint">You can close this page and return to the terminal.</p></div>'
+        + '<script>'
+        + '(function(){'
+        + 'var colors=["#ef4444","#f59e0b","#10b981","#3b82f6","#8b5cf6","#ec4899"];'
+        + 'function piece(side,i){var el=document.createElement("i");el.className="confetti "+side;var dir=side==="left"?1:-1;var spread=(i%12-5.5)*7;var distance=200+Math.random()*240;el.style.background=colors[i%colors.length];el.style.setProperty("--x",(dir*(distance+Math.random()*70))+"px");el.style.setProperty("--y",(-210-Math.random()*260+spread)+"px");el.style.setProperty("--r",(dir*(180+Math.random()*520))+"deg");el.style.animationDelay=(Math.random()*0.28)+"s";el.style.animationDuration=(2.15+Math.random()*0.45)+"s";document.body.appendChild(el);} '
+        + 'for(var i=0;i<72;i++){piece("left",i);piece("right",i+72);}'
+        + 'function closeTab(){try{window.open("","_self");window.close();}catch(e){}}'
+        + 'setTimeout(closeTab,1400);setTimeout(closeTab,2600);'
+        + '})();'
+        + '</script></body>';
+}
+
 function escapeHtml(value) {
     return String(value)
         .replace(/&/g, '&amp;')
@@ -700,6 +751,142 @@ function escapeHtml(value) {
 
 function printDeviceCodePrompt(verificationUrl, code) {
     console.log(`\nCodex ChatGPT login required for this project.\nOpen this URL and sign in:\n\n  ${verificationUrl}\n\nEnter this one-time code:\n\n  ${code}\n\nWaiting for login to complete...\n`);
+}
+
+
+async function codexFetch(url, init = {}) {
+    if (shouldUseFetch(url)) {
+        return await fetch(url, init);
+    }
+    try {
+        return await curlFetch(url, init);
+    } catch (curlError) {
+        console.warn(`System curl transport failed for Codex HTTP request; retrying with Node fetch: ${sanitizeCodexError(curlError)}`);
+        return await fetch(url, init);
+    }
+}
+
+function shouldUseFetch(url) {
+    if (globalThis.fetch !== DEFAULT_FETCH) {
+        return true;
+    }
+    try {
+        const { hostname } = new URL(String(url));
+        return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+    } catch {
+        return false;
+    }
+}
+
+function isFetchTransportError(error) {
+    return error?.message === 'fetch failed' || error?.cause?.code || Array.isArray(error?.cause?.errors);
+}
+
+async function curlFetch(url, init = {}) {
+    const tempDir = mkdtempSync(path.join(tmpdir(), 'mindcraft-codex-curl-'));
+    const headersPath = path.join(tempDir, 'headers.txt');
+    const bodyPath = path.join(tempDir, 'body.bin');
+    const requestBodyPath = path.join(tempDir, 'request-body.bin');
+    const configPath = path.join(tempDir, 'curl.conf');
+    try {
+        const method = init.method || (init.body ? 'POST' : 'GET');
+        const config = [
+            `url = ${curlQuote(String(url))}`,
+            `request = ${curlQuote(method)}`,
+            `dump-header = ${curlQuote(headersPath)}`,
+            `output = ${curlQuote(bodyPath)}`,
+            'silent',
+            'show-error',
+            'location',
+            'max-time = 300'
+        ];
+
+        for (const [name, value] of headerEntries(init.headers)) {
+            config.push(`header = ${curlQuote(`${name}: ${value}`)}`);
+        }
+
+        if (init.body !== undefined && init.body !== null) {
+            writeFileSync(requestBodyPath, bodyToString(init.body));
+            config.push(`data-binary = ${curlQuote(`@${requestBodyPath}`)}`);
+        }
+
+        writeFileSync(configPath, `${config.join('\n')}\n`, { mode: 0o600 });
+        await runCurl(configPath);
+        const headersText = readFileSync(headersPath, 'utf8');
+        const body = readFileSync(bodyPath);
+        const { status, headers } = parseCurlHeaders(headersText);
+        return new Response(body, { status, headers });
+    } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+    }
+}
+
+function runCurl(configPath) {
+    return new Promise((resolve, reject) => {
+        const child = spawn('curl', ['--config', configPath], { stdio: ['ignore', 'ignore', 'pipe'] });
+        let stderr = '';
+        child.stderr.on('data', chunk => {
+            stderr += chunk.toString();
+        });
+        child.on('error', reject);
+        child.on('close', code => {
+            if (code === 0) {
+                resolve();
+            } else {
+                reject(new Error(`curl exited with code ${code}: ${stderr.trim()}`));
+            }
+        });
+    });
+}
+
+function headerEntries(headers = {}) {
+    if (headers instanceof Headers) {
+        return Array.from(headers.entries());
+    }
+    if (Array.isArray(headers)) {
+        return headers;
+    }
+    return Object.entries(headers || {});
+}
+
+function bodyToString(body) {
+    if (body instanceof URLSearchParams) {
+        return body.toString();
+    }
+    if (Buffer.isBuffer(body)) {
+        return body;
+    }
+    return String(body);
+}
+
+function curlQuote(value) {
+    return `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+function parseCurlHeaders(headersText) {
+    const blocks = headersText.trim().split(/\r?\n\r?\n/).filter(Boolean);
+    const block = blocks[blocks.length - 1] || '';
+    const lines = block.split(/\r?\n/);
+    const statusMatch = lines.shift()?.match(/^HTTP\/\S+\s+(\d+)/);
+    const status = statusMatch ? Number.parseInt(statusMatch[1], 10) : 0;
+    const headers = new Headers();
+    for (const line of lines) {
+        const idx = line.indexOf(':');
+        if (idx > 0) {
+            headers.append(line.slice(0, idx).trim(), line.slice(idx + 1).trim());
+        }
+    }
+    return { status, headers };
+}
+
+function formatFetchError(error) {
+    const cause = error?.cause;
+    const nestedCodes = Array.isArray(cause?.errors)
+        ? cause.errors.map(item => item.code).filter(Boolean).join(',')
+        : '';
+    return [error?.message || String(error), cause?.code, nestedCodes, cause?.message]
+        .filter(Boolean)
+        .join(' | ');
 }
 
 function isInteractiveTerminal() {
@@ -743,7 +930,7 @@ function extractErrorMessage(body) {
 }
 
 function sanitizeCodexError(error) {
-    return String(error?.message || error)
+    return formatFetchError(error)
         .replace(/Bearer\s+[A-Za-z0-9._-]+/g, 'Bearer [REDACTED_TOKEN]')
         .replace(/(access_token|refresh_token|id_token)":"[^"]+"/g, '$1":"[REDACTED_TOKEN]"')
         .slice(0, 500);

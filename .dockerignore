@@ -2,5 +2,6 @@
 node_modules
 bots/*/
 !bots/*
-keys.json
-llm_providers.json
+settings_llm_providers.json
+results
+tests/results

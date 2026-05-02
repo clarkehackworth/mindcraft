@@ -266,12 +266,12 @@ export function toOpenAIChatMessages(turns = [], systemMessage = '') {
                 content: stringifyToolResult(turn.content)
             });
         } else if (turn?.role === 'system') {
-            messages.push({ role: 'system', content: stringifyToolResult(turn.content) });
+            messages.push({ role: 'user', content: `SYSTEM: ${stringifyToolResult(turn.content)}` });
         } else if (turn?.role === 'assistant' || turn?.role === 'user') {
-            messages.push({ role: turn.role, content: stringifyToolResult(turn.content) });
+            messages.push({ role: turn.role, content: toOpenAIChatContent(turn.content) });
         }
     }
-    if (messages.length === 0 || messages.every(message => message.role === 'system')) {
+    if (messages.length === 0) {
         messages.push({ role: 'user', content: '_' });
     }
     return messages;
@@ -299,7 +299,7 @@ export function toResponsesInputItems(turns = []) {
             items.push({
                 type: 'message',
                 role: turn.role,
-                content: [{ type: turn.role === 'assistant' ? 'output_text' : 'input_text', text: stringifyToolResult(turn.content) }]
+                content: toResponsesMessageContent(turn.content, turn.role)
             });
         } else if (turn?.role === 'system') {
             items.push({
@@ -342,9 +342,9 @@ export function toAnthropicMessages(turns = []) {
                 }]
             });
         } else if (turn?.role === 'assistant') {
-            messages.push({ role: 'assistant', content: stringifyToolResult(turn.content) });
+            messages.push({ role: 'assistant', content: toAnthropicMessageContent(turn.content) });
         } else if (turn?.role === 'user') {
-            messages.push({ role: 'user', content: stringifyToolResult(turn.content) });
+            messages.push({ role: 'user', content: toAnthropicMessageContent(turn.content) });
         } else if (turn?.role === 'system') {
             messages.push({ role: 'user', content: `SYSTEM: ${stringifyToolResult(turn.content)}` });
         }
@@ -402,6 +402,47 @@ function toOpenAIChatToolCall(call) {
             arguments: normalizeArguments(call.arguments)
         }
     };
+}
+
+function toOpenAIChatContent(content) {
+    if (!Array.isArray(content)) {
+        return stringifyToolResult(content);
+    }
+    return content.map(part => {
+        if (part?.type === 'input_text') {
+            return { type: 'text', text: stringifyToolResult(part.text) };
+        }
+        if (part?.type === 'input_image') {
+            return { type: 'image_url', image_url: { url: part.image_url || part.imageUrl || part.url } };
+        }
+        if (part?.type === 'image_url' && typeof part.image_url === 'string') {
+            return { ...part, image_url: { url: part.image_url } };
+        }
+        return part;
+    });
+}
+
+function toResponsesMessageContent(content, role) {
+    if (!Array.isArray(content)) {
+        return [{ type: role === 'assistant' ? 'output_text' : 'input_text', text: stringifyToolResult(content) }];
+    }
+    return content.map(part => {
+        if (part?.type === 'text') {
+            return { type: role === 'assistant' ? 'output_text' : 'input_text', text: stringifyToolResult(part.text) };
+        }
+        if (part?.type === 'image_url') {
+            const imageUrl = typeof part.image_url === 'string' ? part.image_url : part.image_url?.url;
+            return { type: 'input_image', image_url: imageUrl };
+        }
+        return part;
+    });
+}
+
+function toAnthropicMessageContent(content) {
+    if (!Array.isArray(content)) {
+        return stringifyToolResult(content);
+    }
+    return content;
 }
 
 function normalizeAlternatingMessages(messages) {

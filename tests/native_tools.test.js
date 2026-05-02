@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
     commandToToolDefinition,
+    getCommandToolDefinitions,
     executeCommandToolCall
 } from '../src/agent/commands/tool_adapter.js';
 import {
@@ -34,6 +35,44 @@ test('command schema conversion preserves required and optional parameters', () 
     assert.equal(tool.function.parameters.properties.count.type, 'integer');
     assert.equal(tool.function.parameters.properties.count.minimum, 1);
     assert.equal(tool.function.parameters.properties.count.maximum, 5);
+});
+
+test('native command tool schemas are stable across repeated builds', () => {
+    const agent = { blocked_actions: ['!stop', '!stats'] };
+    const first = getCommandToolDefinitions(agent);
+    const firstJson = JSON.stringify(first);
+
+    for (let i = 0; i < 5; i++) {
+        assert.equal(JSON.stringify(getCommandToolDefinitions(agent)), firstJson);
+    }
+
+    assert.deepEqual(
+        getCommandToolDefinitions({ blocked_actions: ['!stats', '!stop'] }),
+        first,
+        'blocked action input order must not affect schema order or content'
+    );
+});
+
+test('blocked native tools preserve source command order as a subsequence', () => {
+    const allTools = getCommandToolDefinitions({ blocked_actions: [] });
+    const blocked = new Set(['!stats', '!inventory', '!nearbyBlocks']);
+    const filteredTools = getCommandToolDefinitions({ blocked_actions: Array.from(blocked) });
+
+    const allNames = allTools.map(tool => tool.function.name);
+    const filteredNames = filteredTools.map(tool => tool.function.name);
+    const expectedNames = allNames.filter(name => !blocked.has(`!${name}`));
+
+    assert.deepEqual(filteredNames, expectedNames);
+});
+
+test('craftRecipe tool asks for output item count', () => {
+    const craftTool = getCommandToolDefinitions({ blocked_actions: [] })
+        .find(tool => tool.function.name === 'craftRecipe');
+
+    assert.ok(craftTool);
+    assert.match(craftTool.function.description, /output items/i);
+    assert.match(craftTool.function.parameters.properties.num.description, /output items/i);
+    assert.doesNotMatch(craftTool.function.parameters.properties.num.description, /NOT the number of output items/);
 });
 
 test('native tool response normalizes and parses OpenAI-compatible tool calls', () => {
@@ -115,6 +154,80 @@ test('native tool turns serialize to protocol-specific tool result fields', () =
     const gemini = nativeTools.toGeminiContents(turns);
     assert.equal(gemini[1].parts[1].functionCall.name, 'sample');
     assert.equal(gemini[2].parts[0].functionResponse.name, 'sample');
+});
+
+test('multimodal message content keeps protocol-specific image payloads', () => {
+    const imageUrl = 'data:image/jpeg;base64,abc123';
+    const turns = [{
+        role: 'user',
+        content: [
+            { type: 'text', text: 'describe this' },
+            { type: 'image_url', image_url: { url: imageUrl } }
+        ]
+    }];
+
+    const openAI = nativeTools.toOpenAIChatMessages(turns);
+    assert.deepEqual(openAI[0].content, turns[0].content);
+
+    const responses = nativeTools.toResponsesInputItems(turns);
+    assert.deepEqual(responses[0].content, [
+        { type: 'input_text', text: 'describe this' },
+        { type: 'input_image', image_url: imageUrl }
+    ]);
+
+    const anthropicTurns = [{
+        role: 'user',
+        content: [
+            { type: 'text', text: 'describe this' },
+            { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: 'abc123' } }
+        ]
+    }];
+    const anthropic = nativeTools.toAnthropicMessages(anthropicTurns);
+    assert.deepEqual(anthropic[0].content, anthropicTurns[0].content);
+});
+
+test('Responses multimodal content converts back to Chat Completions shape', () => {
+    const imageUrl = 'data:image/jpeg;base64,abc123';
+    const turns = [{
+        role: 'user',
+        content: [
+            { type: 'input_text', text: 'describe this' },
+            { type: 'input_image', image_url: imageUrl }
+        ]
+    }];
+
+    const openAI = nativeTools.toOpenAIChatMessages(turns);
+    assert.deepEqual(openAI[0].content, [
+        { type: 'text', text: 'describe this' },
+        { type: 'image_url', image_url: { url: imageUrl } }
+    ]);
+});
+
+test('history system turns are downgraded to user messages for provider protocols', () => {
+    const turns = [
+        { role: 'system', content: 'runtime state changed' },
+        { role: 'user', content: 'hello' }
+    ];
+
+    const openAI = nativeTools.toOpenAIChatMessages(turns, 'stable system prompt');
+    assert.equal(openAI.filter(message => message.role === 'system').length, 1);
+    assert.equal(openAI[0].content, 'stable system prompt');
+    assert.equal(openAI[1].role, 'user');
+    assert.match(openAI[1].content, /^SYSTEM: runtime state changed/);
+
+    const responses = nativeTools.toResponsesInputItems(turns);
+    assert.equal(responses[0].role, 'user');
+    assert.match(responses[0].content[0].text, /^SYSTEM: runtime state changed/);
+
+    const anthropic = nativeTools.toAnthropicMessages(turns);
+    assert.ok(anthropic.every(message => message.role !== 'system'));
+    assert.equal(anthropic[0].role, 'user');
+    assert.match(anthropic[0].content, /^SYSTEM: runtime state changed/);
+
+    const gemini = nativeTools.toGeminiContents(turns);
+    assert.ok(gemini.every(content => content.role !== 'system'));
+    assert.equal(gemini[0].role, 'user');
+    assert.match(gemini[0].parts[0].text, /^SYSTEM: runtime state changed/);
 });
 
 test('native tool turn repair drops orphan results and can synthesize missing results', () => {

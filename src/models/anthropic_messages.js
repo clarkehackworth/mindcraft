@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { getKey } from '../utils/keys.js';
 import { createNativeToolResponse, normalizeAnthropicToolUse, toAnthropicMessages, toAnthropicTools } from './native_tools.js';
+import { setLastTokenUsage } from './token_usage.js';
 
 // Anthropic Messages protocol implementation.
 export class AnthropicMessages {
@@ -27,6 +28,7 @@ export class AnthropicMessages {
     }
 
     async sendRequest(turns, systemMessage, stop_seq='***', tools=null) {
+        this.lastTokenUsage = null;
         const messages = toAnthropicMessages(turns);
         let res = null;
         try {
@@ -51,6 +53,7 @@ export class AnthropicMessages {
             const resp = await this.anthropic.messages.create(requestConfig);
 
             console.log('Received.');
+            setLastTokenUsage(this, resp?.usage);
             const toolCalls = normalizeAnthropicToolUse(resp.content);
             if (toolCalls.length > 0) {
                 return createNativeToolResponse(toolCalls, this.provider);

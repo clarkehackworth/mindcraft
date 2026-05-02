@@ -81,7 +81,7 @@
             "format": "openai-codex-responses",
             "adapter": "codex",
             "params": {
-                "keysPath": "llm_providers.json"
+                "keysPath": "settings_llm_providers.json"
             },
             "comment": "When the codex profile is selected, Mindcraft logs in through this project and stores ChatGPT auth in keys.CODEX_CHATGPT_AUTH. No fixed ~/.codex path is read."
         },

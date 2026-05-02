@@ -47,7 +47,7 @@ const apiMap = await (async () => {
 
 
 function loadRegistry(unifiedPathOverride, registryPathOverride, filename, label, section) {
-    const unifiedPath = unifiedPathOverride || path.join(process.cwd(), 'llm_providers.json');
+    const unifiedPath = unifiedPathOverride || path.join(process.cwd(), 'settings_llm_providers.json');
     if (existsSync(unifiedPath)) {
         try {
             const unified = JSON.parse(readFileSync(unifiedPath, 'utf8'));
@@ -125,7 +125,7 @@ function normalizeProviderConfig(providerName, provider) {
 function apiFromFormat(format) {
     const normalized = String(format || '').toLowerCase();
     const aliases = {
-        // Canonical protocol names used by llm_providers.json.
+        // Canonical protocol names used by settings_llm_providers.json.
         'openai-completions': 'openai-completions',
         'openai-responses': 'openai-responses',
         'anthropic-messages': 'anthropic-messages',

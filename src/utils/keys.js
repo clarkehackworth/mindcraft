@@ -6,7 +6,7 @@ let keys = {};
 try {
     keys = readKeysConfig();
 } catch (err) {
-    console.warn('llm_providers.json keys not found. Defaulting to environment variables.'); // still works with local models
+    console.warn('settings_llm_providers.json keys not found. Defaulting to environment variables.'); // still works with local models
 }
 
 export function getKey(name) {
@@ -18,7 +18,7 @@ export function getKey(name) {
         key = getCodexGeneratedOpenAIKey();
     }
     if (!key) {
-        throw new Error(`API key "${name}" not found in llm_providers.json keys or environment variables!`);
+        throw new Error(`API key "${name}" not found in settings_llm_providers.json keys or environment variables!`);
     }
     return key;
 }
@@ -28,7 +28,7 @@ export function hasKey(name) {
 }
 
 function readKeysConfig() {
-    const unifiedPath = process.env.MINDCRAFT_LLM_PROVIDERS_PATH || './llm_providers.json';
+    const unifiedPath = process.env.MINDCRAFT_LLM_PROVIDERS_PATH || './settings_llm_providers.json';
     try {
         const unified = JSON.parse(readFileSync(unifiedPath, 'utf8'));
         if (unified?.keys && typeof unified.keys === 'object') {

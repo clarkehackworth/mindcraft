@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -60,13 +60,15 @@ test('Codex SSE parser extracts Responses function_call events', async () => {
         'data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_1","name":"report_status","arguments":"{\\"status\\":\\"ok\\"}"}}',
         '',
         'event: response.completed',
-        'data: {"type":"response.completed","response":{"id":"resp_1"}}',
+        'data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":60},"output_tokens":8}}}',
         ''
     ].join('\n');
 
     const parsed = await parseCodexResponsesSse(sse);
     assert.equal(parsed.toolCalls[0].function.name, 'report_status');
     assert.equal(parsed.toolCalls[0].function.arguments, '{"status":"ok"}');
+    assert.equal(parsed.usage.input_tokens, 100);
+    assert.equal(parsed.usage.input_tokens_details.cached_tokens, 60);
 });
 
 test('Codex SSE parser prefers text deltas over final message to avoid duplicate text', async () => {
@@ -191,7 +193,35 @@ test('Codex adapter can still read raw auth.json style files when explicitly con
     }
 });
 
-test('Codex adapter still supports legacy unified llm_providers.json auth storage', () => {
+
+test('Codex login persists auth inside the unified settings LLM provider registry', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'codex-unified-settings-test-'));
+    const keysPath = path.join(dir, 'settings_llm_providers.json');
+    writeFileSync(keysPath, JSON.stringify({
+        keys: { CODEX_CHATGPT_AUTH: {} },
+        models: { codex: { format: 'openai-codex-responses' } },
+        embeddings: {}
+    }, null, 4));
+    try {
+        const auth = await ensureCodexChatGPTAuth({
+            keysPath,
+            allowLogin: true,
+            loginRunner: async ({ keysPath: loginKeysPath }) => {
+                assert.equal(loginKeysPath, keysPath);
+                return authFixture();
+            }
+        });
+        const saved = JSON.parse(readFileSync(keysPath, 'utf8'));
+        assert.equal(auth.accessToken, 'access-token-test');
+        assert.equal(saved.models.codex.format, 'openai-codex-responses');
+        assert.equal(saved.keys.CODEX_CHATGPT_AUTH.tokens.access_token, 'access-token-test');
+        assert.equal(saved.tokens, undefined);
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('Codex adapter still supports legacy unified settings_llm_providers.json auth storage', () => {
     const { keysPath, dir, cleanup } = writeTempKeys({ includeAuth: false });
     try {
         writeKeysCodexAuth(keysPath, authFixture());
@@ -204,10 +234,10 @@ test('Codex adapter still supports legacy unified llm_providers.json auth storag
 });
 
 
-test('Codex adapter defaults to project llm_providers.json instead of ~/.codex auth', () => {
+test('Codex adapter defaults to project settings_llm_providers.json instead of ~/.codex auth', () => {
     const model = new CodexChatGPT('gpt-5.5', 'https://example.test/backend-api/codex', {});
-    assert.equal(model.authPath, 'llm_providers.json');
-    assert.equal(model.keysPath, 'llm_providers.json');
+    assert.equal(model.authPath, 'settings_llm_providers.json');
+    assert.equal(model.keysPath, 'settings_llm_providers.json');
 });
 
 test('Codex adapter starts local login runner when configured auth path is missing', async () => {
@@ -272,9 +302,51 @@ test('Codex adapter sends native-login Responses request and normalizes tool cal
     }
 });
 
+test('Codex adapter sends vision images as Responses input_image content', async () => {
+    const { keysPath, cleanup } = writeTempKeys();
+    const originalFetch = globalThis.fetch;
+    const requests = [];
+    globalThis.fetch = async (url, init) => {
+        requests.push({ url, init, body: JSON.parse(init.body) });
+        return new Response([
+            'event: response.output_text.delta',
+            'data: {"type":"response.output_text.delta","delta":"I see stone."}',
+            '',
+            'event: response.completed',
+            'data: {"type":"response.completed","response":{"id":"resp_1"}}',
+            ''
+        ].join('\n'), {
+            status: 200,
+            headers: { 'content-type': 'text/event-stream' }
+        });
+    };
+
+    try {
+        const model = new CodexChatGPT('gpt-5.5', 'https://example.test/backend-api/codex', { keysPath, sessionId: 'vision-session-test' });
+        const response = await model.sendVisionRequest(
+            [{ role: 'user', content: 'look around' }],
+            'Describe the Minecraft screenshot.',
+            Buffer.from('image-bytes')
+        );
+        assert.equal(response, 'I see stone.');
+
+        const visionMessage = requests[0].body.input.at(-1);
+        assert.equal(visionMessage.type, 'message');
+        assert.equal(visionMessage.role, 'user');
+        assert.deepEqual(visionMessage.content, [
+            { type: 'input_text', text: '<image>' },
+            { type: 'input_image', image_url: `data:image/jpeg;base64,${Buffer.from('image-bytes').toString('base64')}` },
+            { type: 'input_text', text: '</image>\nDescribe the Minecraft screenshot.' }
+        ]);
+    } finally {
+        globalThis.fetch = originalFetch;
+        cleanup();
+    }
+});
+
 test('Codex adapter keeps prompt cache key stable across multi-turn tool replay', () => {
     const model = new CodexChatGPT('gpt-5.5', 'https://example.test/backend-api/codex', {
-        keysPath: 'llm_providers.json',
+        keysPath: 'settings_llm_providers.json',
         sessionId: 'stable-cache-session'
     });
     const turns = [
@@ -318,7 +390,7 @@ async function waitFor(fn, timeoutMs = 1000) {
 
 function writeTempKeys({ includeAuth = true } = {}) {
     const dir = mkdtempSync(path.join(tmpdir(), 'codex-keys-test-'));
-    const keysPath = path.join(dir, 'llm_providers.json');
+    const keysPath = path.join(dir, 'settings_llm_providers.json');
     const keys = { OPENAI_API_KEY: '' };
     if (includeAuth) keys.CODEX_CHATGPT_AUTH = authFixture();
     writeFileSync(keysPath, JSON.stringify(keys));

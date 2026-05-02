@@ -1,5 +1,4 @@
 import { readFileSync, mkdirSync, writeFileSync} from 'fs';
-import { Examples } from '../utils/examples.js';
 import { getCommandDocs } from '../agent/commands/index.js';
 import { getCommandToolDefinitions, getNativeToolDocs } from '../agent/commands/tool_adapter.js';
 import { isNativeToolResponse } from './native_tools.js';
@@ -22,6 +21,19 @@ const PROMPT_FILE_KEYS = [
     'image_analysis',
     'goal_setting'
 ];
+
+
+export function stripVolatileConversationPlaceholders(prompt) {
+    return String(prompt || '')
+        .replaceAll('$SELF_PROMPT', '')
+        .replace(/^.*\$MEMORY.*(?:\r?\n)?/gm, '')
+        .replace(/^\s*\$STATS\s*(?:\r?\n)?/gm, '')
+        .replace(/^\s*\$INVENTORY\s*(?:\r?\n)?/gm, '')
+        .replace(/^.*\$COMMAND_DOCS.*(?:\r?\n)?/gm, '')
+        .replace(/^.*\$EXAMPLES.*(?:\r?\n)?/gm, '')
+        .replace(/\n{3,}/g, '\n\n')
+        .trimEnd();
+}
 
 export class Prompter {
     constructor(agent, profile) {
@@ -54,9 +66,6 @@ export class Prompter {
         // base overrides default, individual overrides base
         resolvePromptFileRefs(this.profile, defaults_dir);
 
-        this.convo_examples = null;
-        this.coding_examples = null;
-        
         let name = this.profile.name;
         this.cooldown = this.profile.cooldown ? this.profile.cooldown : 0;
         this.last_prompt_time = 0;
@@ -124,35 +133,18 @@ export class Prompter {
         return this.profile.use_native_tools !== false && Boolean(this.chat_model?.supportsNativeToolCalls);
     }
 
-    async initExamples() {
+    async initPromptResources() {
         try {
-            this.convo_examples = new Examples(this.embedding_model, settings.num_examples);
-            this.coding_examples = new Examples(this.embedding_model, settings.num_examples);
-            const conversationExamples = this.isNativeToolMode()
-                ? sanitizeNativeToolExamples(this.profile.conversation_examples)
-                : this.profile.conversation_examples;
-            
-            // Wait for both examples to load before proceeding
-            await Promise.all([
-                this.convo_examples.load(conversationExamples),
-                this.coding_examples.load(this.profile.coding_examples),
-                this.skill_libary.initSkillLibrary()
-            ]).catch(error => {
-                // Preserve error details
-                console.error('Failed to initialize examples. Error details:', error);
-                console.error('Stack trace:', error.stack);
-                throw error;
-            });
-
-            console.log('Examples initialized.');
+            await this.skill_libary.initSkillLibrary();
+            console.log('Prompt resources initialized.');
         } catch (error) {
-            console.error('Failed to initialize examples:', error);
+            console.error('Failed to initialize prompt resources:', error);
             console.error('Stack trace:', error.stack);
-            throw error; // Re-throw with preserved details
+            throw error;
         }
     }
 
-    async replaceStrings(prompt, messages, examples=null, to_summarize=[], last_goals=null) {
+    async replaceStrings(prompt, messages, to_summarize=[], last_goals=null) {
         prompt = prompt.replaceAll('$NAME', this.agent.name);
 
         if (prompt.includes('$STATS')) {
@@ -173,17 +165,13 @@ export class Prompter {
             prompt = prompt.replaceAll('$COMMAND_DOCS', docs);
         }
         if (prompt.includes('$CODE_DOCS')) {
-            const code_task_content = messages.slice().reverse().find(msg =>
-                msg.role !== 'system' && msg.content.includes('!newAction(')
-            )?.content?.match(/!newAction\((.*?)\)/)?.[1] || '';
+            const code_task_content = extractCodeTaskContent(messages);
 
             prompt = prompt.replaceAll(
                 '$CODE_DOCS',
                 await this.skill_libary.getRelevantSkillDocs(code_task_content, settings.relevant_docs_count)
             );
         }
-        if (prompt.includes('$EXAMPLES') && examples !== null)
-            prompt = prompt.replaceAll('$EXAMPLES', await examples.createExampleMessage(messages));
         if (prompt.includes('$MEMORY'))
             prompt = prompt.replaceAll('$MEMORY', this.agent.history.memory);
         if (prompt.includes('$TO_SUMMARIZE'))
@@ -241,17 +229,17 @@ export class Prompter {
                 return '';
             }
 
-            let prompt = this.profile.conversing;
-            prompt = await this.replaceStrings(prompt, messages, this.convo_examples);
+            const prompt = await this.buildConversationSystemPrompt(messages);
+            const requestMessages = await this.buildConversationMessages(messages);
             let generation;
 
             try {
                 const tools = this.isNativeToolMode() ? getCommandToolDefinitions(this.agent) : null;
-                this.agent.history.traceLLMRequest('conversation', this.chat_model, prompt, messages, tools);
-                generation = await this.chat_model.sendRequest(messages, prompt, '***', tools);
+                this.agent.history.traceLLMRequest('conversation', this.chat_model, prompt, requestMessages, tools);
+                generation = await this.chat_model.sendRequest(requestMessages, prompt, '***', tools);
                 this.agent.history.traceLLMResponse('conversation', this.chat_model, generation);
                 if (isNativeToolResponse(generation)) {
-                    await this._saveLog(prompt, messages, JSON.stringify(generation), 'conversation');
+                    await this._saveLog(prompt, requestMessages, JSON.stringify(generation), 'conversation');
                     return generation;
                 }
                 if (typeof generation !== 'string') {
@@ -259,7 +247,7 @@ export class Prompter {
                     throw new Error('Generated response is not a string');
                 }
                 console.log("Generated response:", generation);
-                await this._saveLog(prompt, messages, generation, 'conversation');
+                await this._saveLog(prompt, requestMessages, generation, 'conversation');
 
             } catch (error) {
                 this.agent.history.traceLLMError('conversation', this.chat_model, error);
@@ -289,6 +277,15 @@ export class Prompter {
         return '';
     }
 
+    async buildConversationSystemPrompt(messages) {
+        const stableTemplate = stripVolatileConversationPlaceholders(this.profile.conversing);
+        return await this.replaceStrings(stableTemplate, messages);
+    }
+
+    async buildConversationMessages(messages) {
+        return messages;
+    }
+
     getTextCommandFallbackDocs() {
         const docs = getCommandDocs(this.agent);
         if (this.profile.use_native_tools === false) {
@@ -305,7 +302,7 @@ export class Prompter {
         this.awaiting_coding = true;
         await this.checkCooldown();
         let prompt = this.profile.coding;
-        prompt = await this.replaceStrings(prompt, messages, this.coding_examples);
+        prompt = await this.replaceStrings(prompt, messages);
 
         this.agent.history.traceLLMRequest('coding', this.code_model, prompt, messages);
         let resp = await this.code_model.sendRequest(messages, prompt);
@@ -315,14 +312,14 @@ export class Prompter {
         return resp;
     }
 
-    async promptMemSaving(to_summarize) {
+    async promptCompactSummary(to_summarize) {
         await this.checkCooldown();
         let prompt = this.profile.saving_memory;
-        prompt = await this.replaceStrings(prompt, null, null, to_summarize);
-        this.agent.history.traceLLMRequest('memSaving', this.chat_model, prompt, to_summarize);
+        prompt = await this.replaceStrings(prompt, null, to_summarize);
+        this.agent.history.traceLLMRequest('compactSummary', this.chat_model, prompt, to_summarize);
         let resp = await this.chat_model.sendRequest([], prompt);
-        this.agent.history.traceLLMResponse('memSaving', this.chat_model, resp);
-        await this._saveLog(prompt, to_summarize, resp, 'memSaving');
+        this.agent.history.traceLLMResponse('compactSummary', this.chat_model, resp);
+        await this._saveLog(prompt, to_summarize, resp, 'compactSummary');
         if (resp?.includes('</think>')) {
             const [_, afterThink] = resp.split('</think>');
             resp = afterThink;
@@ -330,12 +327,16 @@ export class Prompter {
         return resp;
     }
 
+    async promptMemSaving(to_summarize) {
+        return this.promptCompactSummary(to_summarize);
+    }
+
     async promptShouldRespondToBot(new_message) {
         await this.checkCooldown();
         let prompt = this.profile.bot_responder;
         let messages = this.agent.history.getHistory();
         messages.push({role: 'user', content: new_message});
-        prompt = await this.replaceStrings(prompt, null, null, messages);
+        prompt = await this.replaceStrings(prompt, null, messages);
         this.agent.history.traceLLMRequest('botResponder', this.chat_model, prompt, messages);
         let res = await this.chat_model.sendRequest([], prompt);
         this.agent.history.traceLLMResponse('botResponder', this.chat_model, res);
@@ -345,7 +346,7 @@ export class Prompter {
     async promptVision(messages, imageBuffer) {
         await this.checkCooldown();
         let prompt = this.profile.image_analysis;
-        prompt = await this.replaceStrings(prompt, messages, null, null, null);
+        prompt = await this.replaceStrings(prompt, messages);
         this.agent.history.traceLLMRequest('vision', this.vision_model, prompt, messages);
         const res = await this.vision_model.sendVisionRequest(messages, prompt, imageBuffer);
         this.agent.history.traceLLMResponse('vision', this.vision_model, res);
@@ -359,7 +360,7 @@ export class Prompter {
 
         let user_message = 'Use the below info to determine what goal to target next\n\n';
         user_message += '$LAST_GOALS\n$STATS\n$INVENTORY\n$CONVO';
-        user_message = await this.replaceStrings(user_message, messages, null, null, last_goals);
+        user_message = await this.replaceStrings(user_message, messages, null, last_goals);
         let user_messages = [{role: 'user', content: user_message}];
 
         this.agent.history.traceLLMRequest('goalSetting', this.chat_model, system_message, user_messages);
@@ -412,18 +413,6 @@ export class Prompter {
     }
 }
 
-export function sanitizeNativeToolExamples(examples = []) {
-    if (!Array.isArray(examples)) return [];
-    return examples.filter(example =>
-        Array.isArray(example) && !example.some(turn => containsLegacyToolSyntax(turn?.content))
-    );
-}
-
-function containsLegacyToolSyntax(content) {
-    if (typeof content !== 'string') return false;
-    return /(^|\s)![A-Za-z_][A-Za-z0-9_]*\b|\*used\s+[A-Za-z_][A-Za-z0-9_]*\*/i.test(content);
-}
-
 function resolvePromptFileRefs(profile, defaultBaseDir) {
     for (const key of PROMPT_FILE_KEYS) {
         const value = profile[key];
@@ -459,4 +448,20 @@ function hasModelSelection(profile) {
     return ['provider', 'api', 'model'].some(key =>
         typeof profile[key] === 'string' && profile[key].trim().length > 0
     );
+}
+
+function extractCodeTaskContent(messages) {
+    const content = messages?.slice?.().reverse?.().find(msg =>
+        msg?.role !== 'system'
+        && typeof msg?.content === 'string'
+        && (msg.content.includes('!newAction(') || msg.content.startsWith('Code generation task:'))
+    )?.content || '';
+
+    const legacyMatch = content.match(/!newAction\((.*?)\)/);
+    if (legacyMatch) return legacyMatch[1];
+
+    return content
+        .replace(/^Code generation task:\s*/i, '')
+        .replace(/\n\nWrite the implementation as a JavaScript code block\.\s*$/i, '')
+        .trim();
 }

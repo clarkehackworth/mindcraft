@@ -13,8 +13,9 @@ export class VisionInterpreter {
     }
 
     async lookAtPlayer(player_name, direction) {
-        if (!this.allow_vision || !this.agent.prompter.vision_model.sendVisionRequest) {
-            return "Vision is disabled. Use other methods to describe the environment.";
+        const unavailable = this.getVisionUnavailableMessage();
+        if (unavailable) {
+            return unavailable;
         }
         let result = "";
         const bot = this.agent.bot;
@@ -39,8 +40,9 @@ export class VisionInterpreter {
     }
 
     async lookAtPosition(x, y, z) {
-        if (!this.allow_vision || !this.agent.prompter.vision_model.sendVisionRequest) {
-            return "Vision is disabled. Use other methods to describe the environment.";
+        const unavailable = this.getVisionUnavailableMessage();
+        if (unavailable) {
+            return unavailable;
         }
         let result = "";
         const bot = this.agent.bot;
@@ -56,12 +58,22 @@ export class VisionInterpreter {
         const bot = this.agent.bot;
         const maxDistance = 128; // Maximum distance to check for blocks
         const targetBlock = bot.blockAtCursor(maxDistance);
-        
+
         if (targetBlock) {
             return `Block at center view: ${targetBlock.name} at (${targetBlock.position.x}, ${targetBlock.position.y}, ${targetBlock.position.z})`;
         } else {
             return "No block in center view";
         }
+    }
+
+    getVisionUnavailableMessage() {
+        if (!this.allow_vision) {
+            return "Vision is disabled in settings. Set allow_vision to true and restart the agent.";
+        }
+        if (!this.agent.prompter.vision_model?.sendVisionRequest) {
+            return "Vision model does not support image input. Configure a vision-capable model or adapter.";
+        }
+        return null;
     }
 
     async analyzeImage(filename) {
@@ -78,4 +90,4 @@ export class VisionInterpreter {
             return `Error reading image: ${error.message}`;
         }
     }
-} 
+}
