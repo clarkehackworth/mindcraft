@@ -43,7 +43,7 @@ test('kimi uses the coding endpoint through the OpenAI-compatible protocol', () 
         format: 'openai-completions',
         baseUrl: 'https://api.kimi.com/coding/v1',
         keyName: 'KIMI_API_KEY',
-        defaultModel: 'kimi-for-coding',
+        defaultModel: 'kimi-k2.6',
         params: {
             transport: 'curl',
             defaultHeaders: {
