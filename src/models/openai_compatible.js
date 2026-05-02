@@ -1,4 +1,8 @@
 import OpenAIApi from 'openai';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { getKey, hasKey } from '../utils/keys.js';
 import { createNativeToolResponse, toOpenAIChatMessages } from './native_tools.js';
 import { HttpsProxyAgent } from 'https-proxy-agent';
@@ -52,6 +56,16 @@ export class OpenAICompletions {
         if (this.url) config.baseURL = this.url;
         if (hasKey('OPENAI_ORG_ID')) config.organization = getKey('OPENAI_ORG_ID');
         config.apiKey = apiKeyName ? getKey(apiKeyName) : 'not-needed';
+        const defaultHeaders = this.params.defaultHeaders || this.params.default_headers || this.params.headers;
+        if (defaultHeaders && typeof defaultHeaders === 'object') config.defaultHeaders = defaultHeaders;
+        const transport = this.params.transport || this.params.httpTransport || this.params.http_transport;
+        if (transport === 'curl') config.fetch = curlFetch;
+        delete this.params.defaultHeaders;
+        delete this.params.default_headers;
+        delete this.params.headers;
+        delete this.params.transport;
+        delete this.params.httpTransport;
+        delete this.params.http_transport;
         const agent = getProxyAgent();
         if (agent) config.httpAgent = agent;
         this.openai = new OpenAIApi(config);
@@ -189,4 +203,101 @@ function inferProviderName(url) {
     } catch {
         return null;
     }
+}
+
+async function curlFetch(url, init = {}) {
+    const tempDir = mkdtempSync(path.join(tmpdir(), 'mindcraft-openai-curl-'));
+    const headersPath = path.join(tempDir, 'headers.txt');
+    const bodyPath = path.join(tempDir, 'body.bin');
+    const requestBodyPath = path.join(tempDir, 'request-body.bin');
+    const configPath = path.join(tempDir, 'curl.conf');
+    try {
+        const method = init.method || (init.body ? 'POST' : 'GET');
+        const config = [
+            `url = ${curlQuote(String(url))}`,
+            `request = ${curlQuote(method)}`,
+            `dump-header = ${curlQuote(headersPath)}`,
+            `output = ${curlQuote(bodyPath)}`,
+            'silent',
+            'show-error',
+            'location',
+            'max-time = 300'
+        ];
+
+        for (const [name, value] of headerEntries(init.headers)) {
+            config.push(`header = ${curlQuote(`${name}: ${value}`)}`);
+        }
+
+        if (init.body !== undefined && init.body !== null) {
+            writeFileSync(requestBodyPath, bodyToString(init.body));
+            config.push(`data-binary = ${curlQuote(`@${requestBodyPath}`)}`);
+        }
+
+        writeFileSync(configPath, `${config.join('\n')}\n`, { mode: 0o600 });
+        await runCurl(configPath);
+        const headersText = readFileSync(headersPath, 'utf8');
+        const body = readFileSync(bodyPath);
+        const { status, headers } = parseCurlHeaders(headersText);
+        return new Response(body, { status, headers });
+    } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+    }
+}
+
+function runCurl(configPath) {
+    return new Promise((resolve, reject) => {
+        const child = spawn('curl', ['--config', configPath], { stdio: ['ignore', 'ignore', 'pipe'] });
+        let stderr = '';
+        child.stderr.on('data', chunk => {
+            stderr += chunk.toString();
+        });
+        child.on('error', reject);
+        child.on('close', code => {
+            if (code === 0) {
+                resolve();
+            } else {
+                reject(new Error(`curl exited with code ${code}: ${stderr.trim()}`));
+            }
+        });
+    });
+}
+
+function headerEntries(headers = {}) {
+    if (headers instanceof Headers) {
+        return Array.from(headers.entries());
+    }
+    if (Array.isArray(headers)) {
+        return headers;
+    }
+    return Object.entries(headers || {});
+}
+
+function bodyToString(body) {
+    if (body instanceof URLSearchParams) {
+        return body.toString();
+    }
+    if (Buffer.isBuffer(body)) {
+        return body;
+    }
+    return String(body);
+}
+
+function curlQuote(value) {
+    return `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+function parseCurlHeaders(headersText) {
+    const blocks = headersText.trim().split(/\r?\n\r?\n/).filter(Boolean);
+    const block = blocks[blocks.length - 1] || '';
+    const lines = block.split(/\r?\n/);
+    const statusMatch = lines.shift()?.match(/^HTTP\/\S+\s+(\d+)/);
+    const status = statusMatch ? Number.parseInt(statusMatch[1], 10) : 0;
+    const headers = new Headers();
+    for (const line of lines) {
+        const idx = line.indexOf(':');
+        if (idx > 0) {
+            headers.append(line.slice(0, idx).trim(), line.slice(idx + 1).trim());
+        }
+    }
+    return { status, headers };
 }

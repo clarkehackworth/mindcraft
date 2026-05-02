@@ -38,15 +38,17 @@ test('example config documents custom providers without name mapping', () => {
     assert.equal(example.embeddings._example_openai_embeddings.keyName, 'MY_EMBEDDING_API_KEY');
 });
 
-test('kimi uses the documented Anthropic-compatible coding endpoint', () => {
+test('kimi uses the coding endpoint through the OpenAI-compatible protocol', () => {
     assert.deepEqual(config.models.kimi, {
-        format: 'anthropic-messages',
-        baseUrl: 'https://api.kimi.com/coding/',
+        format: 'openai-completions',
+        baseUrl: 'https://api.kimi.com/coding/v1',
         keyName: 'KIMI_API_KEY',
-        defaultModel: 'kimi-k2.6',
+        defaultModel: 'kimi-for-coding',
         params: {
-            max_tokens: 32768,
-            provider: 'kimi'
+            transport: 'curl',
+            defaultHeaders: {
+                'User-Agent': 'KimiCLI/1.0.0'
+            }
         }
     });
 });

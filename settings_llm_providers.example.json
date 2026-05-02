@@ -86,13 +86,15 @@
             "comment": "When the codex profile is selected, Mindcraft logs in through this project and stores ChatGPT auth in keys.CODEX_CHATGPT_AUTH. No fixed ~/.codex path is read."
         },
         "kimi": {
-            "format": "anthropic-messages",
-            "baseUrl": "https://api.kimi.com/coding/",
+            "format": "openai-completions",
+            "baseUrl": "https://api.kimi.com/coding/v1",
             "keyName": "KIMI_API_KEY",
-            "defaultModel": "kimi-k2.6",
+            "defaultModel": "kimi-for-coding",
             "params": {
-                "max_tokens": 32768,
-                "provider": "kimi"
+                "transport": "curl",
+                "defaultHeaders": {
+                    "User-Agent": "KimiCLI/1.0.0"
+                }
             }
         },
         "openrouter": {
