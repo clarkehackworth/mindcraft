@@ -2965,7 +2965,7 @@
 
         function renderAssistantWorkMessage(turn, index) {
             const response = turn.response;
-            const hasAssistantDisplay = Boolean(turn.assistantText || turn.assistantToolCalls.length);
+            const hasAssistantDisplay = Boolean(turn.assistantText || turn.assistantThinking || turn.assistantToolCalls.length);
             return `
                 <div class="agent-message assistant-message">
                     <div class="agent-avatar">AI</div>
@@ -3066,12 +3066,13 @@
 
         function renderToolStepBody(result, args, item) {
             const internalEvents = renderInternalToolEvents(item.internalEvents);
+            const thinking = renderThinking(item.event?.thinking);
             if (result) {
-                return renderToolOutput(result.result, result, internalEvents);
+                return `${thinking}${renderToolOutput(result.result, result, internalEvents)}`;
             }
             const detailId = getChatDetailId('Tool running', item.event || { type: 'tool_running' });
             const details = renderDetails('Tool call payload', item.event);
-            return `<details class="chat-tool-output-detail chat-tool-result chat-tool-pending-detail" data-chat-detail-id="${escapeHTML(detailId)}"><summary class="chat-tool-output chat-tool-pending"><span class="chat-tool-output-glyph">⎿</span><span class="chat-tool-output-text">Running…</span></summary><div class="chat-tool-output-extra">${internalEvents}${details}</div></details>`;
+            return `${thinking}<details class="chat-tool-output-detail chat-tool-result chat-tool-pending-detail" data-chat-detail-id="${escapeHTML(detailId)}"><summary class="chat-tool-output chat-tool-pending"><span class="chat-tool-output-glyph">⎿</span><span class="chat-tool-output-text">Running…</span></summary><div class="chat-tool-output-extra">${internalEvents}${details}</div></details>`;
         }
 
         function renderInternalToolEvents(events) {

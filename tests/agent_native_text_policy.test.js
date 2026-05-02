@@ -308,6 +308,8 @@ test('chat UI and trace projection render model thinking separately', () => {
     assert.ok(html.includes('function extractResponseThinking'));
     assert.ok(html.includes('function renderThinking'));
     assert.ok(html.includes('class="chat-thinking"'));
+    assert.ok(html.includes('turn.assistantThinking'));
+    assert.ok(html.includes('renderThinking(item.event?.thinking)'));
 });
 
 test('chat request cards avoid duplicate per-message role labels', () => {
