@@ -46,7 +46,8 @@ test('kimi uses the documented Anthropic-compatible coding endpoint', () => {
         defaultModel: 'kimi-k2.6',
         params: {
             max_tokens: 32768,
-            provider: 'kimi'
+            provider: 'kimi',
+            forceIPv4: true
         }
     });
 });
