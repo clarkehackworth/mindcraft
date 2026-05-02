@@ -3,6 +3,7 @@
 <head>
     <title>Mindcraft</title>
     <script src="/socket.io/socket.io.js"></script>
+    <script src="/chat_trace_projector.js"></script>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -1109,9 +1110,7 @@
             margin-bottom: 6px;
         }
         .chat-message-row {
-            display: grid;
-            grid-template-columns: 52px minmax(0, 1fr);
-            gap: 8px;
+            display: block;
             border-top: 1px solid rgba(255,255,255,0.055);
             padding-top: 8px;
             margin-top: 8px;
@@ -1120,16 +1119,6 @@
             border-top: none;
             padding-top: 0;
             margin-top: 0;
-        }
-        .chat-message-row .chat-muted:first-child {
-            display: block;
-            padding: 0;
-            margin: 1px 0 0;
-            background: none;
-            border-radius: 0;
-            color: #747474;
-            font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-            text-transform: none;
         }
         .chat-message-text {
             white-space: pre-wrap;
@@ -2784,116 +2773,31 @@
             return panel.scrollHeight - panel.scrollTop - panel.clientHeight < 48;
         }
 
-        function buildChatThread(events) {
-            const thread = { systemPrompt: null, systemEvent: null, tools: null, toolsEvent: null, turns: [] };
-            let current = null;
-            let previousRequestMessages = [];
-            const ensureTurn = () => {
-                if (!current) {
-                    current = { request: null, response: null, toolCalls: [], toolResults: [], errors: [], historyMessages: [], compacted: null };
-                    thread.turns.push(current);
-                }
-                return current;
-            };
-
-            events.forEach(event => {
-                if (event.type === 'llm_request') {
-                    if (event.tag === 'coding' && attachInternalToolEvent(current, event)) {
-                        return;
-                    }
-                    if (!thread.systemPrompt && event.system_prompt) {
-                        thread.systemPrompt = event.system_prompt;
-                        thread.systemEvent = event;
-                    }
-                    if (!thread.tools && Array.isArray(event.tools)) {
-                        thread.tools = event.tools;
-                        thread.toolsEvent = event;
-                    }
-                    event.visible_messages = selectVisibleRequestMessages(event.messages, previousRequestMessages);
-                    previousRequestMessages = Array.isArray(event.messages) ? event.messages : [];
-                    const pendingHistoryMessages = isPendingHistoryOnlyTurn(current) ? current.historyMessages : [];
-                    if (pendingHistoryMessages.length) {
-                        thread.turns.pop();
-                    }
-                    const requestMessages = Array.isArray(event.messages) ? event.messages : [];
-                    if (current?.historyMessages?.length) {
-                        current.historyMessages = current.historyMessages
-                            .filter(historyEvent => !isHistoryTurnIncludedInRequest(historyEvent.turn, requestMessages));
-                    }
-                    current = { request: event, response: null, toolCalls: [], toolResults: [], errors: [], historyMessages: pendingHistoryMessages, compacted: null };
-                    thread.turns.push(current);
-                    return;
-                }
-                if (event.type === 'llm_response') {
-                    if (event.tag === 'coding' && attachInternalToolEvent(current, event)) {
-                        return;
-                    }
-                    ensureTurn().response = event;
-                    return;
-                }
-                if (event.type === 'history_turn_added') {
-                    ensureTurn().historyMessages.push(event);
-                    return;
-                }
-                if (event.type === 'history_compacted') {
-                    const turn = ensureTurn();
-                    turn.compacted = event;
-                    current = null;
-                    return;
-                }
-                if (event.type === 'tool_call') {
-                    const turn = ensureTurn();
-                    turn.toolCalls.push({ event, call: event.tool_call, result: null, internalEvents: [] });
-                    return;
-                }
-                if (event.type === 'tool_result') {
-                    const turn = ensureTurn();
-                    const resultId = getToolCallId(event.tool_call);
-                    const match = turn.toolCalls.slice().reverse().find(item => {
-                        const callId = getToolCallId(item.call);
-                        return callId && resultId ? callId === resultId : getToolName(item.call) === getToolName(event.tool_call) && !item.result;
-                    });
-                    if (match) {
-                        match.result = event;
-                    } else {
-                        turn.toolResults.push(event);
-                    }
-                    return;
-                }
-                if (event.type === 'llm_error') {
-                    if (event.tag === 'coding' && attachInternalToolEvent(current, event)) {
-                        return;
-                    }
-                    ensureTurn().errors.push(event);
-                }
-            });
-            return thread;
-        }
-
-        function attachInternalToolEvent(turn, event) {
-            const item = findInternalToolHost(turn);
-            if (!item) return false;
-            item.internalEvents = item.internalEvents || [];
-            item.internalEvents.push(event);
-            return true;
-        }
-
-        function findInternalToolHost(turn) {
-            if (!turn?.toolCalls?.length) return null;
-            const reversed = turn.toolCalls.slice().reverse();
-            return reversed.find(item => getToolName(item.call) === 'newAction' && !item.result)
-                || reversed.find(item => !item.result)
-                || reversed[0];
-        }
-
         function renderChatThread(thread) {
+            const instructions = Array.isArray(thread.instructionContexts)
+                ? thread.instructionContexts.map(renderInstructionContext).join('')
+                : '';
             const system = thread.systemPrompt ? renderSystemPrompt(thread.systemPrompt, thread.systemEvent) : '';
             const tools = thread.tools ? renderToolsCard(thread.tools, thread.toolsEvent) : '';
             const turns = thread.turns.map((turn, index) => renderChatTurn(turn, index)).join('');
             return `<div class="chat-thread agent-workspace">
-                <div class="agent-context-row">${system}${tools}</div>
+                <div class="agent-context-row">${instructions}${system}${tools}</div>
                 ${turns}
             </div>`;
+        }
+
+        function renderInstructionContext(event) {
+            const title = event?.title || 'Instructions';
+            const metadata = event?.metadata && typeof event.metadata === 'object'
+                ? `<div class="chat-muted">${escapeHTML(Object.entries(event.metadata).map(([key, value]) => `${key}: ${String(value)}`).join(' · '))}</div>`
+                : '';
+            return `
+                <details class="chat-card agent-context-card chat-instruction-card" data-chat-detail-id="instruction-context-${escapeHTML(title)}">
+                    <summary class="chat-card-title"><span>${escapeHTML(title)}</span><span class="chat-time">${escapeHTML(formatChatTime(event?.timestamp))}</span></summary>
+                    ${metadata}
+                    <div class="chat-card-body">${escapeHTML(event?.content || '')}</div>
+                    ${renderDetails('Instruction payload', event)}
+                </details>`;
         }
 
         function renderSystemPrompt(prompt, event) {
@@ -2944,18 +2848,15 @@
         }
 
         function renderChatTurn(turn, index) {
-            const request = turn.request;
-            const response = turn.response;
-            const model = request?.model?.model || request?.model?.api || response?.model?.model || response?.model?.api || 'model';
-            const hasRequestOrResponse = Boolean(request || response || turn.toolCalls.length || turn.toolResults.length || turn.errors.length);
-            if (!hasRequestOrResponse && turn.historyMessages.length) {
+            const hasRunContent = Boolean(turn.request || turn.response || turn.toolRuns.length || turn.errors.length);
+            if (!hasRunContent && turn.historyMessages.length) {
                 return `<div class="agent-run-flat restored-run">${renderRestoredHistoryMessages(turn.historyMessages, index)}</div>`;
             }
             return `
                 <div class="agent-run-flat">
-                    ${renderUserInputMessage(request, index, model)}
+                    ${renderUserInputMessage(turn, index)}
                     ${renderInlineHistoryMessages(turn)}
-                    ${renderAssistantWorkMessage(turn, index, model)}
+                    ${renderAssistantWorkMessage(turn, index)}
                     ${turn.errors.map(renderInlineError).join('')}
                     ${renderCompactEvent(turn.compacted)}
                 </div>`;
@@ -2979,29 +2880,9 @@
         }
 
         function renderInlineHistoryMessages(turn) {
-            if (!turn.historyMessages?.length) return '';
-            const skipToolLike = turn.toolCalls.length > 0 || turn.toolResults.length > 0;
-            const requestMessages = Array.isArray(turn.request?.messages) ? turn.request.messages : [];
-            const events = turn.historyMessages.filter(event => {
-                const role = event.turn?.role;
-                if (isHistoryTurnIncludedInRequest(event.turn, requestMessages)) return false;
-                if (!skipToolLike) return role === 'user';
-                return role === 'user' && !String(event.turn?.content || '').startsWith('System:');
-            });
+            const events = turn.inlineHistoryMessages || [];
             if (!events.length) return '';
             return events.map((event, offset) => renderHistoryMessage(event, offset, 'Recent history')).join('');
-        }
-
-        function isPendingHistoryOnlyTurn(turn) {
-            return Boolean(turn)
-                && !turn.request
-                && !turn.response
-                && !turn.compacted
-                && (!turn.toolCalls || turn.toolCalls.length === 0)
-                && (!turn.toolResults || turn.toolResults.length === 0)
-                && (!turn.errors || turn.errors.length === 0)
-                && Array.isArray(turn.historyMessages)
-                && turn.historyMessages.length > 0;
         }
 
         function isHistoryTurnIncludedInRequest(turn, requestMessages) {
@@ -3045,37 +2926,31 @@
                 </div>`;
         }
 
-        function renderUserInputMessage(request, index, model) {
-            if (!request) return '';
-            const messages = Array.isArray(request.messages) ? request.messages : [];
-            const visibleMessages = Array.isArray(request.visible_messages) ? request.visible_messages : selectVisibleRequestMessages(messages);
-            if (!visibleMessages.length) return '';
+        function renderUserInputMessage(turn, index) {
+            const request = turn.request;
+            if (!request || !turn.visibleRequestMessages?.length) return '';
             return `
                 <div class="agent-message user-message">
                     <div class="agent-avatar">U</div>
                     <div class="agent-bubble">
-                        <div class="agent-bubble-meta">Run ${index + 1} · ${escapeHTML(summarizeRequest(request, model))} · ${escapeHTML(formatChatTime(request.timestamp))}</div>
+                        <div class="agent-bubble-meta">Run ${index + 1} · ${escapeHTML(summarizeRequest(request, turn.modelLabel))} · ${escapeHTML(formatChatTime(request.timestamp))}</div>
                         <div class="agent-bubble-label">User</div>
-                        ${renderRequestMessages(visibleMessages, messages.length)}
-                        ${renderRequestFooter(request, model)}
+                        ${renderRequestMessages(turn.visibleRequestMessages, turn.requestMessageCount)}
+                        ${renderRequestFooter(request)}
                     </div>
                 </div>`;
         }
 
-        function renderAssistantWorkMessage(turn, index, model) {
+        function renderAssistantWorkMessage(turn, index) {
             const response = turn.response;
-            const text = extractResponseText(response?.response);
-            const responseCalls = extractResponseToolCalls(response?.response);
-            const hasToolRunEvents = turn.toolCalls.length > 0 || turn.toolResults.length > 0;
-            const calls = hasToolRunEvents ? [] : responseCalls;
-            const hasAssistantDisplay = Boolean(text || calls.length);
+            const hasAssistantDisplay = Boolean(turn.assistantText || turn.assistantToolCalls.length);
             return `
                 <div class="agent-message assistant-message">
                     <div class="agent-avatar">AI</div>
                     <div class="agent-bubble">
-                        <div class="agent-bubble-meta">Run ${index + 1} · ${escapeHTML(model || 'model')} · ${escapeHTML(formatChatTime(response?.timestamp))}${renderTokenUsage(response?.token_usage)}</div>
+                        <div class="agent-bubble-meta">Run ${index + 1} · ${escapeHTML(turn.modelLabel || 'model')} · ${escapeHTML(formatChatTime(response?.timestamp))}${renderTokenUsage(response?.token_usage)}</div>
                         ${hasAssistantDisplay ? '<div class="agent-bubble-label">Assistant</div>' : ''}
-                        ${response ? renderAssistantContent(text, calls, response) : '<div class="agent-empty">Waiting for assistant response…</div>'}
+                        ${response ? renderAssistantContent(turn.assistantText, turn.assistantToolCalls, response) : '<div class="agent-empty">Waiting for assistant response…</div>'}
                         ${renderToolRuns(turn)}
                     </div>
                 </div>`;
@@ -3128,19 +3003,11 @@
         }
 
         function renderToolRuns(turn) {
-            const rows = mergeToolRunRows(turn);
+            const rows = turn.toolRuns || [];
             if (!rows.length) return '';
             return `
                 <div class="agent-bubble-label tool-run-label">Tool activity</div>
                 <div class="agent-steps">${rows.map(renderToolRunStep).join('')}</div>`;
-        }
-
-        function mergeToolRunRows(turn) {
-            const rows = [...turn.toolCalls];
-            for (const event of turn.toolResults) {
-                rows.push({ event, call: event.tool_call, result: event });
-            }
-            return rows;
         }
 
         function renderToolRunStep(item) {
@@ -3222,10 +3089,8 @@
             if (!Array.isArray(messages) || messages.length === 0) return '<span class="chat-muted">No message payload.</span>';
             const rows = messages.map(message => {
                 const preview = formatChatMessagePreview(message);
-                const roleLabel = getMessageRoleLabel(message, preview);
                 return `
                     <div class="chat-message-row">
-                        <div class="chat-muted">${escapeHTML(roleLabel)}</div>
                         <div class="chat-message-text">${escapeHTML(limitText(preview, 560))}</div>
                     </div>`;
             }).join('');
@@ -3281,10 +3146,6 @@
                 name: message.name || '',
                 native_tool_calls: message.native_tool_calls || message.tool_calls || null
             });
-        }
-
-        function getMessageRoleLabel(message, preview = formatChatMessagePreview(message)) {
-            return message?.role || 'message';
         }
 
         function isCompactCompatibilityMessage(text) {

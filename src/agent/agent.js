@@ -11,7 +11,7 @@ import { ActionManager } from './action_manager.js';
 import { NPCContoller } from './npc/controller.js';
 import { MemoryBank } from './memory_bank.js';
 import { SelfPrompter } from './self_prompter.js';
-import { buildStateSnapshotDiff } from './state_snapshot.js';
+import { ReactMessageManager } from './react_message_manager.js';
 import convoManager from './conversation.js';
 import { addBrowserViewer } from './vision/browser_viewer.js';
 import { serverProxy, sendOutputToServer } from './mindserver_proxy.js';
@@ -43,6 +43,7 @@ export class Agent {
         }
         
         this.history = new History(this);
+        this.react_messages = new ReactMessageManager(this);
         this.coder = new Coder(this);
         this.npc = new NPCContoller(this);
         this.memory_bank = new MemoryBank();
@@ -163,6 +164,7 @@ export class Agent {
             if (settings.only_chat_with.length > 0 && !settings.only_chat_with.includes(username)) return;
             try {
                 if (ignore_messages.some((m) => message.startsWith(m))) return;
+                if (isMinecraftCommandEchoMessage(message)) return;
 
                 this.shut_up = false;
 
@@ -316,71 +318,18 @@ export class Agent {
 
         const checkInterrupt = () => this.self_prompter.shouldInterrupt(self_prompt) || this.shut_up || convoManager.responseScheduledFor(source);
         
-        // Runtime behavior notes are request context. For non-transient user turns
-        // they are persisted with the outbound message so future prompts remain
-        // append-only for prompt-cache stability.
-        const transientMessages = [];
-        let behavior_log = this.bot.modes.flushBehaviorLog().trim();
-        if (behavior_log.length > 0) {
-            const MAX_LOG = 500;
-            if (behavior_log.length > MAX_LOG) {
-                behavior_log = '...' + behavior_log.substring(behavior_log.length - MAX_LOG);
-            }
-            behavior_log = 'Recent behaviors log: \n' + behavior_log;
-            transientMessages.push(createTransientSystemUserMessage(behavior_log));
+        if (!this.react_messages) {
+            this.react_messages = new ReactMessageManager(this);
         }
-
-        // Handle other user messages. Self-prompt continuation nudges stay
-        // transient, but normal user/runtime context is persisted exactly as it is
-        // sent to the model. Prompt caches are append-only sensitive: if we send a
-        // state update in one request and omit it from future history, the next
-        // request rewrites the prior prefix and cache reads can drop to zero.
-        let pendingPersistedParts = [];
-        if (options.transient) {
-            transientMessages.push(createTransientSystemUserMessage(message));
-        }
-        else {
-            pendingPersistedParts.push(createHistoryUserMessageForRequest(source, message, this.name).content);
-            if (transientMessages.length > 0) {
-                pendingPersistedParts.push(...transientMessages.map(message => message?.content ?? message));
-                transientMessages.length = 0;
-            }
-        }
+        const behaviorLog = this.bot.modes.flushBehaviorLog();
+        const reactTurn = this.react_messages.startTurn({ source, message, options, behaviorLog });
 
         if (!self_prompt && this.self_prompter.isActive()) // message is from user during self-prompting
             max_responses = 1; // force only respond to this message, then let self-prompting take over
-        let includeTransientMessages = transientMessages.length > 0;
         for (let i=0; i<max_responses; i++) {
             if (checkInterrupt()) break;
-            const transientParts = [];
-            const stateDiff = buildStateSnapshotDiff(this);
-            if (stateDiff) {
-                if (pendingPersistedParts.length > 0) {
-                    pendingPersistedParts.push(stateDiff);
-                }
-                else if (!options.transient) {
-                    await this.history.addUserContext(stateDiff);
-                    this.history.save();
-                }
-                else {
-                    transientParts.push(stateDiff);
-                }
-            }
-            if (pendingPersistedParts.length > 0) {
-                await this.history.addUserContext(pendingPersistedParts.join('\n\n'));
-                this.history.save();
-                pendingPersistedParts = [];
-            }
-            if (includeTransientMessages) {
-                transientParts.push(...transientMessages.map(message => message?.content ?? message));
-            }
-            let history = this.history.getHistory();
-            const transientRequest = createTransientRequestMessage(transientParts);
-            if (transientRequest) {
-                history.push(transientRequest);
-            }
-            let res = await this.prompter.promptConvo(history);
-            includeTransientMessages = false;
+            let history = await reactTurn.buildRequestMessages();
+            let res = await this.prompter.promptConvo(history, { turnStateKey: reactTurn.turnStateKey });
 
             if (isNativeToolResponse(res)) {
                 console.log(`${this.name} native tool calls from ${source}: ${formatNativeToolCallsForLog(res.tool_calls)}`);
@@ -664,6 +613,28 @@ function hasLoadedConversation(saveData) {
             || (Array.isArray(saveData.turns) && saveData.turns.length > 0));
 }
 
+const MINECRAFT_COMMAND_ECHO_PATTERNS = [
+    /^Removed \d+ (?:items?|item\(s\)) from .+\]?$/i,
+    /^Gave \d+ .+ to .+$/i,
+    /^Cleared (?:the )?inventory of .+$/i,
+    /^Killed .+$/i,
+    /^Summoned new .+$/i,
+    /^Set block .+$/i,
+    /^Changed the block at .+$/i,
+    /^Applied effect .+$/i,
+    /^Made .+ say .+$/i,
+    /^Played sound .+$/i,
+    /^Stopped sound .+$/i,
+    /^Located .+ at .+$/i
+];
+
+export function isMinecraftCommandEchoMessage(message) {
+    const text = String(message ?? '').trim();
+    if (!text) return false;
+    if (text.startsWith('/')) return true;
+    return MINECRAFT_COMMAND_ECHO_PATTERNS.some(pattern => pattern.test(text));
+}
+
 export function prepareChatMessageForOutput(message) {
     let spokenMessage = String(message ?? '');
     let remaining = '';
@@ -681,29 +652,6 @@ export function prepareChatMessageForOutput(message) {
         chatMessage: `${spokenMessage.trim()} ${remaining}`
     };
 }
-
-function createHistoryUserMessageForRequest(source, message, agentName) {
-    const content = source === 'system'
-        ? `System: ${message}`
-        : source !== agentName
-            ? `${source}: ${message}`
-            : message;
-    return { role: 'user', content };
-}
-
-
-function createTransientSystemUserMessage(message) {
-    return { role: 'user', content: `System: ${message}` };
-}
-
-function createTransientRequestMessage(parts) {
-    const content = parts
-        .map(part => String(part || '').trim())
-        .filter(Boolean)
-        .join('\n\n');
-    return content ? { role: 'user', content } : null;
-}
-
 
 function formatNativeToolCallsForLog(toolCalls = []) {
     if (!Array.isArray(toolCalls) || toolCalls.length === 0) {

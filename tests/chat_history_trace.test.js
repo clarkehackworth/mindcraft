@@ -38,6 +38,7 @@ test('runtime chat history persists when Runtime is enabled without full trace l
         };
         const messages = [{ role: 'user', content: 'Steve: check inventory' }];
         const tools = [{ type: 'function', function: { name: 'inventory', parameters: { type: 'object' } } }];
+        history.traceInstructionContext('AGENTS.md instructions', 'Follow repo-local AGENTS.md guidance.', { source: 'AGENTS.md' });
         history.traceLLMRequest('conversation', model, 'system prompt text', messages, tools);
         history.traceLLMResponse('conversation', model, { type: 'tool_calls', tool_calls: [{ name: 'inventory' }] });
 
@@ -54,6 +55,7 @@ test('runtime chat history persists when Runtime is enabled without full trace l
             .trim()
             .split('\n')
             .map(line => JSON.parse(line));
+        assert.ok(events.some(event => event.type === 'instruction_context'));
         assert.ok(events.some(event => event.type === 'llm_request'));
         assert.ok(events.some(event => event.type === 'llm_response'));
         assert.ok(events.some(event => event.type === 'history_turn_added'));
@@ -89,6 +91,7 @@ test('chat history trace records prompts, messages, tool calls and tool results 
         };
         const messages = [{ role: 'user', content: 'Steve: check inventory' }];
         const tools = [{ type: 'function', function: { name: 'inventory', parameters: { type: 'object' } } }];
+        history.traceInstructionContext('AGENTS.md instructions', 'Follow repo-local AGENTS.md guidance.', { source: 'AGENTS.md' });
         history.traceLLMRequest('conversation', model, 'system prompt text', messages, tools);
         history.traceLLMResponse('conversation', model, { type: 'tool_calls', tool_calls: [{ name: 'inventory' }] });
 
@@ -104,6 +107,10 @@ test('chat history trace records prompts, messages, tool calls and tool results 
             .map(line => JSON.parse(line));
 
         assert.ok(events.some(event => event.type === 'session_started'));
+        const instructions = events.find(event => event.type === 'instruction_context');
+        assert.equal(instructions.title, 'AGENTS.md instructions');
+        assert.equal(instructions.content, 'Follow repo-local AGENTS.md guidance.');
+        assert.deepEqual(instructions.metadata, { source: 'AGENTS.md' });
         const request = events.find(event => event.type === 'llm_request');
         assert.equal(request.system_prompt, 'system prompt text');
         assert.deepEqual(request.messages, messages);
@@ -118,6 +125,45 @@ test('chat history trace records prompts, messages, tool calls and tool results 
         assert.ok(!events.some(event => event.type === 'history_turn_added' && event.turn.role === 'system'));
         assert.ok(events.some(event => event.type === 'tool_call' && event.tool_call.name === 'inventory'));
         assert.ok(events.some(event => event.type === 'tool_result' && event.result.includes('Inventory is empty')));
+    } finally {
+        setSettings({});
+        process.chdir(originalCwd);
+        rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+
+
+test('chat history trace records configured instruction contexts at session start', async () => {
+    const originalCwd = process.cwd();
+    const dir = mkdtempSync(path.join(tmpdir(), 'mindcraft-trace-instructions-'));
+    try {
+        process.chdir(dir);
+        setSettings({
+            show_chat_history: true,
+            log_chat_trace: true,
+            trace_instruction_contexts: [
+                {
+                    title: 'AGENTS.md instructions',
+                    content: 'Follow repo-local AGENTS.md guidance.',
+                    metadata: { source: 'runtime-test' }
+                }
+            ]
+        });
+        const history = new History({
+            name: 'tracebot',
+            self_prompter: { state: {} },
+            task: {}
+        });
+
+        const events = readFileSync(history.chat_history_latest_fp, 'utf8')
+            .trim()
+            .split('\n')
+            .map(line => JSON.parse(line));
+        const instructions = events.find(event => event.type === 'instruction_context');
+        assert.equal(instructions.title, 'AGENTS.md instructions');
+        assert.equal(instructions.content, 'Follow repo-local AGENTS.md guidance.');
+        assert.deepEqual(instructions.metadata, { source: 'runtime-test' });
     } finally {
         setSettings({});
         process.chdir(originalCwd);

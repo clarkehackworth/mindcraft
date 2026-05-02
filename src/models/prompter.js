@@ -219,7 +219,7 @@ export class Prompter {
         this.last_prompt_time = Date.now();
     }
 
-    async promptConvo(messages) {
+    async promptConvo(messages, options = {}) {
         this.most_recent_msg_time = Date.now();
         let current_msg_time = this.most_recent_msg_time;
 
@@ -236,7 +236,10 @@ export class Prompter {
             try {
                 const tools = this.isNativeToolMode() ? getCommandToolDefinitions(this.agent) : null;
                 this.agent.history.traceLLMRequest('conversation', this.chat_model, prompt, requestMessages, tools);
-                generation = await this.chat_model.sendRequest(requestMessages, prompt, '***', tools);
+                generation = await this.chat_model.sendRequest(requestMessages, prompt, '***', tools, {
+                    cacheScope: 'conversation',
+                    turnStateKey: options.turnStateKey
+                });
                 this.agent.history.traceLLMResponse('conversation', this.chat_model, generation);
                 if (isNativeToolResponse(generation)) {
                     await this._saveLog(prompt, requestMessages, JSON.stringify(generation), 'conversation');
@@ -305,7 +308,7 @@ export class Prompter {
         prompt = await this.replaceStrings(prompt, messages);
 
         this.agent.history.traceLLMRequest('coding', this.code_model, prompt, messages);
-        let resp = await this.code_model.sendRequest(messages, prompt);
+        let resp = await this.code_model.sendRequest(messages, prompt, '***', null, { cacheScope: 'coding' });
         this.agent.history.traceLLMResponse('coding', this.code_model, resp);
         this.awaiting_coding = false;
         await this._saveLog(prompt, messages, resp, 'coding');
@@ -317,7 +320,7 @@ export class Prompter {
         let prompt = this.profile.saving_memory;
         prompt = await this.replaceStrings(prompt, null, to_summarize);
         this.agent.history.traceLLMRequest('compactSummary', this.chat_model, prompt, to_summarize);
-        let resp = await this.chat_model.sendRequest([], prompt);
+        let resp = await this.chat_model.sendRequest([], prompt, '***', null, { cacheScope: 'compactSummary' });
         this.agent.history.traceLLMResponse('compactSummary', this.chat_model, resp);
         await this._saveLog(prompt, to_summarize, resp, 'compactSummary');
         if (resp?.includes('</think>')) {
@@ -338,7 +341,7 @@ export class Prompter {
         messages.push({role: 'user', content: new_message});
         prompt = await this.replaceStrings(prompt, null, messages);
         this.agent.history.traceLLMRequest('botResponder', this.chat_model, prompt, messages);
-        let res = await this.chat_model.sendRequest([], prompt);
+        let res = await this.chat_model.sendRequest([], prompt, '***', null, { cacheScope: 'botResponder' });
         this.agent.history.traceLLMResponse('botResponder', this.chat_model, res);
         return res.trim().toLowerCase() === 'respond';
     }
@@ -348,7 +351,7 @@ export class Prompter {
         let prompt = this.profile.image_analysis;
         prompt = await this.replaceStrings(prompt, messages);
         this.agent.history.traceLLMRequest('vision', this.vision_model, prompt, messages);
-        const res = await this.vision_model.sendVisionRequest(messages, prompt, imageBuffer);
+        const res = await this.vision_model.sendVisionRequest(messages, prompt, imageBuffer, { cacheScope: 'vision' });
         this.agent.history.traceLLMResponse('vision', this.vision_model, res);
         return res;
     }
@@ -364,7 +367,7 @@ export class Prompter {
         let user_messages = [{role: 'user', content: user_message}];
 
         this.agent.history.traceLLMRequest('goalSetting', this.chat_model, system_message, user_messages);
-        let res = await this.chat_model.sendRequest(user_messages, system_message);
+        let res = await this.chat_model.sendRequest(user_messages, system_message, '***', null, { cacheScope: 'goalSetting' });
         this.agent.history.traceLLMResponse('goalSetting', this.chat_model, res);
 
         let goal = null;

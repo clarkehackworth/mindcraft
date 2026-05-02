@@ -71,13 +71,14 @@ export class CodexChatGPT {
         delete this.params.session_id;
         this.originator = this.params.originator || process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE || DEFAULT_ORIGINATOR;
         delete this.params.originator;
+        this.turnStateByKey = new Map();
     }
 
-    async sendRequest(turns, systemMessage, stop_seq='***', tools=null) {
+    async sendRequest(turns, systemMessage, stop_seq='***', tools=null, options = {}) {
         this.lastTokenUsage = null;
         const model = this.model_name || this.default_model;
         const hasTools = Array.isArray(tools) && tools.length > 0;
-        const body = this.buildRequestBody(model, turns, systemMessage, tools);
+        const body = this.buildRequestBody(model, turns, systemMessage, tools, options);
         const endpoint = `${this.url}/responses`;
 
         console.log(hasTools
@@ -96,14 +97,15 @@ export class CodexChatGPT {
                 forcedChatgptWorkspaceId: this.forcedChatgptWorkspaceId,
                 originator: this.originator
             });
-            let response = await this.fetchResponses(endpoint, body, auth);
+            let response = await this.fetchResponses(endpoint, body, auth, options);
             if (response.status === 401 && auth.refreshToken) {
                 auth = await refreshCodexChatGPTAuth(auth, this.authPath, this.originator);
-                response = await this.fetchResponses(endpoint, body, auth);
+                response = await this.fetchResponses(endpoint, body, auth, options);
             }
             if (!response.ok) {
                 throw await codexHttpError(response);
             }
+            this.rememberTurnState(options, response);
 
             const parsed = await parseCodexResponsesSse(await response.text());
             console.log('Received.');
@@ -122,7 +124,7 @@ export class CodexChatGPT {
         }
     }
 
-    async sendVisionRequest(turns, systemMessage, imageBuffer) {
+    async sendVisionRequest(turns, systemMessage, imageBuffer, options = {}) {
         const imageMessages = [...(turns || [])];
         imageMessages.push({
             role: 'user',
@@ -132,10 +134,11 @@ export class CodexChatGPT {
                 { type: 'input_text', text: `</image>\n${systemMessage || 'Describe the image.'}` }
             ]
         });
-        return this.sendRequest(imageMessages, systemMessage);
+        return this.sendRequest(imageMessages, systemMessage, '***', null, options);
     }
 
-    buildRequestBody(model, turns, systemMessage, tools=null) {
+    buildRequestBody(model, turns, systemMessage, tools=null, options = {}) {
+        const promptCacheKey = buildScopedPromptCacheKey(this.sessionId, options?.cacheScope);
         const body = {
             model,
             instructions: systemMessage || '',
@@ -146,7 +149,7 @@ export class CodexChatGPT {
             store: false,
             stream: true,
             include: this.params.include || [],
-            prompt_cache_key: this.sessionId
+            prompt_cache_key: promptCacheKey
         };
 
         for (const [key, value] of Object.entries(this.params)) {
@@ -157,29 +160,57 @@ export class CodexChatGPT {
         return body;
     }
 
-    async fetchResponses(endpoint, body, auth) {
+    async fetchResponses(endpoint, body, auth, options = {}) {
         return await codexFetch(endpoint, {
             method: 'POST',
-            headers: this.buildHeaders(auth),
+            headers: this.buildHeaders(auth, options),
             body: JSON.stringify(body)
         });
     }
 
-    buildHeaders(auth) {
+    buildHeaders(auth, options = {}) {
+        const scopedSessionId = buildScopedPromptCacheKey(this.sessionId, options?.cacheScope);
         const headers = {
             'Authorization': `Bearer ${auth.accessToken}`,
             'ChatGPT-Account-ID': auth.accountId,
             'Content-Type': 'application/json',
             'Accept': 'text/event-stream',
             'originator': this.originator,
-            'session_id': this.sessionId,
-            'x-client-request-id': this.sessionId,
+            'session_id': scopedSessionId,
+            'x-client-request-id': scopedSessionId,
             'User-Agent': `${this.originator}/mindcraft-native-tool`
         };
         if (!auth.accountId) {
             delete headers['ChatGPT-Account-ID'];
         }
+        const turnState = this.getTurnState(options);
+        if (turnState) {
+            headers['x-codex-turn-state'] = turnState;
+        }
         return headers;
+    }
+
+    getTurnState(options = {}) {
+        const key = this.getTurnStateKey(options);
+        return key ? this.turnStateByKey.get(key) : null;
+    }
+
+    rememberTurnState(options = {}, response) {
+        const key = this.getTurnStateKey(options);
+        const value = response?.headers?.get?.('x-codex-turn-state');
+        if (!key || !value) return;
+        this.turnStateByKey.set(key, value);
+        if (this.turnStateByKey.size > 64) {
+            const oldestKey = this.turnStateByKey.keys().next().value;
+            this.turnStateByKey.delete(oldestKey);
+        }
+    }
+
+    getTurnStateKey(options = {}) {
+        const turnStateKey = String(options?.turnStateKey || '').trim();
+        if (!turnStateKey) return '';
+        const scopedSessionId = buildScopedPromptCacheKey(this.sessionId, options?.cacheScope);
+        return `${scopedSessionId}:${turnStateKey}`;
     }
 
     async embed() {
@@ -367,6 +398,13 @@ export function toCodexResponsesTools(tools = []) {
             parameters: fn.parameters || { type: 'object', properties: {} }
         };
     }).filter(tool => tool.name);
+}
+
+export function buildScopedPromptCacheKey(baseKey, cacheScope) {
+    const base = String(baseKey || '').trim();
+    const scope = String(cacheScope || '').trim();
+    if (!scope) return base;
+    return `${base}:${scope}`;
 }
 
 export function toCodexResponseItem(message) {

@@ -1,4 +1,5 @@
 import { writeFileSync, readFileSync, mkdirSync, existsSync, appendFileSync } from 'fs';
+import path from 'path';
 import { NPCData } from './npc/data.js';
 import settings from './settings.js';
 import { createNativeToolCallTurn, createNativeToolResultTurn, hasNativeToolCalls, isNativeToolResultTurn } from '../models/native_tools.js';
@@ -28,6 +29,7 @@ export class History {
         // latest compact boundary and summarizes that whole active context.
         this.max_messages = Number.isFinite(settings.max_messages) ? settings.max_messages : Infinity;
         this.compact_message_threshold_percent = normalizePercent(settings.compact_message_threshold_percent, 100);
+        this.instruction_contexts_traced = false;
 
         if (this.fullTraceEnabled()) {
             this._initChatHistoryTrace();
@@ -243,6 +245,16 @@ export class History {
         this.traceEvent('history_cleared', {});
     }
 
+    traceInstructionContext(title, content, metadata = {}) {
+        const text = String(content || '').trim();
+        if (!text) return;
+        this.traceEvent('instruction_context', {
+            title: String(title || 'Instructions'),
+            content: text,
+            metadata: makeJsonSafe(metadata || {})
+        });
+    }
+
     traceLLMRequest(tag, model, systemPrompt, messages, tools = null) {
         this.traceEvent('llm_request', {
             tag,
@@ -303,6 +315,14 @@ export class History {
         }
     }
 
+    _traceInstructionContextsAtSessionStart() {
+        if (this.instruction_contexts_traced) return;
+        this.instruction_contexts_traced = true;
+        for (const context of collectInstructionContexts()) {
+            this.traceInstructionContext(context.title, context.content, context.metadata);
+        }
+    }
+
     _initChatHistoryTrace() {
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
         this.chat_history_session_fp = `${this.chat_history_dir}/${timestamp}.jsonl`;
@@ -314,6 +334,7 @@ export class History {
             max_messages: this.max_messages,
             compact_message_threshold_percent: this.compact_message_threshold_percent
         });
+        this._traceInstructionContextsAtSessionStart();
     }
 
     fullTraceEnabled() {
@@ -322,6 +343,85 @@ export class History {
 
     chatDisplayEnabled() {
         return settings.show_chat_history !== false;
+    }
+}
+
+
+function collectInstructionContexts() {
+    const contexts = [];
+    for (const item of normalizeConfiguredInstructionContexts(settings.trace_instruction_contexts || settings.trace_instructions)) {
+        contexts.push(item);
+    }
+    for (const filePath of collectInstructionFiles()) {
+        const content = readInstructionFile(filePath);
+        if (!content) continue;
+        contexts.push({
+            title: `AGENTS.md · ${path.relative(process.cwd(), filePath) || path.basename(filePath)}`,
+            content,
+            metadata: { source: filePath }
+        });
+    }
+    return contexts;
+}
+
+function normalizeConfiguredInstructionContexts(value) {
+    const list = Array.isArray(value) ? value : value ? [value] : [];
+    return list.map((item, index) => {
+        if (typeof item === 'string') {
+            return {
+                title: index === 0 ? 'Runtime instructions' : `Runtime instructions ${index + 1}`,
+                content: item,
+                metadata: { source: 'settings.trace_instruction_contexts' }
+            };
+        }
+        if (!item || typeof item !== 'object') return null;
+        return {
+            title: item.title || item.name || 'Runtime instructions',
+            content: item.content || item.text || '',
+            metadata: item.metadata || { source: 'settings.trace_instruction_contexts' }
+        };
+    }).filter(item => String(item?.content || '').trim());
+}
+
+function collectInstructionFiles() {
+    const explicit = Array.isArray(settings.trace_instruction_files)
+        ? settings.trace_instruction_files.map(file => path.resolve(process.cwd(), file))
+        : [];
+    return uniquePaths([...findScopedAgentInstructionFiles(process.cwd()), ...explicit]);
+}
+
+function findScopedAgentInstructionFiles(startDir) {
+    const files = [];
+    let dir = path.resolve(startDir || process.cwd());
+    while (true) {
+        const candidate = path.join(dir, 'AGENTS.md');
+        if (existsSync(candidate)) files.push(candidate);
+        const parent = path.dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+    }
+    return files.reverse();
+}
+
+function uniquePaths(paths) {
+    const seen = new Set();
+    const out = [];
+    for (const item of paths) {
+        const resolved = path.resolve(item);
+        if (seen.has(resolved)) continue;
+        seen.add(resolved);
+        out.push(resolved);
+    }
+    return out;
+}
+
+function readInstructionFile(filePath) {
+    try {
+        if (!existsSync(filePath)) return '';
+        return readFileSync(filePath, 'utf8').trim();
+    } catch (error) {
+        console.warn(`Failed to read instruction context ${filePath}:`, error?.message || error);
+        return '';
     }
 }
 
@@ -334,7 +434,8 @@ function isChatDisplayEvent(type) {
         'tool_call',
         'tool_result',
         'history_cleared',
-        'history_compacted'
+        'history_compacted',
+        'instruction_context'
     ].includes(type);
 }
 

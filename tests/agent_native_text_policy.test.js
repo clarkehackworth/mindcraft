@@ -63,6 +63,17 @@ test('chat output preparation preserves normal full speech text', async () => {
     assert.equal(prepareChatMessageForOutput('hello !stats').spokenMessage, 'hello ');
 });
 
+test('minecraft command echoes are filtered without blocking normal human chat', async () => {
+    const { isMinecraftCommandEchoMessage } = await import('../src/agent/agent.js');
+
+    assert.equal(isMinecraftCommandEchoMessage('Removed 10 item(s) from 2 players]'), true);
+    assert.equal(isMinecraftCommandEchoMessage('Gave 64 oak_log to Ninot_Quyi'), true);
+    assert.equal(isMinecraftCommandEchoMessage('/clear @a'), true);
+    assert.equal(isMinecraftCommandEchoMessage('Ninot_Quyi: 给我做个石头镐子'), false);
+    assert.equal(isMinecraftCommandEchoMessage('给我做个石头镐子'), false);
+    assert.equal(isMinecraftCommandEchoMessage('I removed 10 items from a chest'), false);
+});
+
 test('system TTS invocation passes full text as one macOS say argument', async () => {
     const { buildSystemTTSInvocation } = await import('../src/agent/speak.js');
     const text = 'hello world, codex';
@@ -167,6 +178,19 @@ test('newAction code generation uses an isolated tool-internal prompt', async ()
     assert.ok(prompterSource.includes("msg.content.startsWith('Code generation task:')"));
 });
 
+
+
+test('chat UI projects instruction context trace events', () => {
+    const html = readFileSync('src/mindcraft/public/index.html', 'utf8');
+    const projector = readFileSync('src/mindcraft/public/chat_trace_projector.js', 'utf8');
+
+    assert.ok(projector.includes("case 'instruction_context':"));
+    assert.ok(projector.includes('addInstructionContext(event)'));
+    assert.ok(projector.includes('instructionContexts: []'));
+    assert.ok(html.includes('function renderInstructionContext(event)'));
+    assert.ok(html.includes('Instruction payload'));
+});
+
 test('chat UI adds copy controls to expanded JSON payloads', () => {
     const html = readFileSync('src/mindcraft/public/index.html', 'utf8');
 
@@ -179,21 +203,27 @@ test('chat UI adds copy controls to expanded JSON payloads', () => {
 
 test('chat UI nests coding requests under the active tool instead of top-level turns', () => {
     const html = readFileSync('src/mindcraft/public/index.html', 'utf8');
+    const projector = readFileSync('src/mindcraft/public/chat_trace_projector.js', 'utf8');
 
-    assert.ok(html.includes("event.tag === 'coding' && attachInternalToolEvent(current, event)"));
-    assert.ok(html.includes('function attachInternalToolEvent(turn, event)'));
-    assert.ok(html.includes('function findInternalToolHost(turn)'));
-    assert.ok(html.includes("getToolName(item.call) === 'newAction'"));
+    assert.ok(html.includes('/chat_trace_projector.js'));
+    assert.ok(projector.includes('class ChatTraceProjector'));
+    assert.ok(projector.includes("event.tag === 'coding' && this.attachInternalToolEvent(event)"));
+    assert.ok(projector.includes('attachInternalToolEvent(event)'));
+    assert.ok(projector.includes('findInternalToolHost(turn)'));
+    assert.ok(projector.includes("callHelper('getToolName', item.call) === 'newAction'"));
     assert.ok(html.includes('function renderInternalToolEvents(events)'));
     assert.ok(html.includes('Internal coding requests'));
 });
 
-test('chat request role labels preserve provider message role', () => {
+test('chat request cards avoid duplicate per-message role labels', () => {
     const html = readFileSync('src/mindcraft/public/index.html', 'utf8');
-    const roleLabelSection = html.slice(html.indexOf('function getMessageRoleLabel'), html.indexOf('function isCompactCompatibilityMessage'));
+    const renderRequestMessagesSection = html.slice(html.indexOf('function renderRequestMessages'), html.indexOf('function selectVisibleRequestMessages'));
 
-    assert.ok(roleLabelSection.includes("return message?.role || 'message';"));
-    assert.equal(roleLabelSection.includes("return 'system'"), false);
+    assert.ok(renderRequestMessagesSection.includes('class="chat-message-row"'));
+    assert.ok(renderRequestMessagesSection.includes('class="chat-message-text"'));
+    assert.equal(renderRequestMessagesSection.includes('getMessageRoleLabel'), false);
+    assert.equal(renderRequestMessagesSection.includes('roleLabel'), false);
+    assert.equal(renderRequestMessagesSection.includes('<div class="chat-muted">'), false);
 });
 
 
@@ -264,20 +294,30 @@ test('New Agent forms hide hidden settings and keep profile upload separate', ()
     assert.ok(html.includes('if (!isEditableSetting(key, cfg)) return; // profile and hidden settings are not edited here'));
 });
 
-test('agent persists merged state/request context as one append-only user turn', () => {
+test('agent delegates ReAct request assembly to a single message manager', () => {
     const agentSource = readFileSync('src/agent/agent.js', 'utf8');
+    const managerSource = readFileSync('src/agent/react_message_manager.js', 'utf8');
     const snapshotSource = readFileSync('src/agent/state_snapshot.js', 'utf8');
     const settingsSource = readFileSync('settings.js', 'utf8');
     const settingsSpec = readFileSync('src/mindcraft/public/settings_spec.json', 'utf8');
 
-    assert.ok(agentSource.includes('buildStateSnapshotDiff(this)'));
-    assert.ok(agentSource.includes('createTransientRequestMessage(transientParts)'));
-    assert.ok(agentSource.includes('pendingPersistedParts.push(createHistoryUserMessageForRequest'));
-    assert.ok(agentSource.includes('this.history.addUserContext(pendingPersistedParts.join'));
-    assert.ok(agentSource.includes('await this.history.addUserContext(stateDiff)'));
+    assert.ok(agentSource.includes('new ReactMessageManager(this)'));
+    assert.ok(agentSource.includes('const reactTurn = this.react_messages.startTurn({ source, message, options, behaviorLog })'));
+    assert.ok(agentSource.includes('await reactTurn.buildRequestMessages()'));
+    assert.equal(agentSource.includes('await this.react_messages.buildRequestMessages()'), false);
+    assert.equal(agentSource.includes('buildStateSnapshotDiff(this)'), false);
+    assert.equal(agentSource.includes('pendingPersistedParts'), false);
+    assert.equal(agentSource.includes('createTransientRequestMessage(transientParts)'), false);
     assert.equal(agentSource.includes('historyBeforeCurrentMessage = this.history.getHistory()'), false);
     assert.equal(agentSource.includes('removeLastMatchingMessage'), false);
-    assert.ok(agentSource.includes("join(\'\\n\\n\')"));
+
+    assert.ok(managerSource.includes('class ReactMessageManager'));
+    assert.ok(managerSource.includes('return new ReactMessageTurn'));
+    assert.ok(managerSource.includes('buildStateSnapshotDiff(this.agent)'));
+    assert.ok(managerSource.includes('this.pendingPersistedParts.join'));
+    assert.ok(managerSource.includes('await this.agent.history.addUserContext(content)'));
+    assert.ok(managerSource.includes('createTransientRequestMessage(requestTransientParts)'));
+
     assert.ok(snapshotSource.includes('State update:\\n'));
     assert.ok(snapshotSource.includes('`* inventory: ${formatMap(snapshot.inventory)'));
     assert.ok(snapshotSource.includes('lines.push(`* ${label}:'));
@@ -289,35 +329,61 @@ test('agent persists merged state/request context as one append-only user turn',
     assert.equal(settingsSpec.includes('state_snapshot_diff'), false);
 });
 
-
 test('system prompts carry state snapshot usage guidance', () => {
     const prompt = readFileSync('profiles/defaults/prompts/conversing.md', 'utf8');
 
     assert.ok(prompt.includes('Use transient state snapshots/diffs as your current baseline'));
 });
 
-test('chat UI suppresses history turn duplicated by the following request', () => {
-    const html = readFileSync('src/mindcraft/public/index.html', 'utf8');
+test('chat UI projection suppresses history turns duplicated by the following request', () => {
+    const projector = readFileSync('src/mindcraft/public/chat_trace_projector.js', 'utf8');
 
-    assert.ok(html.includes('isPendingHistoryOnlyTurn(current)'));
-    assert.ok(html.includes('thread.turns.pop()'));
-    assert.ok(html.includes('isHistoryTurnIncludedInRequest(event.turn, requestMessages)'));
-    assert.ok(html.includes('.filter(historyEvent => !isHistoryTurnIncludedInRequest(historyEvent.turn, requestMessages))'));
-    assert.ok(html.includes('requestText.startsWith(`${content}\\n\\n`)'));
+    assert.ok(projector.includes('class ChatTraceProjector'));
+    assert.ok(projector.includes('takePendingHistoryOnlyTurn()'));
+    assert.ok(projector.includes('isHistoryOnlyProjectionTurn(this.current)'));
+    assert.ok(projector.includes('this.thread.turns.pop()'));
+    assert.ok(projector.includes('removeRequestIncludedHistory(turn, requestMessages)'));
+    assert.ok(projector.includes("callHelper('isHistoryTurnIncludedInRequest', historyEvent.turn, requestMessages)"));
+    const html = readFileSync('src/mindcraft/public/index.html', 'utf8');
+    assert.ok(html.includes('requestText.startsWith(`${content}'));
 });
 
-test('chat UI renders only request message deltas instead of repeated full history', () => {
+test('chat UI projection renders only request message deltas instead of repeated full history', () => {
     const html = readFileSync('src/mindcraft/public/index.html', 'utf8');
+    const projector = readFileSync('src/mindcraft/public/chat_trace_projector.js', 'utf8');
 
-    assert.ok(html.includes('let previousRequestMessages = []'));
-    assert.ok(html.includes('event.visible_messages = selectVisibleRequestMessages(event.messages, previousRequestMessages)'));
+    assert.ok(projector.includes('this.previousRequestMessages = []'));
+    assert.ok(projector.includes("visibleRequestMessages: callHelper('selectVisibleRequestMessages', requestMessages, this.previousRequestMessages)"));
+    assert.ok(projector.includes('this.previousRequestMessages = requestMessages'));
     assert.ok(html.includes('getCommonRequestPrefixLength(previousMessages, messages)'));
     assert.ok(html.includes('const newMessages = messages.slice(startIndex);'));
     assert.ok(html.includes('getTrailingUserMessages(scope)'));
     assert.ok(html.includes("if (message?.role !== 'user') break;"));
-    assert.ok(html.includes('function getMessageRoleLabel(message, preview = formatChatMessagePreview(message))'));
     assert.equal(html.includes("preview.startsWith('Context:')"), false);
     assert.ok(html.includes('replace(/^Context:'));
-    assert.ok(html.includes("State update:\\n')"));
+    assert.ok(html.includes('State update:'));
     assert.ok(html.includes('class="chat-message-text"'));
+});
+
+test('chat trace projector is display-only and cannot mutate model history or requests', () => {
+    const projector = readFileSync('src/mindcraft/public/chat_trace_projector.js', 'utf8');
+
+    assert.equal(projector.includes('addUserContext'), false);
+    assert.equal(projector.includes('.addNativeTool'), false);
+    assert.equal(projector.includes('.add('), false);
+    assert.equal(projector.includes('.save('), false);
+    assert.equal(projector.includes('sendRequest'), false);
+    assert.equal(projector.includes('promptConvo'), false);
+    assert.equal(projector.includes('traceLLM'), false);
+});
+
+test('conversation and coding requests use separate prompt cache scopes', () => {
+    const prompterSource = readFileSync('src/models/prompter.js', 'utf8');
+
+    assert.ok(prompterSource.includes("cacheScope: 'conversation'"));
+    assert.ok(prompterSource.includes("cacheScope: 'coding'"));
+    assert.ok(prompterSource.includes("cacheScope: 'compactSummary'"));
+    assert.ok(prompterSource.includes("cacheScope: 'botResponder'"));
+    assert.ok(prompterSource.includes("cacheScope: 'vision'"));
+    assert.ok(prompterSource.includes("cacheScope: 'goalSetting'"));
 });

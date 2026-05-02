@@ -293,6 +293,8 @@ test('Codex adapter sends native-login Responses request and normalizes tool cal
         assert.equal(requests[0].init.headers.Authorization, 'Bearer access-token-test');
         assert.equal(requests[0].init.headers['ChatGPT-Account-ID'], 'account-id-test');
         assert.equal(requests[0].init.headers.originator, 'codex_cli_rs');
+        assert.equal(requests[0].init.headers.session_id, 'session-test');
+        assert.equal(requests[0].init.headers['x-client-request-id'], 'session-test');
         assert.equal(requests[0].body.tools[0].name, 'report_status');
         assert.equal(Object.prototype.hasOwnProperty.call(requests[0].body, 'tool_choice'), false);
         assert.equal(requests[0].body.stream, true);
@@ -368,14 +370,69 @@ test('Codex adapter keeps prompt cache key stable across multi-turn tool replay'
 
     const first = model.buildRequestBody('gpt-5.5', turns, 'Use tools.', [tool]);
     const second = model.buildRequestBody('gpt-5.5', turns, 'Use tools.', [tool]);
+    const conversation = model.buildRequestBody('gpt-5.5', turns, 'Use tools.', [tool], { cacheScope: 'conversation' });
+    const coding = model.buildRequestBody('gpt-5.5', [{ role: 'user', content: 'write code' }], 'Write code.', null, { cacheScope: 'coding' });
 
     assert.equal(first.prompt_cache_key, 'stable-cache-session');
     assert.equal(second.prompt_cache_key, 'stable-cache-session');
+    assert.equal(conversation.prompt_cache_key, 'stable-cache-session:conversation');
+    assert.equal(coding.prompt_cache_key, 'stable-cache-session:coding');
+    assert.equal(model.buildHeaders({ accessToken: 'token', accountId: 'account' }).session_id, 'stable-cache-session');
+    assert.equal(model.buildHeaders({ accessToken: 'token', accountId: 'account' }, { cacheScope: 'conversation' }).session_id, 'stable-cache-session:conversation');
+    assert.equal(model.buildHeaders({ accessToken: 'token', accountId: 'account' }, { cacheScope: 'coding' })['x-client-request-id'], 'stable-cache-session:coding');
     assert.deepEqual(second.input, first.input);
     assert.deepEqual(
         first.input.filter(item => item.type === 'function_call' || item.type === 'function_call_output').map(item => item.call_id),
         ['call_1', 'call_1', 'call_2', 'call_2']
     );
+});
+
+test('Codex adapter replays turn-state only within the same ReAct turn scope', async () => {
+    const { keysPath, cleanup } = writeTempKeys();
+    const originalFetch = globalThis.fetch;
+    const requests = [];
+    globalThis.fetch = async (url, init) => {
+        requests.push({ url, init, body: JSON.parse(init.body) });
+        return new Response([
+            'event: response.output_text.delta',
+            'data: {"type":"response.output_text.delta","delta":"ok"}',
+            '',
+            'event: response.completed',
+            'data: {"type":"response.completed","response":{"id":"resp_1"}}',
+            ''
+        ].join('\n'), {
+            status: 200,
+            headers: {
+                'content-type': 'text/event-stream',
+                'x-codex-turn-state': 'sticky-route-1'
+            }
+        });
+    };
+
+    try {
+        const model = new CodexChatGPT('gpt-5.5', 'https://example.test/backend-api/codex', { keysPath, sessionId: 'session-test' });
+        await model.sendRequest([{ role: 'user', content: 'first' }], 'Use tools.', '***', [tool], {
+            cacheScope: 'conversation',
+            turnStateKey: 'react-1'
+        });
+        await model.sendRequest([{ role: 'user', content: 'first' }, { role: 'assistant', content: 'ok' }], 'Use tools.', '***', [tool], {
+            cacheScope: 'conversation',
+            turnStateKey: 'react-1'
+        });
+        await model.sendRequest([{ role: 'user', content: 'new turn' }], 'Use tools.', '***', [tool], {
+            cacheScope: 'conversation',
+            turnStateKey: 'react-2'
+        });
+
+        assert.equal(requests[0].init.headers.session_id, 'session-test:conversation');
+        assert.equal(requests[0].init.headers['x-client-request-id'], 'session-test:conversation');
+        assert.equal(requests[0].init.headers['x-codex-turn-state'], undefined);
+        assert.equal(requests[1].init.headers['x-codex-turn-state'], 'sticky-route-1');
+        assert.equal(requests[2].init.headers['x-codex-turn-state'], undefined);
+    } finally {
+        globalThis.fetch = originalFetch;
+        cleanup();
+    }
 });
 
 async function waitFor(fn, timeoutMs = 1000) {
