@@ -37,7 +37,7 @@ export class History {
     }
 
     getHistory() {
-        return JSON.parse(JSON.stringify(getTurnsAfterLastCompactBoundary(this.turns)));
+        return JSON.parse(JSON.stringify(getModelContextTurns(this.turns)));
     }
 
     async compactHistoryIfNeeded() {
@@ -56,10 +56,11 @@ export class History {
             return false;
         }
         const threshold = Math.max(2, Math.ceil(this.max_messages * (this.compact_message_threshold_percent / 100)));
-        if (this.turns.length < threshold) {
+        const activeTurns = getActiveTurnsSinceLastCompact(this.turns);
+        if (activeTurns.length < threshold) {
             return false;
         }
-        return this.turns.some(turn => !turn.compact_boundary && !turn.compact_summary);
+        return activeTurns.some(turn => !turn.compact_boundary && !turn.compact_summary);
     }
 
     hasPendingToolCall() {
@@ -503,7 +504,7 @@ function isDuplicateSelfPromptReminder(turns, content) {
     if (typeof content !== 'string' || !content.startsWith('System: Continue working on your current goal:')) {
         return false;
     }
-    return getTurnsAfterLastCompactBoundary(turns).some(turn => turn?.role === 'user' && turn?.content === content);
+    return getModelContextTurns(turns).some(turn => turn?.role === 'user' && turn?.content === content);
 }
 
 function createCompactBoundaryTurn(metadata = {}) {
@@ -527,9 +528,19 @@ function createCompactSummaryTurn(summary, archiveFile) {
     };
 }
 
-function getTurnsAfterLastCompactBoundary(turns = []) {
+function getModelContextTurns(turns = []) {
     const index = turns.findLastIndex(turn => turn?.compact_boundary || turn?.subtype === 'compact_boundary');
-    return index === -1 ? turns : turns.slice(index);
+    return index === -1 ? turns : turns.slice(index + 1);
+}
+
+function getActiveTurnsSinceLastCompact(turns = []) {
+    const index = turns.findLastIndex(turn =>
+        turn?.compact_boundary ||
+        turn?.subtype === 'compact_boundary' ||
+        turn?.compact_summary ||
+        turn?.is_compact_summary
+    );
+    return index === -1 ? turns : turns.slice(index + 1);
 }
 
 export function normalizeHistoryTurn(turn) {

@@ -245,9 +245,57 @@ test('history compaction replaces active context with boundary and summary', asy
         assert.equal(history.turns[0].compact_boundary, true);
         assert.equal(history.turns[1].compact_summary, true);
         assert.match(history.turns[1].content, /summary of 4 turns/);
-        assert.deepEqual(history.getHistory(), history.turns);
+        assert.deepEqual(history.getHistory(), [history.turns[1]]);
         assert.ok(history.full_history_fp);
         assert.ok(existsSync(history.full_history_fp));
+    } finally {
+        setSettings({});
+        process.chdir(originalCwd);
+        rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('history compaction counts only new turns after the latest compact summary', async () => {
+    const originalCwd = process.cwd();
+    const dir = mkdtempSync(path.join(tmpdir(), 'mindcraft-compact-budget-'));
+    try {
+        process.chdir(dir);
+        setSettings({
+            show_chat_history: false,
+            log_chat_trace: false,
+            max_messages: 4,
+            compact_message_threshold_percent: 100
+        });
+        const summarized = [];
+        const history = new History({
+            name: 'compactbot',
+            prompter: {
+                promptCompactSummary: async turns => {
+                    summarized.push(turns.map(t => t.content || t.name).join('|'));
+                    return `summary pass ${summarized.length}`;
+                }
+            },
+            self_prompter: { state: {} },
+            task: {}
+        });
+
+        await history.add('Steve', 'one');
+        await history.add('compactbot', 'two');
+        await history.add('Steve', 'three');
+        await history.add('compactbot', 'four');
+        assert.equal(summarized.length, 1);
+
+        await history.add('Steve', 'five');
+        await history.add('compactbot', 'six');
+        assert.equal(summarized.length, 1);
+
+        await history.add('Steve', 'seven');
+        await history.add('compactbot', 'eight');
+        assert.equal(summarized.length, 2);
+        assert.doesNotMatch(summarized[1], /Conversation compacted/);
+        assert.match(summarized[1], /summary pass 1/);
+        assert.match(summarized[1], /Steve: five/);
+        assert.match(summarized[1], /six/);
     } finally {
         setSettings({});
         process.chdir(originalCwd);

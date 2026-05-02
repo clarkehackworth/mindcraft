@@ -27,6 +27,7 @@ export class Agent {
         this._disconnectHandled = false;
         this.active_message_handlers = 0;
         this.active_native_tool_calls = new Map();
+        this.message_handler_queue = Promise.resolve();
 
         // Initialize components
         this.actions = new ActionManager(this);
@@ -266,12 +267,31 @@ export class Agent {
     }
 
     async handleMessage(source, message, max_responses=null, options={}) {
+        if (this._shouldBypassMessageQueue(source, message)) {
+            return this._runMessageHandler(source, message, max_responses, options);
+        }
+        const previous = this.message_handler_queue || Promise.resolve();
+        const queued = previous
+            .catch(() => {})
+            .then(() => this._runMessageHandler(source, message, max_responses, options));
+        this.message_handler_queue = queued.catch(() => {});
+        return queued;
+    }
+
+    async _runMessageHandler(source, message, max_responses=null, options={}) {
         this.active_message_handlers = (this.active_message_handlers || 0) + 1;
         try {
             return await this._handleMessageImpl(source, message, max_responses, options);
         } finally {
             this.active_message_handlers = Math.max(0, (this.active_message_handlers || 1) - 1);
         }
+    }
+
+    _shouldBypassMessageQueue(source, message) {
+        const self_prompt = source === 'system' || source === this.name;
+        if (self_prompt || convoManager.isOtherAgent(source)) return false;
+        const commandName = containsCommand(message);
+        return ['!stop', '!stfu', '!restart'].includes(commandName);
     }
 
     async _handleMessageImpl(source, message, max_responses=null, options={}) {

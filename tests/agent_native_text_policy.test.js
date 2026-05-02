@@ -61,6 +61,60 @@ test('interrupted native tool responses are closed with synthetic tool results b
     assert.deepEqual(turns.slice(-2).map(turn => turn.role), ['assistant', 'tool']);
 });
 
+test('conversation handlers are serialized so request history prefixes stay closed', async () => {
+    const { Agent } = await import('../src/agent/agent.js');
+    const turns = [];
+    const requests = [];
+    let releaseFirst;
+    const firstPromptStarted = new Promise(resolve => {
+        releaseFirst = resolve;
+    });
+    let promptCount = 0;
+    const agent = Object.create(Agent.prototype);
+    agent.name = 'bot';
+    agent.shut_up = false;
+    agent.last_sender = null;
+    agent.active_message_handlers = 0;
+    agent.message_handler_queue = Promise.resolve();
+    agent.checkTaskDone = async () => {};
+    agent.self_prompter = {
+        shouldInterrupt: () => false,
+        isActive: () => false,
+        handleUserPromptedCmd: () => {}
+    };
+    agent.bot = { modes: { flushBehaviorLog: () => '' } };
+    agent.history = {
+        addUserContext: async content => turns.push({ role: 'user', content }),
+        add: async (name, content) => turns.push(name === agent.name ? { role: 'assistant', content } : { role: 'user', content: `${name}: ${content}` }),
+        save: () => {},
+        getHistory: () => turns.map(turn => ({ ...turn }))
+    };
+    agent.prompter = {
+        promptConvo: async messages => {
+            promptCount += 1;
+            requests.push(messages.map(turn => ({ ...turn })));
+            if (promptCount === 1) {
+                await firstPromptStarted;
+            }
+            return `reply ${promptCount}`;
+        },
+        consumeLastConversationResponseMetadata: () => ({})
+    };
+    agent.routeResponse = () => {};
+
+    const first = agent.handleMessage('Steve', 'first', 1);
+    await new Promise(resolve => setImmediate(resolve));
+    const second = agent.handleMessage('Steve', 'second', 1);
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.equal(requests.length, 1);
+    releaseFirst();
+    await Promise.all([first, second]);
+
+    assert.equal(requests.length, 2);
+    assert.deepEqual(requests[1].map(turn => turn.content), ['Steve: first', 'reply 1', 'Steve: second']);
+});
+
 
 
 test('user stop closes an executing native tool exactly once', async () => {
