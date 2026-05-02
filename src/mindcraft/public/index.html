@@ -711,23 +711,48 @@
         .chat-thinking {
             margin: 8px 0;
             color: #8f8f8f;
+            font-size: 0.9em;
+            font-style: italic;
         }
         .chat-thinking summary {
             cursor: pointer;
-            color: #a7a7a7;
-            font-size: 0.9em;
+            color: #9a9a9a;
             font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
             user-select: none;
+            list-style: none;
+        }
+        .chat-thinking summary::-webkit-details-marker {
+            display: none;
+        }
+        .chat-thinking-label {
+            display: block;
+            color: #9a9a9a;
+        }
+        .chat-thinking-preview {
+            display: -webkit-box;
+            margin-top: 4px;
+            padding-left: 12px;
+            border-left: 3px solid rgba(156, 123, 255, 0.28);
+            color: #7f7f7f;
+            white-space: pre-wrap;
+            overflow: hidden;
+            overflow-wrap: anywhere;
+            -webkit-box-orient: vertical;
+            -webkit-line-clamp: 2;
+            line-height: 1.35;
+        }
+        .chat-thinking[open] .chat-thinking-preview {
+            display: none;
         }
         .chat-thinking-body {
             margin-top: 6px;
             padding-left: 14px;
-            border-left: 2px solid rgba(255,255,255,0.09);
+            border-left: 3px solid rgba(156, 123, 255, 0.28);
             white-space: pre-wrap;
             overflow-wrap: anywhere;
-            color: #8a8a8a;
+            color: #7f7f7f;
             font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-            line-height: 1.45;
+            line-height: 1.35;
         }
 
         /* assistantspace style chat view */
@@ -3001,10 +3026,14 @@
         function renderThinking(thinking) {
             const text = String(thinking || '').trim();
             if (!text) return '';
+            const safeText = escapeHTML(limitText(text, 6000));
             return `
                 <details class="chat-thinking">
-                    <summary>Thinking</summary>
-                    <div class="chat-thinking-body">${escapeHTML(limitText(text, 6000))}</div>
+                    <summary>
+                        <span class="chat-thinking-label">Thinking</span>
+                        <span class="chat-thinking-preview">${safeText}</span>
+                    </summary>
+                    <div class="chat-thinking-body">${safeText}</div>
                 </details>`;
         }
 
@@ -3066,13 +3095,12 @@
 
         function renderToolStepBody(result, args, item) {
             const internalEvents = renderInternalToolEvents(item.internalEvents);
-            const thinking = renderThinking(item.event?.thinking);
             if (result) {
-                return `${thinking}${renderToolOutput(result.result, result, internalEvents)}`;
+                return renderToolOutput(result.result, result, internalEvents);
             }
             const detailId = getChatDetailId('Tool running', item.event || { type: 'tool_running' });
             const details = renderDetails('Tool call payload', item.event);
-            return `${thinking}<details class="chat-tool-output-detail chat-tool-result chat-tool-pending-detail" data-chat-detail-id="${escapeHTML(detailId)}"><summary class="chat-tool-output chat-tool-pending"><span class="chat-tool-output-glyph">⎿</span><span class="chat-tool-output-text">Running…</span></summary><div class="chat-tool-output-extra">${internalEvents}${details}</div></details>`;
+            return `<details class="chat-tool-output-detail chat-tool-result chat-tool-pending-detail" data-chat-detail-id="${escapeHTML(detailId)}"><summary class="chat-tool-output chat-tool-pending"><span class="chat-tool-output-glyph">⎿</span><span class="chat-tool-output-text">Running…</span></summary><div class="chat-tool-output-extra">${internalEvents}${details}</div></details>`;
         }
 
         function renderInternalToolEvents(events) {
