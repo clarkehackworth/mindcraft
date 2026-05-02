@@ -32,6 +32,7 @@ export class Agent {
         this.human_message_flush_timer = null;
         this.human_message_interrupt_promise = Promise.resolve();
         this.message_interrupt_epoch = 0;
+        this.active_llm_abort_controller = null;
 
         // Initialize components
         this.actions = new ActionManager(this);
@@ -275,6 +276,8 @@ export class Agent {
             return this._enqueueHumanMessage(source, message, max_responses, options);
         }
         if (this._shouldBypassMessageQueue(source, message)) {
+            this.message_interrupt_epoch = (this.message_interrupt_epoch || 0) + 1;
+            this.abortActiveLLMRequest('Interrupted by human command.');
             return this._runMessageHandler(source, message, max_responses, options);
         }
         const previous = this.message_handler_queue || Promise.resolve();
@@ -347,10 +350,34 @@ export class Agent {
     }
 
     async _interruptActiveTurnForNewHumanMessage() {
+        this.abortActiveLLMRequest('Interrupted by newer user message.');
         const closed = await this.finishInterruptedNativeToolCalls('Tool interrupted by newer user message.');
         if (closed > 0) {
             this.requestInterrupt();
         }
+    }
+
+    beginActiveLLMRequest() {
+        const controller = new AbortController();
+        this.active_llm_abort_controller = controller;
+        return controller;
+    }
+
+    endActiveLLMRequest(controller) {
+        if (this.active_llm_abort_controller === controller) {
+            this.active_llm_abort_controller = null;
+        }
+    }
+
+    abortActiveLLMRequest(reason = 'Interrupted.') {
+        const controller = this.active_llm_abort_controller;
+        if (!controller || controller.signal?.aborted) return false;
+        try {
+            controller.abort(new Error(reason));
+        } catch {
+            controller.abort();
+        }
+        return true;
     }
 
     async _runMessageHandler(source, message, max_responses=null, options={}) {
@@ -427,7 +454,16 @@ export class Agent {
         for (let i=0; i<max_responses; i++) {
             if (checkInterrupt()) break;
             let history = await reactTurn.buildRequestMessages();
-            let res = await this.prompter.promptConvo(history, { turnStateKey: reactTurn.turnStateKey });
+            const llmAbortController = this.beginActiveLLMRequest();
+            let res;
+            try {
+                res = await this.prompter.promptConvo(history, {
+                    turnStateKey: reactTurn.turnStateKey,
+                    signal: llmAbortController.signal
+                });
+            } finally {
+                this.endActiveLLMRequest(llmAbortController);
+            }
             if (isStaleTurn()) {
                 console.log(`${this.name} dropped stale response to ${source} after newer user message.`);
                 break;

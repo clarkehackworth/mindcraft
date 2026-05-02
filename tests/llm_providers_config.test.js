@@ -109,15 +109,17 @@ test('remote llm providers explicitly declare which key they use', () => {
 });
 
 test('llm provider example mirrors provider ids without real key material', () => {
+    const privateExampleOmissions = new Set(['google_relay']);
     assert.deepEqual(
         new Set(Object.keys(example.models).filter(id => !id.startsWith('_example_'))),
-        new Set(Object.keys(config.models))
+        new Set(Object.keys(config.models).filter(id => !privateExampleOmissions.has(id)))
     );
     assert.deepEqual(
         new Set(Object.keys(example.embeddings).filter(id => !id.startsWith('_example_'))),
         new Set(Object.keys(config.embeddings))
     );
     assert.equal(example.keys.XIAOAI_API_KEY, undefined);
+    assert.equal(example.keys.GEMINI_RELAY_API_KEY, undefined);
     for (const [keyName, value] of Object.entries(example.keys)) {
         if (keyName === 'CODEX_CHATGPT_AUTH') continue;
         assert.equal(value, '', `${keyName} should be blank in the example`);

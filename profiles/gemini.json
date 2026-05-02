@@ -1,10 +1,9 @@
 {
     "name": "gemini",
     "model": {
-        "provider": "google_relay",
-        "model": "gemini-3.1-pro-preview"
+        "provider": "google",
+        "model": "gemini-2.5-flash"
     },
-    "speak_model": "google_relay/gemini-3.1-pro-preview/Kore",
     "cooldown": 2000,
     "embedding": {
         "provider": "",

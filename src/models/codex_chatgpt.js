@@ -121,6 +121,10 @@ export class CodexChatGPT {
             }
             return text || 'No response received.';
         } catch (err) {
+            if (isAbortError(err)) {
+                console.log('Codex ChatGPT request aborted.');
+                throw err;
+            }
             console.log(sanitizeCodexError(err));
             return 'My brain disconnected, try again.';
         }
@@ -166,7 +170,8 @@ export class CodexChatGPT {
         return await codexFetch(endpoint, {
             method: 'POST',
             headers: this.buildHeaders(auth, options),
-            body: JSON.stringify(body)
+            body: JSON.stringify(body),
+            signal: options?.signal
         });
     }
 
@@ -209,10 +214,13 @@ export class CodexChatGPT {
     }
 
     getTurnStateKey(options = {}) {
-        const turnStateKey = String(options?.turnStateKey || '').trim();
-        if (!turnStateKey) return '';
-        const scopedSessionId = buildScopedPromptCacheKey(this.sessionId, options?.cacheScope);
-        return `${scopedSessionId}:${turnStateKey}`;
+        // Match Codex CLI's session/conversation-level continuity. The backend may
+        // return x-codex-turn-state as a sticky-routing token; if we key it by
+        // individual ReAct request IDs, a new human message starts a fresh route
+        // and prompt-cache accounting can fall back to zero even when the history
+        // prefix is stable. Scope it only by prompt-cache scope so conversation,
+        // coding, vision, etc. do not leak into one another.
+        return buildScopedPromptCacheKey(this.sessionId, options?.cacheScope);
     }
 
     async embed() {
@@ -990,6 +998,10 @@ function extractErrorMessage(body) {
     } catch {
         return body.slice(0, 300);
     }
+}
+
+function isAbortError(err) {
+    return err?.name === 'AbortError' || String(err?.message || err || '').includes('aborted');
 }
 
 function sanitizeCodexError(error) {

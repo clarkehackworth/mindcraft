@@ -274,6 +274,37 @@ test('Codex adapter starts local login runner when configured auth path is missi
     }
 });
 
+
+test('Codex adapter forwards abort signals to the Responses request', async () => {
+    const { keysPath, cleanup } = writeTempKeys();
+    const originalFetch = globalThis.fetch;
+    const requests = [];
+    const controller = new AbortController();
+    globalThis.fetch = async (url, init) => {
+        requests.push({ url, init, body: JSON.parse(init.body) });
+        return new Response([
+            'event: response.output_text.delta',
+            'data: {"type":"response.output_text.delta","delta":"ok"}',
+            '',
+            'event: response.completed',
+            'data: {"type":"response.completed","response":{"id":"resp_1"}}',
+            ''
+        ].join('\n'), {
+            status: 200,
+            headers: { 'content-type': 'text/event-stream' }
+        });
+    };
+
+    try {
+        const model = new CodexChatGPT('gpt-5.5', 'https://example.test/backend-api/codex', { keysPath, sessionId: 'session-test' });
+        await model.sendRequest([{ role: 'user', content: 'hi' }], 'Say ok.', '***', null, { signal: controller.signal });
+        assert.equal(requests[0].init.signal, controller.signal);
+    } finally {
+        globalThis.fetch = originalFetch;
+        cleanup();
+    }
+});
+
 test('Codex adapter sends native-login Responses request and normalizes tool call', async () => {
     const { keysPath, cleanup } = writeTempKeys();
     const originalFetch = globalThis.fetch;
@@ -401,7 +432,7 @@ test('Codex adapter keeps prompt cache key stable across multi-turn tool replay'
     );
 });
 
-test('Codex adapter replays turn-state only within the same ReAct turn scope', async () => {
+test('Codex adapter replays turn-state across conversation scope for sticky cache routing', async () => {
     const { keysPath, cleanup } = writeTempKeys();
     const originalFetch = globalThis.fetch;
     const requests = [];
@@ -442,7 +473,7 @@ test('Codex adapter replays turn-state only within the same ReAct turn scope', a
         assert.equal(requests[0].init.headers['x-client-request-id'], 'session-test:conversation');
         assert.equal(requests[0].init.headers['x-codex-turn-state'], undefined);
         assert.equal(requests[1].init.headers['x-codex-turn-state'], 'sticky-route-1');
-        assert.equal(requests[2].init.headers['x-codex-turn-state'], undefined);
+        assert.equal(requests[2].init.headers['x-codex-turn-state'], 'sticky-route-1');
     } finally {
         globalThis.fetch = originalFetch;
         cleanup();

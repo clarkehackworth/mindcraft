@@ -240,7 +240,8 @@ export class Prompter {
                 this.agent.history.traceLLMRequest('conversation', this.chat_model, prompt, requestMessages, tools);
                 generation = await this.chat_model.sendRequest(requestMessages, prompt, '***', tools, {
                     cacheScope: 'conversation',
-                    turnStateKey: options.turnStateKey
+                    turnStateKey: options.turnStateKey,
+                    signal: options.signal
                 });
                 this.captureConversationResponseMetadata(this.chat_model, generation);
                 this.agent.history.traceLLMResponse('conversation', this.chat_model, generation);
@@ -257,6 +258,10 @@ export class Prompter {
 
             } catch (error) {
                 this.agent.history.traceLLMError('conversation', this.chat_model, error);
+                if (isAbortError(error)) {
+                    console.warn('Conversation LLM request aborted before completion.');
+                    return '';
+                }
                 console.error('Error during message generation or file writing:', error);
                 continue;
             }
@@ -496,4 +501,8 @@ function extractCodeTaskContent(messages) {
         .replace(/^Code generation task:\s*/i, '')
         .replace(/\n\nWrite the implementation as a JavaScript code block\.\s*$/i, '')
         .trim();
+}
+
+function isAbortError(error) {
+    return error?.name === 'AbortError' || String(error?.message || error || '').includes('aborted');
 }

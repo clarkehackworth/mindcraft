@@ -109,6 +109,7 @@ test('new human message interrupts and drops a stale pending LLM response', asyn
     const { Agent } = await import('../src/agent/agent.js');
     const turns = [];
     const requests = [];
+    const signals = [];
     let releaseFirst;
     const firstPromptStarted = new Promise(resolve => {
         releaseFirst = resolve;
@@ -137,8 +138,9 @@ test('new human message interrupts and drops a stale pending LLM response', asyn
         getHistory: () => turns.map(turn => ({ ...turn }))
     };
     agent.prompter = {
-        promptConvo: async messages => {
+        promptConvo: async (messages, options = {}) => {
             const currentPrompt = ++promptCount;
+            signals.push(options.signal);
             requests.push(messages.map(turn => ({ ...turn })));
             if (currentPrompt === 1) {
                 await firstPromptStarted;
@@ -155,6 +157,8 @@ test('new human message interrupts and drops a stale pending LLM response', asyn
     await new Promise(resolve => setTimeout(resolve, 10));
 
     assert.equal(requests.length, 2);
+    assert.equal(signals[0].aborted, true);
+    assert.equal(signals[1].aborted, false);
     releaseFirst();
     await Promise.all([first, second]);
 
