@@ -92,13 +92,20 @@ export function readSavedChatHistory(agentName, options = {}) {
         }
     }
 
+    candidates.push(...allJsonlFiles(path.join(botDir, 'chat-history')));
     candidates.push(path.join(botDir, 'chat_history.jsonl'));
     candidates.push(newestJsonlFile(path.join(botDir, 'chat-history')));
 
-    const historyFile = candidates.find(candidate => candidate && existsSync(candidate));
-    if (historyFile) {
+    const historyFiles = uniqueExistingFiles(candidates).sort(compareTraceFiles);
+    if (historyFiles.length > 0) {
         try {
-            return { loaded: true, source: historyFile, events: readJsonLines(historyFile) };
+            const events = dedupeChatEvents(historyFiles.flatMap(file => readJsonLines(file)));
+            return {
+                loaded: true,
+                source: historyFiles[0],
+                sources: historyFiles,
+                events: expandArchivedCompactHistory(events, cwd, agentName)
+            };
         } catch (error) {
             return { loaded: false, reason: 'read_error', error: error.message, events: [] };
         }
@@ -109,18 +116,133 @@ export function readSavedChatHistory(agentName, options = {}) {
             loaded: true,
             source: memoryPath,
             restored_from_memory: true,
-            events: memoryData.turns.map((turn, index) => ({
+            events: expandArchivedCompactHistory(memoryData.turns.map((turn, index) => ({
                 timestamp: memoryData.updated_at || null,
                 agent: agentName,
                 type: 'history_turn_added',
                 turn,
                 active_turn_count: index + 1,
                 restored_from_memory: true
-            }))
+            })), cwd, agentName)
         };
     }
 
     return { loaded: false, reason: 'not_found', events: [] };
+}
+
+function allJsonlFiles(dirPath) {
+    if (!existsSync(dirPath)) return [];
+    return readdirSync(dirPath)
+        .filter(name => name.endsWith('.jsonl'))
+        .map(name => path.join(dirPath, name))
+        .filter(file => {
+            try { return statSync(file).isFile(); }
+            catch { return false; }
+        });
+}
+
+function uniqueExistingFiles(files) {
+    const seen = new Set();
+    const out = [];
+    for (const file of files) {
+        if (!file || !existsSync(file)) continue;
+        const resolved = path.resolve(file);
+        if (seen.has(resolved)) continue;
+        seen.add(resolved);
+        out.push(resolved);
+    }
+    return out;
+}
+
+function compareTraceFiles(a, b) {
+    const nameCompare = path.basename(a).localeCompare(path.basename(b));
+    if (nameCompare !== 0) return nameCompare;
+    try {
+        return statSync(a).mtimeMs - statSync(b).mtimeMs;
+    } catch {
+        return 0;
+    }
+}
+
+function dedupeChatEvents(events) {
+    const seen = new Set();
+    const out = [];
+    for (const event of events) {
+        const key = chatEventKey(event);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(event);
+    }
+    return out;
+}
+
+function chatEventKey(event) {
+    if (!event || typeof event !== 'object') return JSON.stringify(event);
+    const toolId = event.tool_call?.id || event.tool_call?.tool_call_id || event.tool_call?.function?.id || '';
+    const toolName = event.tool_call?.name || event.tool_call?.function?.name || '';
+    const model = event.model?.model || event.model?.api || '';
+    const turnKey = event.turn ? historyTurnKey(event.turn) : '';
+    return [event.timestamp || '', event.agent || '', event.type || '', event.tag || '', toolId || toolName, model, turnKey].join('|');
+}
+
+function expandArchivedCompactHistory(events, cwd, agentName) {
+    const output = [];
+    const seenTurns = new Set();
+    for (const event of events) {
+        const archiveFile = getArchiveFileFromEvent(event);
+        if (archiveFile) {
+            const archivedTurns = readArchivedTurns(cwd, archiveFile);
+            archivedTurns.forEach((turn, index) => {
+                const key = historyTurnKey(turn);
+                if (!key || seenTurns.has(key)) return;
+                const archiveEvent = {
+                    timestamp: event.timestamp || null,
+                    agent: event.agent || agentName,
+                    type: 'history_turn_added',
+                    turn,
+                    active_turn_count: index + 1,
+                    restored_from_archive: true,
+                    archive_file: archiveFile
+                };
+                output.push(archiveEvent);
+                seenTurns.add(key);
+            });
+        }
+        output.push(event);
+        if (event?.type === 'history_turn_added' && event.turn) {
+            const key = historyTurnKey(event.turn);
+            if (key) seenTurns.add(key);
+        }
+    }
+    return output;
+}
+
+function getArchiveFileFromEvent(event) {
+    return event?.full_history_file ||
+        event?.turn?.archive_file ||
+        event?.turn?.compact_metadata?.archive_file ||
+        event?.compact_metadata?.archive_file ||
+        null;
+}
+
+function readArchivedTurns(cwd, archiveFile) {
+    const archivePath = resolveProjectPath(cwd, archiveFile);
+    if (!archivePath || !existsSync(archivePath)) return [];
+    try {
+        const parsed = JSON.parse(readFileSync(archivePath, 'utf8'));
+        return Array.isArray(parsed) ? parsed : [];
+    } catch (error) {
+        console.warn(`Failed to read compact archive ${archiveFile}: ${error.message}`);
+        return [];
+    }
+}
+
+function historyTurnKey(turn) {
+    if (!turn || typeof turn !== 'object') return '';
+    const calls = Array.isArray(turn.native_tool_calls)
+        ? turn.native_tool_calls.map(call => call.id || call.name || call.function?.name || '').join(',')
+        : '';
+    return [turn.role || '', turn.content || '', turn.tool_call_id || '', calls].join('|');
 }
 
 class AgentConnection {
@@ -345,6 +467,11 @@ export function createMindServer(host_public = false, port = 8080, runtimeSettin
         });
 
         socket.on('stop-agent', (agentName) => {
+            const agent = agent_connections[agentName];
+            if (agent?.socket) {
+                agent.socket.emit('stop-agent');
+                return;
+            }
             mindcraft.stopAgent(agentName);
         });
 

@@ -148,6 +148,18 @@ test('human stop closes active native tool calls before waiting on action stop',
     assert.ok(stopSection.indexOf('finishInterruptedNativeToolCalls') < stopSection.indexOf('agent.actions.stop()'));
 });
 
+test('web disconnect targets only the selected agent socket before process fallback', () => {
+    const serverSource = readFileSync('src/mindcraft/mindserver.js', 'utf8');
+    const stopSection = serverSource.slice(serverSource.indexOf("socket.on('stop-agent'"), serverSource.indexOf("socket.on('start-agent'"));
+    const proxySource = readFileSync('src/agent/mindserver_proxy.js', 'utf8');
+
+    assert.ok(stopSection.includes('agent_connections[agentName]'));
+    assert.ok(stopSection.includes("agent.socket.emit('stop-agent')"));
+    assert.ok(stopSection.includes('mindcraft.stopAgent(agentName)'));
+    assert.ok(proxySource.includes("this.socket.on('stop-agent'"));
+    assert.ok(proxySource.includes("this.agent.cleanKill('Stopped by MindServer.', 0)"));
+});
+
 test('native tool execution records structured tool calls and tool results', () => {
     const agentSource = readFileSync('src/agent/agent.js', 'utf8');
     const nativeSection = agentSource.slice(agentSource.indexOf('async _executeNativeToolCalls'));

@@ -60,6 +60,11 @@ class MindServerProxy {
             console.log(`Restarting agent: ${agentName}`);
             this.agent.cleanKill();
         });
+
+        this.socket.on('stop-agent', () => {
+            console.log(`Stopping agent ${this.name} by MindServer request`);
+            this.agent.cleanKill('Stopped by MindServer.', 0);
+        });
 		
         this.socket.on('send-message', (data) => {
             try {
