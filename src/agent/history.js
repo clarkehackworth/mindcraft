@@ -2,7 +2,7 @@ import { writeFileSync, readFileSync, mkdirSync, existsSync, appendFileSync } fr
 import path from 'path';
 import { NPCData } from './npc/data.js';
 import settings from './settings.js';
-import { createNativeToolCallTurn, createNativeToolResultTurn, hasNativeToolCalls, isNativeToolResultTurn } from '../models/native_tools.js';
+import { createNativeToolCallTurn, createNativeToolResultTurn, hasNativeToolCalls, isNativeToolResultTurn, normalizeThinkingText } from '../models/native_tools.js';
 import { sendTraceEventToServer } from './mindserver_proxy.js';
 
 
@@ -140,7 +140,7 @@ export class History {
         }
     }
 
-    async add(name, content) {
+    async add(name, content, metadata = {}) {
         let role = 'assistant';
         if (name === 'system') {
             role = 'user';
@@ -157,7 +157,7 @@ export class History {
             role = 'user';
             content = `${name}: ${content}`;
         }
-        await this._pushTurn({role, content});
+        await this._pushTurn(withTurnMetadata({ role, content }, metadata));
     }
 
     async addUserContext(content) {
@@ -167,11 +167,12 @@ export class History {
         return true;
     }
 
-    async addNativeToolCall(toolCall, content) {
-        await this._pushTurn(createNativeToolCallTurn(toolCall, content));
+    async addNativeToolCall(toolCall, content, metadata = {}) {
+        await this._pushTurn(createNativeToolCallTurn(toolCall, content, metadata));
         this.traceEvent('tool_call', {
             tool_call: toolCall,
-            content: content || ''
+            content: content || '',
+            thinking: normalizeThinkingText(metadata.thinking || metadata.reasoning_content || metadata.reasoning)
         });
     }
 
@@ -271,6 +272,7 @@ export class History {
             tag,
             model: describeModel(model),
             response,
+            thinking: extractThinkingForTrace(response, model),
             token_usage: model?.lastTokenUsage || null
         });
     }
@@ -451,6 +453,17 @@ function describeModel(model) {
     };
 }
 
+function extractThinkingForTrace(response, model) {
+    return normalizeThinkingText(
+        response?.thinking ??
+        response?.reasoning_content ??
+        response?.reasoning ??
+        response?.thought ??
+        model?.lastThinking ??
+        ''
+    );
+}
+
 function safeStringify(value) {
     try {
         return JSON.stringify(value);
@@ -531,4 +544,16 @@ export function normalizeHistoryTurn(turn) {
         role: 'user',
         content: `System: ${turn.content || ''}`
     };
+}
+
+function withTurnMetadata(turn, metadata = {}) {
+    const thinking = normalizeThinkingText(metadata.thinking ?? metadata.reasoning_content ?? metadata.reasoning);
+    if (thinking) turn.thinking = thinking;
+    if (Array.isArray(metadata.thinking_blocks) && metadata.thinking_blocks.length > 0) {
+        turn.thinking_blocks = metadata.thinking_blocks;
+    }
+    if (metadata.thinking_key || metadata.reasoning_key) {
+        turn.thinking_key = metadata.thinking_key || metadata.reasoning_key;
+    }
+    return turn;
 }

@@ -156,6 +156,45 @@ test('native tool turns serialize to protocol-specific tool result fields', () =
     assert.equal(gemini[2].parts[0].functionResponse.name, 'sample');
 });
 
+test('OpenAI chat serialization preserves provider reasoning content for tool-call replay', () => {
+    const call = {
+        id: 'call_1',
+        type: 'function',
+        name: 'sample',
+        arguments: '{"count":2}'
+    };
+    const turns = [
+        { role: 'assistant', content: '', native_tool_calls: [call], thinking: 'call reasoning', thinking_key: 'reasoning_content' },
+        { role: 'tool', tool_call_id: 'call_1', name: 'sample', content: 'count=2' },
+        { role: 'assistant', content: 'done' }
+    ];
+
+    const messages = nativeTools.toOpenAIChatMessages(turns, 'system prompt', {
+        reasoningKey: 'reasoning_content',
+        requireReasoningContent: true
+    });
+
+    assert.equal(messages[1].reasoning_content, 'call reasoning');
+    assert.equal(messages[3].reasoning_content, '');
+});
+
+test('Anthropic and Gemini serialization can replay captured thinking blocks', () => {
+    const turns = [{
+        role: 'assistant',
+        content: 'I will act.',
+        thinking_blocks: [{ type: 'thinking', thinking: 'signed reasoning', signature: 'sig-1' }]
+    }];
+
+    const anthropic = nativeTools.toAnthropicMessages(turns);
+    assert.equal(anthropic[1].content[0].type, 'thinking');
+    assert.equal(anthropic[1].content[0].thinking, 'signed reasoning');
+    assert.equal(anthropic[1].content[0].signature, 'sig-1');
+
+    const gemini = nativeTools.toGeminiContents(turns);
+    assert.equal(gemini[0].parts[0].thought, true);
+    assert.equal(gemini[0].parts[0].text, 'signed reasoning');
+});
+
 test('multimodal message content keeps protocol-specific image payloads', () => {
     const imageUrl = 'data:image/jpeg;base64,abc123';
     const turns = [{

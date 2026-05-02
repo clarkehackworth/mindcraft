@@ -5,7 +5,7 @@ import { spawn } from 'child_process';
 import { createServer } from 'http';
 import { createHash, randomBytes, randomUUID } from 'crypto';
 import open from 'open';
-import { createNativeToolResponse, toResponsesInputItems } from './native_tools.js';
+import { createNativeToolResponse, normalizeThinkingText, toResponsesInputItems } from './native_tools.js';
 import { setLastTokenUsage } from './token_usage.js';
 
 const DEFAULT_CODEX_BASE_URL = 'https://chatgpt.com/backend-api/codex';
@@ -76,6 +76,7 @@ export class CodexChatGPT {
 
     async sendRequest(turns, systemMessage, stop_seq='***', tools=null, options = {}) {
         this.lastTokenUsage = null;
+        this.lastThinking = '';
         const model = this.model_name || this.default_model;
         const hasTools = Array.isArray(tools) && tools.length > 0;
         const body = this.buildRequestBody(model, turns, systemMessage, tools, options);
@@ -110,8 +111,9 @@ export class CodexChatGPT {
             const parsed = await parseCodexResponsesSse(await response.text());
             console.log('Received.');
             setLastTokenUsage(this, parsed.usage);
+            this.lastThinking = parsed.thinking || '';
             if (parsed.toolCalls.length > 0) {
-                return createNativeToolResponse(parsed.toolCalls, this.provider);
+                return createNativeToolResponse(parsed.toolCalls, this.provider, { thinking: this.lastThinking });
             }
             let text = parsed.text;
             if (stop_seq && text.includes(stop_seq)) {
@@ -423,6 +425,8 @@ export async function parseCodexResponsesSse(sseText) {
     const toolCalls = [];
     const textDeltas = [];
     const messageTexts = [];
+    const thinkingDeltas = [];
+    const reasoningItems = [];
     let usage = null;
     const events = sseText.split(/\n\n+/);
     for (const eventBlock of events) {
@@ -442,6 +446,9 @@ export async function parseCodexResponsesSse(sseText) {
         if (event.type === 'response.output_text.delta' && typeof event.delta === 'string') {
             textDeltas.push(event.delta);
         }
+        if (typeof event.type === 'string' && event.type.includes('reasoning') && typeof event.delta === 'string') {
+            thinkingDeltas.push(event.delta);
+        }
         const item = event.item;
         if (event.type === 'response.output_item.done' && item?.type === 'function_call') {
             toolCalls.push({
@@ -456,6 +463,9 @@ export async function parseCodexResponsesSse(sseText) {
         if (event.type === 'response.output_item.done' && item?.type === 'message') {
             messageTexts.push(extractMessageText(item));
         }
+        if (event.type === 'response.output_item.done' && item?.type === 'reasoning') {
+            reasoningItems.push(extractReasoningText(item));
+        }
         if (event.response?.usage) {
             usage = event.response.usage;
         } else if (event.usage) {
@@ -467,7 +477,10 @@ export async function parseCodexResponsesSse(sseText) {
         }
     }
     const text = textDeltas.length > 0 ? textDeltas.join('') : messageTexts.join('');
-    return { text, toolCalls, usage };
+    const thinking = thinkingDeltas.length > 0
+        ? normalizeThinkingText(thinkingDeltas.join(''))
+        : normalizeThinkingText(reasoningItems);
+    return { text, toolCalls, usage, thinking };
 }
 
 async function requestDeviceCode(baseUrl, clientId) {
@@ -940,6 +953,18 @@ function extractMessageText(item) {
         .filter(content => content?.type === 'output_text' || content?.type === 'text')
         .map(content => content.text || '')
         .join('');
+}
+
+function extractReasoningText(item) {
+    const chunks = [];
+    chunks.push(item?.text, item?.reasoning, item?.reasoning_content, item?.thinking);
+    if (Array.isArray(item?.summary)) {
+        chunks.push(...item.summary.map(part => part?.text || part?.summary_text || part?.content || ''));
+    }
+    if (Array.isArray(item?.content)) {
+        chunks.push(...item.content.map(part => part?.text || part?.content || part?.reasoning || part?.thinking || ''));
+    }
+    return normalizeThinkingText(chunks);
 }
 
 function stringifyContent(content) {

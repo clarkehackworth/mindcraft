@@ -88,6 +88,20 @@ test('Codex SSE parser prefers text deltas over final message to avoid duplicate
     assert.equal(parsed.text, 'Hi there');
 });
 
+test('Codex SSE parser extracts reasoning/thinking output', async () => {
+    const sse = [
+        'event: response.reasoning_summary_text.delta',
+        'data: {"type":"response.reasoning_summary_text.delta","delta":"Need a tool."}',
+        '',
+        'event: response.output_item.done',
+        'data: {"type":"response.output_item.done","item":{"type":"reasoning","summary":[{"type":"summary_text","text":"Final reasoning."}]}}',
+        ''
+    ].join('\n');
+
+    const parsed = await parseCodexResponsesSse(sse);
+    assert.equal(parsed.thinking, 'Need a tool.');
+});
+
 
 test('Codex browser login builds the same authorize URL shape as Codex CLI', () => {
     const url = new URL(buildAuthorizeUrl({

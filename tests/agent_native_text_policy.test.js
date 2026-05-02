@@ -98,7 +98,7 @@ test('native tool execution records structured tool calls and tool results', () 
     const agentSource = readFileSync('src/agent/agent.js', 'utf8');
     const nativeSection = agentSource.slice(agentSource.indexOf('async _executeNativeToolCalls'));
 
-    assert.ok(nativeSection.includes('this.history.addNativeToolCall(toolCall)'));
+    assert.ok(nativeSection.includes('this.history.addNativeToolCall(toolCall, undefined, metadata)'));
     assert.ok(nativeSection.includes('this._trackActiveNativeToolCall(toolCall)'));
     assert.ok(nativeSection.includes('this._completeActiveNativeToolCall(toolCall, formatNativeToolResultForModel(toolCall, execute_res))'));
 });
@@ -297,6 +297,17 @@ test('chat UI nests coding requests under the active tool instead of top-level t
     assert.ok(projector.includes("callHelper('getToolName', item.call) === 'newAction'"));
     assert.ok(html.includes('function renderInternalToolEvents(events)'));
     assert.ok(html.includes('Internal coding requests'));
+});
+
+test('chat UI and trace projection render model thinking separately', () => {
+    const html = readFileSync('src/mindcraft/public/index.html', 'utf8');
+    const projector = readFileSync('src/mindcraft/public/chat_trace_projector.js', 'utf8');
+
+    assert.ok(projector.includes('assistantThinking'));
+    assert.ok(projector.includes("callHelper('extractResponseThinking'"));
+    assert.ok(html.includes('function extractResponseThinking'));
+    assert.ok(html.includes('function renderThinking'));
+    assert.ok(html.includes('class="chat-thinking"'));
 });
 
 test('chat request cards avoid duplicate per-message role labels', () => {

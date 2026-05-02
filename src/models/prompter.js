@@ -1,7 +1,7 @@
 import { readFileSync, mkdirSync, writeFileSync} from 'fs';
 import { getCommandDocs } from '../agent/commands/index.js';
 import { getCommandToolDefinitions, getNativeToolDocs } from '../agent/commands/tool_adapter.js';
-import { isNativeToolResponse } from './native_tools.js';
+import { isNativeToolResponse, normalizeThinkingText } from './native_tools.js';
 import { SkillLibrary } from "../agent/library/skill_library.js";
 import { stringifyTurns } from '../utils/text.js';
 import { getCommand } from '../agent/commands/index.js';
@@ -70,6 +70,7 @@ export class Prompter {
         this.cooldown = this.profile.cooldown ? this.profile.cooldown : 0;
         this.last_prompt_time = 0;
         this.awaiting_coding = false;
+        this.last_conversation_response_metadata = {};
 
         // for backwards compatibility, move max_tokens to params
         let max_tokens = null;
@@ -222,6 +223,7 @@ export class Prompter {
     async promptConvo(messages, options = {}) {
         this.most_recent_msg_time = Date.now();
         let current_msg_time = this.most_recent_msg_time;
+        this.last_conversation_response_metadata = {};
 
         for (let i = 0; i < 3; i++) { // try 3 times to avoid hallucinations
             await this.checkCooldown();
@@ -240,6 +242,7 @@ export class Prompter {
                     cacheScope: 'conversation',
                     turnStateKey: options.turnStateKey
                 });
+                this.captureConversationResponseMetadata(this.chat_model, generation);
                 this.agent.history.traceLLMResponse('conversation', this.chat_model, generation);
                 if (isNativeToolResponse(generation)) {
                     await this._saveLog(prompt, requestMessages, JSON.stringify(generation), 'conversation');
@@ -278,6 +281,32 @@ export class Prompter {
         }
 
         return '';
+    }
+
+    captureConversationResponseMetadata(model, response) {
+        const thinking = normalizeThinkingText(
+            response?.thinking ??
+            response?.reasoning_content ??
+            response?.reasoning ??
+            model?.lastThinking ??
+            ''
+        );
+        const metadata = {};
+        if (thinking) metadata.thinking = thinking;
+        const thinkingBlocks = response?.thinking_blocks || response?.thinkingBlocks || model?.lastThinkingBlocks;
+        if (Array.isArray(thinkingBlocks) && thinkingBlocks.length > 0) {
+            metadata.thinking_blocks = thinkingBlocks;
+        }
+        const thinkingKey = response?.thinking_key || response?.reasoning_key || model?.reasoning_key;
+        if (thinkingKey) metadata.thinking_key = thinkingKey;
+        this.last_conversation_response_metadata = metadata;
+        return metadata;
+    }
+
+    consumeLastConversationResponseMetadata() {
+        const metadata = this.last_conversation_response_metadata || {};
+        this.last_conversation_response_metadata = {};
+        return metadata;
     }
 
     async buildConversationSystemPrompt(messages) {

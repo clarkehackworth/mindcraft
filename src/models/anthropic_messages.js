@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { getKey } from '../utils/keys.js';
-import { createNativeToolResponse, normalizeAnthropicToolUse, toAnthropicMessages, toAnthropicTools } from './native_tools.js';
+import { createNativeToolResponse, normalizeAnthropicToolUse, normalizeThinkingText, toAnthropicMessages, toAnthropicTools } from './native_tools.js';
 import { setLastTokenUsage } from './token_usage.js';
 
 // Anthropic Messages protocol implementation.
@@ -29,6 +29,8 @@ export class AnthropicMessages {
 
     async sendRequest(turns, systemMessage, stop_seq='***', tools=null) {
         this.lastTokenUsage = null;
+        this.lastThinking = '';
+        this.lastThinkingBlocks = [];
         const messages = toAnthropicMessages(turns);
         let res = null;
         try {
@@ -54,9 +56,15 @@ export class AnthropicMessages {
 
             console.log('Received.');
             setLastTokenUsage(this, resp?.usage);
+            const thinking = extractAnthropicThinking(resp.content);
+            this.lastThinking = thinking.text;
+            this.lastThinkingBlocks = thinking.blocks;
             const toolCalls = normalizeAnthropicToolUse(resp.content);
             if (toolCalls.length > 0) {
-                return createNativeToolResponse(toolCalls, this.provider);
+                return createNativeToolResponse(toolCalls, this.provider, {
+                    thinking: this.lastThinking,
+                    thinking_blocks: this.lastThinkingBlocks
+                });
             }
             const textContent = resp.content.find(content => content.type === 'text');
             res = textContent ? textContent.text : 'No response from Claude.';
@@ -101,4 +109,24 @@ function stripToolChoiceParams(params) {
     delete requestParams.tool_choice;
     delete requestParams.toolChoice;
     return requestParams;
+}
+
+
+function extractAnthropicThinking(content = []) {
+    const blocks = [];
+    for (const item of content || []) {
+        if (item?.type === 'thinking') {
+            blocks.push({
+                type: 'thinking',
+                thinking: normalizeThinkingText(item.thinking || item.text),
+                ...(item.signature ? { signature: item.signature } : {})
+            });
+        } else if (item?.type === 'redacted_thinking') {
+            blocks.push({ ...item });
+        }
+    }
+    return {
+        text: blocks.map(block => normalizeThinkingText(block.thinking || block.text || block.content)).filter(Boolean).join('\n'),
+        blocks
+    };
 }

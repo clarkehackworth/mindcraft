@@ -29,6 +29,7 @@ test('runtime chat history persists when Runtime is enabled without full trace l
         });
 
         const model = new FakeModel();
+        model.lastThinking = 'I should inspect inventory.';
         model.lastTokenUsage = {
             input_total: 42,
             input_uncached: 10,
@@ -45,7 +46,7 @@ test('runtime chat history persists when Runtime is enabled without full trace l
         await history.add('Steve', 'check inventory');
         await history.add('system', 'Action was interrupted by unstuck.');
         const toolCall = { id: 'call_1', type: 'function', name: 'inventory', arguments: '{}' };
-        await history.addNativeToolCall(toolCall);
+        await history.addNativeToolCall(toolCall, undefined, { thinking: 'I should inspect inventory.', thinking_key: 'reasoning_content' });
         await history.addNativeToolResult(toolCall, 'Action output:\nInventory is empty.');
 
         assert.ok(history.chat_history_session_fp);
@@ -58,6 +59,7 @@ test('runtime chat history persists when Runtime is enabled without full trace l
         assert.ok(events.some(event => event.type === 'instruction_context'));
         assert.ok(events.some(event => event.type === 'llm_request'));
         assert.ok(events.some(event => event.type === 'llm_response'));
+        assert.ok(events.some(event => event.type === 'llm_response' && event.thinking === 'I should inspect inventory.'));
         assert.ok(events.some(event => event.type === 'history_turn_added'));
         assert.ok(events.some(event => event.type === 'tool_call'));
         assert.ok(events.some(event => event.type === 'tool_result'));
@@ -82,6 +84,7 @@ test('chat history trace records prompts, messages, tool calls and tool results 
         });
 
         const model = new FakeModel();
+        model.lastThinking = 'I should inspect inventory.';
         model.lastTokenUsage = {
             input_total: 42,
             input_uncached: 10,
@@ -98,7 +101,7 @@ test('chat history trace records prompts, messages, tool calls and tool results 
         await history.add('Steve', 'check inventory');
         await history.add('system', 'Action was interrupted by unstuck.');
         const toolCall = { id: 'call_1', type: 'function', name: 'inventory', arguments: '{}' };
-        await history.addNativeToolCall(toolCall);
+        await history.addNativeToolCall(toolCall, undefined, { thinking: 'I should inspect inventory.', thinking_key: 'reasoning_content' });
         await history.addNativeToolResult(toolCall, 'Action output:\nInventory is empty.');
 
         const events = readFileSync(history.chat_history_latest_fp, 'utf8')
@@ -123,8 +126,9 @@ test('chat history trace records prompts, messages, tool calls and tool results 
         assert.ok(events.some(event => event.type === 'history_turn_added' && event.turn.role === 'user'));
         assert.ok(events.some(event => event.type === 'history_turn_added' && event.turn.role === 'user' && event.turn.content.startsWith('System: Action was interrupted')));
         assert.ok(!events.some(event => event.type === 'history_turn_added' && event.turn.role === 'system'));
-        assert.ok(events.some(event => event.type === 'tool_call' && event.tool_call.name === 'inventory'));
+        assert.ok(events.some(event => event.type === 'tool_call' && event.tool_call.name === 'inventory' && event.thinking === 'I should inspect inventory.'));
         assert.ok(events.some(event => event.type === 'tool_result' && event.result.includes('Inventory is empty')));
+        assert.ok(history.turns.some(turn => turn.role === 'assistant' && turn.thinking === 'I should inspect inventory.'));
     } finally {
         setSettings({});
         process.chdir(originalCwd);

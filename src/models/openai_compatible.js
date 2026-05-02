@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { getKey, hasKey } from '../utils/keys.js';
-import { createNativeToolResponse, toOpenAIChatMessages } from './native_tools.js';
+import { createNativeToolResponse, normalizeThinkingText, toOpenAIChatMessages } from './native_tools.js';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { setLastTokenUsage } from './token_usage.js';
 
@@ -52,6 +52,13 @@ export class OpenAICompletions {
         delete this.params.defaultModel;
         delete this.params.default_model;
 
+        this.reasoning_key = this.params.reasoningKey || this.params.reasoning_key || (this.provider === 'kimi' ? 'reasoning_content' : null);
+        this.require_reasoning_content = Boolean(this.params.requireReasoningContent ?? this.params.require_reasoning_content ?? (this.provider === 'kimi'));
+        delete this.params.reasoningKey;
+        delete this.params.reasoning_key;
+        delete this.params.requireReasoningContent;
+        delete this.params.require_reasoning_content;
+
         const config = {};
         if (this.url) config.baseURL = this.url;
         if (hasKey('OPENAI_ORG_ID')) config.organization = getKey('OPENAI_ORG_ID');
@@ -73,12 +80,16 @@ export class OpenAICompletions {
 
     async sendRequest(turns, systemMessage, stop_seq='***', tools=null) {
         this.lastTokenUsage = null;
+        this.lastThinking = '';
         const model = this.model_name || this.default_model;
         const hasTools = Array.isArray(tools) && tools.length > 0;
         let res = null;
 
         try {
-            const messages = toOpenAIChatMessages(turns, systemMessage);
+            const messages = toOpenAIChatMessages(turns, systemMessage, {
+                reasoningKey: this.reasoning_key,
+                requireReasoningContent: this.require_reasoning_content
+            });
             const pack = {
                 model,
                 messages,
@@ -102,8 +113,12 @@ export class OpenAICompletions {
             console.log('Received.');
             setLastTokenUsage(this, completion?.usage);
             const message = choice.message;
+            this.lastThinking = extractOpenAIThinking(message, this.reasoning_key);
             if (message?.tool_calls?.length) {
-                return createNativeToolResponse(message.tool_calls, this.provider);
+                return createNativeToolResponse(message.tool_calls, this.provider, {
+                    thinking: this.lastThinking,
+                    reasoningKey: this.reasoning_key
+                });
             }
             res = message?.content || '';
         } catch (err) {
@@ -168,6 +183,17 @@ export const TTSConfig = {
     baseUrl: 'https://api.openai.com/v1',
 };
 
+
+function extractOpenAIThinking(message, reasoningKey) {
+    if (!message || typeof message !== 'object') return '';
+    return normalizeThinkingText(
+        message[reasoningKey] ??
+        message.reasoning_content ??
+        message.reasoning ??
+        message.thinking ??
+        message.thought
+    );
+}
 
 function providerFacingError(err, provider) {
     if (provider === 'azure' && (err?.code === 'DeploymentNotFound' || err?.error?.code === 'DeploymentNotFound')) {

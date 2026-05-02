@@ -151,6 +151,7 @@ test('openai-compatible transport sends Chat Completions tools and normalizes to
                         },
                         choices: [{
                             message: {
+                                reasoning_content: 'I should call report_status.',
                                 tool_calls: [{
                                     id: 'call_1',
                                     type: 'function',
@@ -180,11 +181,40 @@ test('openai-compatible transport sends Chat Completions tools and normalizes to
     assert.equal(requestPack.tools[0].function.name, 'report_status');
     assert.equal(Object.prototype.hasOwnProperty.call(requestPack, 'tool_choice'), false);
     assert.equal(isNativeToolResponse(response), true);
+    assert.equal(response.thinking, 'I should call report_status.');
     assert.equal(response.provider, 'example-provider');
     assert.equal(response.tool_calls[0].name, 'report_status');
     assert.equal(model.lastTokenUsage.input_uncached, 30);
     assert.equal(model.lastTokenUsage.input_cached, 70);
     assert.equal(model.lastTokenUsage.output, 12);
+});
+
+test('Kimi OpenAI-compatible transport replays blank reasoning_content when thinking is enabled', async () => {
+    const model = new OpenAICompatible('kimi-k2.6', 'https://api.kimi.com/coding/v1', {
+        apiKeyName: 'OPENAI_API_KEY',
+        provider: 'kimi'
+    });
+    let requestPack;
+    model.openai = {
+        chat: {
+            completions: {
+                create: async pack => {
+                    requestPack = pack;
+                    return { choices: [{ message: { content: 'ok' } }] };
+                }
+            }
+        }
+    };
+
+    await model.sendRequest(
+        [{ role: 'assistant', content: 'previous assistant response' }],
+        'Use tools.',
+        '***',
+        []
+    );
+
+    assert.equal(requestPack.messages[1].role, 'assistant');
+    assert.equal(requestPack.messages[1].reasoning_content, '');
 });
 
 test('openai-completions transport strips tool choice even if configured', async () => {

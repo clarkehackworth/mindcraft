@@ -66,6 +66,7 @@ class ChatTraceProjector {
             visibleRequestMessages: [],
             requestMessageCount: 0,
             assistantText: '',
+            assistantThinking: '',
             assistantToolCalls: [],
             modelLabel: 'model',
             ...seed
@@ -204,6 +205,7 @@ class ChatTraceProjector {
         turn.inlineHistoryMessages = turn.historyMessages.filter(event => shouldRenderInlineHistoryEvent(event, requestMessages, hasToolRuns));
         turn.modelLabel = getTurnModelLabel(turn);
         turn.assistantText = callHelper('extractResponseText', turn.response?.response);
+        turn.assistantThinking = callHelper('extractResponseThinking', turn.response?.response, turn.response?.thinking);
         const responseCalls = callHelper('extractResponseToolCalls', turn.response?.response);
         turn.assistantToolCalls = hasToolRuns ? [] : responseCalls;
     }

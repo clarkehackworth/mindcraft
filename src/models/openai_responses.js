@@ -1,5 +1,5 @@
 import { OpenAICompletions } from './openai_compatible.js';
-import { createNativeToolResponse, toResponsesInputItems } from './native_tools.js';
+import { createNativeToolResponse, normalizeThinkingText, toResponsesInputItems } from './native_tools.js';
 import { setLastTokenUsage } from './token_usage.js';
 
 // OpenAI Responses protocol. For native tool calls this class
@@ -9,6 +9,7 @@ export class OpenAIResponses extends OpenAICompletions {
 
     async sendRequest(turns, systemMessage, stop_seq='***', tools=null) {
         this.lastTokenUsage = null;
+        this.lastThinking = '';
         const model = this.model_name || this.default_model;
         const hasTools = Array.isArray(tools) && tools.length > 0;
         const input = toResponsesInputItems(turns);
@@ -32,9 +33,10 @@ export class OpenAIResponses extends OpenAICompletions {
             const response = await this.openai.responses.create(request);
             console.log('Received.');
             setLastTokenUsage(this, response?.usage);
+            this.lastThinking = extractResponsesThinking(response);
             const toolCalls = normalizeResponsesToolCalls(response);
             if (toolCalls.length > 0) {
-                return createNativeToolResponse(toolCalls, this.provider);
+                return createNativeToolResponse(toolCalls, this.provider, { thinking: this.lastThinking });
             }
             let res = response.output_text || '';
             const stopSeqIndex = stop_seq ? res.indexOf(stop_seq) : -1;
@@ -98,4 +100,18 @@ function stripToolChoiceParams(params) {
     delete requestParams.tool_choice;
     delete requestParams.toolChoice;
     return requestParams;
+}
+
+
+function extractResponsesThinking(response) {
+    const output = response?.output || [];
+    const chunks = [];
+    for (const item of output) {
+        if (item?.type !== 'reasoning') continue;
+        chunks.push(normalizeThinkingText(item.summary || item.content || item.text));
+        if (Array.isArray(item.summary)) {
+            chunks.push(...item.summary.map(part => normalizeThinkingText(part.text || part.content || part.summary_text)));
+        }
+    }
+    return chunks.filter(Boolean).join('\n');
 }

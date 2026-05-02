@@ -1,7 +1,7 @@
 import Replicate from 'replicate';
 import { strictTextFormat, toSinglePrompt } from '../utils/text.js';
 import { getKey } from '../utils/keys.js';
-import { createNativeToolResponse } from './native_tools.js';
+import { createNativeToolResponse, normalizeThinkingText } from './native_tools.js';
 
 // Replicate Predictions API. This is not OpenAI-compatible: individual
 // Replicate models define their own input/output schemas.
@@ -30,6 +30,7 @@ export class ReplicateAPI {
     }
 
     async sendRequest(turns, systemMessage, stop_seq = '<|EOT|>', tools = null) {
+        this.lastThinking = '';
         const modelName = this.model_name || 'google/gemini-2.5-flash';
         if (Array.isArray(tools) && tools.length > 0) {
             return this.sendToolRequest(modelName, turns, systemMessage, tools);
@@ -48,6 +49,7 @@ export class ReplicateAPI {
                 // PR #680 verified Gemini models return empty streams on Replicate.
                 // The official Gemini schema is prompt-based, so use run().
                 const output = await this.replicate.run(modelName, { input });
+                this.lastThinking = extractReplicateThinking(output);
                 result = stringifyReplicateOutput(output);
                 if (result.includes(stopSeq)) {
                     result = result.slice(0, result.indexOf(stopSeq));
@@ -57,6 +59,7 @@ export class ReplicateAPI {
             }
 
             for await (const event of this.replicate.stream(modelName, { input })) {
+                this.lastThinking = normalizeThinkingText([this.lastThinking, extractReplicateThinking(event)]);
                 result += stringifyReplicateEvent(event);
                 if (result === '') break;
                 if (result.includes(stopSeq)) {
@@ -89,10 +92,11 @@ export class ReplicateAPI {
         try {
             console.log(`Awaiting Replicate API response with native tool calling (${tools.length} tools) from ${modelName}...`);
             const output = await this.replicate.run(modelName, { input });
+            this.lastThinking = extractReplicateThinking(output);
             const toolCalls = extractReplicateToolCalls(output);
             if (toolCalls.length > 0) {
                 console.log(`Received ${toolCalls.length} Replicate tool call(s).`);
-                return createNativeToolResponse(toolCalls, this.provider);
+                return createNativeToolResponse(toolCalls, this.provider, { thinking: this.lastThinking });
             }
             console.log('Received.');
             return stringifyReplicateOutput(output);
@@ -168,6 +172,26 @@ function extractReplicateToolCalls(output) {
         return output.flatMap(item => extractReplicateToolCalls(item));
     }
     return [];
+}
+
+function extractReplicateThinking(output) {
+    if (!output) return '';
+    if (typeof output === 'string') return '';
+    if (Array.isArray(output)) return normalizeThinkingText(output.map(extractReplicateThinking));
+    if (typeof output !== 'object') return '';
+    const direct = normalizeThinkingText(
+        output.thinking ??
+        output.reasoning_content ??
+        output.reasoning ??
+        output.thought ??
+        ''
+    );
+    if (direct) return direct;
+    return normalizeThinkingText([
+        extractReplicateThinking(output.content),
+        extractReplicateThinking(output.output),
+        extractReplicateThinking(output.message)
+    ]);
 }
 
 function stringifyReplicateOutput(output) {

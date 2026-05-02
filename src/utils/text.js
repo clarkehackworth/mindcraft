@@ -2,6 +2,9 @@ export function stringifyTurns(turns) {
     let res = '';
     for (let turn of turns) {
         if (turn.role === 'assistant') {
+            if (turn.thinking) {
+                res += `\nThinking: ${turn.thinking}`;
+            }
             if (Array.isArray(turn.native_tool_calls) && turn.native_tool_calls.length > 0) {
                 if (turn.content) {
                     res += `\nYour output:\n${turn.content}`;
@@ -46,7 +49,8 @@ export function toSinglePrompt(turns, system=null, stop_seq='***', model_nicknam
     turns.forEach((message) => {
         role = message.role;
         if (role === 'assistant') role = model_nickname;
-        prompt += `${role}: ${message.content}${stop_seq}`;
+        const thinking = message.thinking ? `\nThinking: ${message.thinking}` : '';
+        prompt += `${role}: ${thinking}${thinking ? '\n' : ''}${message.content}${stop_seq}`;
     });
     if (role !== model_nickname) // if the last message was from the user/system, add a prompt for the model. otherwise, pretend we are extending the model's own message
         prompt += model_nickname + ": ";
@@ -116,7 +120,7 @@ export function strictTextFormat(turns) {
         if (Array.isArray(turn?.native_tool_calls) && turn.native_tool_calls.length > 0) {
             return {
                 role: 'assistant',
-                content: turn.content || turn.native_tool_calls.map(call => `Used native tool ${call.name}.`).join('\n')
+                content: `${turn.thinking ? `Thinking: ${turn.thinking}\n` : ''}${turn.content || turn.native_tool_calls.map(call => `Used native tool ${call.name}.`).join('\n')}`
             };
         }
         return { ...turn };

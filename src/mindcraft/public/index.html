@@ -708,6 +708,27 @@
             border-top: none;
             padding-top: 0;
         }
+        .chat-thinking {
+            margin: 8px 0;
+            color: #8f8f8f;
+        }
+        .chat-thinking summary {
+            cursor: pointer;
+            color: #a7a7a7;
+            font-size: 0.9em;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            user-select: none;
+        }
+        .chat-thinking-body {
+            margin-top: 6px;
+            padding-left: 14px;
+            border-left: 2px solid rgba(255,255,255,0.09);
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            color: #8a8a8a;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            line-height: 1.45;
+        }
 
         /* assistantspace style chat view */
         .chat-thread.agent-workspace {
@@ -2920,6 +2941,7 @@
                     <div class="agent-avatar">${isUser ? 'U' : 'AI'}</div>
                     <div class="agent-bubble">
                         <div class="agent-bubble-meta">${escapeHTML(label)} · ${escapeHTML(role)}${event.restored_from_memory ? ' · memory' : ''}</div>
+                        ${renderThinking(turn.thinking)}
                         <div class="agent-text">${escapeHTML(limitText(formatChatMessagePreview(turn), 1600))}</div>
                         ${renderDetails(`History turn ${offset + 1}`, event)}
                     </div>
@@ -2950,7 +2972,7 @@
                     <div class="agent-bubble">
                         <div class="agent-bubble-meta">Run ${index + 1} · ${escapeHTML(turn.modelLabel || 'model')} · ${escapeHTML(formatChatTime(response?.timestamp))}${renderTokenUsage(response?.token_usage)}</div>
                         ${hasAssistantDisplay ? '<div class="agent-bubble-label">Assistant</div>' : ''}
-                        ${response ? renderAssistantContent(turn.assistantText, turn.assistantToolCalls, response) : '<div class="agent-empty">Waiting for assistant response…</div>'}
+                        ${response ? renderAssistantContent(turn.assistantText, turn.assistantThinking, turn.assistantToolCalls, response) : '<div class="agent-empty">Waiting for assistant response…</div>'}
                         ${renderToolRuns(turn)}
                     </div>
                 </div>`;
@@ -2968,11 +2990,22 @@
             return Number.isFinite(value) ? String(value) : '—';
         }
 
-        function renderAssistantContent(text, calls, response) {
+        function renderAssistantContent(text, thinking, calls, response) {
             return `
+                ${renderThinking(thinking)}
                 ${text ? `<div class="agent-text">${escapeHTML(limitText(text, 1600))}</div>` : ''}
                 ${calls.length ? `<div class="agent-steps">${calls.map(call => renderToolCallPreview(call)).join('')}</div>` : ''}
                 ${renderDetails('Response payload', response)}`;
+        }
+
+        function renderThinking(thinking) {
+            const text = String(thinking || '').trim();
+            if (!text) return '';
+            return `
+                <details class="chat-thinking">
+                    <summary>Thinking</summary>
+                    <div class="chat-thinking-body">${escapeHTML(limitText(text, 6000))}</div>
+                </details>`;
         }
 
         function renderToolOutput(value, event, extraDetails = '') {
@@ -3067,7 +3100,7 @@
             const preview = event.type === 'llm_request'
                 ? `${Array.isArray(event.messages) ? event.messages.length : 0} messages${event.system_prompt ? ' · system prompt' : ''}`
                 : event.type === 'llm_response'
-                    ? limitText(extractResponseText(event.response) || stringifyChatText(event.response), 220)
+                    ? limitText(extractResponseThinking(event.response, event.thinking) || extractResponseText(event.response) || stringifyChatText(event.response), 220)
                     : limitText(event.error?.message || stringifyChatText(event.error), 220);
             return `
                 <div class="chat-internal-tool-event">
@@ -3239,6 +3272,37 @@
             if (Array.isArray(response.content)) return response.content.map(part => part?.text || part?.content || '').filter(Boolean).join('\n');
             if (Array.isArray(response.choices)) {
                 return response.choices.map(choice => stringifyChatText(choice.message?.content ?? choice.delta?.content ?? choice.text ?? '')).filter(Boolean).join('\n');
+            }
+            return '';
+        }
+
+        function extractResponseThinking(response, fallback = '') {
+            const direct = stringifyChatText(
+                fallback ||
+                response?.thinking ||
+                response?.reasoning_content ||
+                response?.reasoning ||
+                response?.thought ||
+                ''
+            ).trim();
+            if (direct) return direct;
+            if (Array.isArray(response?.content)) {
+                return response.content
+                    .filter(part => part?.type === 'thinking' || part?.type === 'redacted_thinking' || part?.thought)
+                    .map(part => stringifyChatText(part.thinking || part.text || part.content || part.summary || ''))
+                    .filter(Boolean)
+                    .join('\n');
+            }
+            if (Array.isArray(response?.choices)) {
+                return response.choices.map(choice => stringifyChatText(
+                    choice.message?.reasoning_content ||
+                    choice.message?.reasoning ||
+                    choice.message?.thinking ||
+                    choice.delta?.reasoning_content ||
+                    choice.delta?.reasoning ||
+                    choice.delta?.thinking ||
+                    ''
+                )).filter(Boolean).join('\n');
             }
             return '';
         }

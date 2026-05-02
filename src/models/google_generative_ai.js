@@ -1,6 +1,6 @@
 import { GoogleGenAI } from '@google/genai';
 import { getKey } from '../utils/keys.js';
-import { createNativeToolResponse, normalizeGeminiFunctionCalls, toGeminiContents, toGeminiFunctionDeclarations } from './native_tools.js';
+import { createNativeToolResponse, normalizeGeminiFunctionCalls, normalizeThinkingText, toGeminiContents, toGeminiFunctionDeclarations } from './native_tools.js';
 import { ProxyAgent, setGlobalDispatcher } from 'undici';
 import { setLastTokenUsage } from './token_usage.js';
 
@@ -94,6 +94,8 @@ export class GoogleGenerativeAI {
 
     async sendRequest(turns, systemMessage, stop_seq='***', tools=null) {
         this.lastTokenUsage = null;
+        this.lastThinking = '';
+        this.lastThinkingBlocks = [];
         console.log(tools?.length ? `Awaiting Google API response with native tool calling (${tools.length} tools)...` : 'Awaiting Google API response...');
 
         const contents = toGeminiContents(turns);
@@ -113,9 +115,15 @@ export class GoogleGenerativeAI {
         const result = await this.genAI.models.generateContent(requestConfig);
         setLastTokenUsage(this, result?.usageMetadata);
         const parts = result.candidates?.[0]?.content?.parts || [];
+        const thinking = extractGeminiThinking(parts);
+        this.lastThinking = thinking.text;
+        this.lastThinkingBlocks = thinking.blocks;
         const toolCalls = normalizeGeminiFunctionCalls(parts);
         if (toolCalls.length > 0) {
-            return createNativeToolResponse(toolCalls, this.provider);
+            return createNativeToolResponse(toolCalls, this.provider, {
+                thinking: this.lastThinking,
+                thinking_blocks: this.lastThinkingBlocks
+            });
         }
         const response = await result.text;
         if (!response && result.candidates?.[0]?.finishReason) {
@@ -129,6 +137,8 @@ export class GoogleGenerativeAI {
 
     async sendVisionRequest(turns, systemMessage, imageBuffer) {
         this.lastTokenUsage = null;
+        this.lastThinking = '';
+        this.lastThinkingBlocks = [];
         const imagePart = {
             inlineData: {
                 data: imageBuffer.toString('base64'),
@@ -155,6 +165,10 @@ export class GoogleGenerativeAI {
                 systemInstruction: systemMessage
             });
             setLastTokenUsage(this, result?.usageMetadata);
+            const parts = result.candidates?.[0]?.content?.parts || [];
+            const thinking = extractGeminiThinking(parts);
+            this.lastThinking = thinking.text;
+            this.lastThinkingBlocks = thinking.blocks;
             res = await result.text;
             console.log('Received.');
         } catch (err) {
@@ -229,3 +243,24 @@ export const TTSConfig = {
     sendAudioRequest,
     baseUrl: undefined,
 };
+
+
+function extractGeminiThinking(parts = []) {
+    const blocks = [];
+    for (const part of parts || []) {
+        if (part?.thought || part?.thoughtSignature || part?.thinking) {
+            const thinking = normalizeThinkingText(part.thinking ?? part.text ?? part.thought);
+            if (thinking || part.thoughtSignature) {
+                blocks.push({
+                    type: 'thinking',
+                    thinking,
+                    ...(part.thoughtSignature ? { thoughtSignature: part.thoughtSignature } : {})
+                });
+            }
+        }
+    }
+    return {
+        text: blocks.map(block => block.thinking).filter(Boolean).join('\n'),
+        blocks
+    };
+}

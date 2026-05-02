@@ -2,21 +2,21 @@ export function isNativeToolResponse(value) {
     return Boolean(value && typeof value === 'object' && value.type === 'tool_calls' && Array.isArray(value.tool_calls));
 }
 
-export function createNativeToolResponse(toolCalls, provider = 'unknown') {
-    return {
+export function createNativeToolResponse(toolCalls, provider = 'unknown', metadata = {}) {
+    return withThinkingMetadata({
         type: 'tool_calls',
         provider,
         tool_calls: normalizeOpenAIToolCalls(toolCalls)
-    };
+    }, metadata);
 }
 
-export function createNativeToolCallTurn(toolCall, content = '') {
+export function createNativeToolCallTurn(toolCall, content = '', metadata = {}) {
     const [normalized] = normalizeOpenAIToolCalls([toolCall]);
-    return {
+    return withThinkingMetadata({
         role: 'assistant',
         content,
         native_tool_calls: normalized ? [normalized] : []
-    };
+    }, metadata);
 }
 
 export function createNativeToolResultTurn(toolCall, result) {
@@ -27,6 +27,39 @@ export function createNativeToolResultTurn(toolCall, result) {
         tool_call_id: normalized?.id || toolCall?.id,
         name: normalized?.name || toolCall?.name || toolCall?.function?.name
     };
+}
+
+
+export function withThinkingMetadata(target, metadata = {}) {
+    if (!target || typeof target !== 'object') return target;
+    const thinking = normalizeThinkingText(metadata.thinking ?? metadata.reasoning_content ?? metadata.reasoning);
+    if (thinking) target.thinking = thinking;
+    const thinkingBlocks = normalizeThinkingBlocks(metadata.thinking_blocks || metadata.thinkingBlocks);
+    if (thinkingBlocks.length > 0) target.thinking_blocks = thinkingBlocks;
+    const thinkingKey = metadata.thinking_key || metadata.thinkingKey || metadata.reasoning_key || metadata.reasoningKey;
+    if (thinkingKey) target.thinking_key = thinkingKey;
+    return target;
+}
+
+export function normalizeThinkingText(value) {
+    if (value == null) return '';
+    if (typeof value === 'string') return value;
+    if (Array.isArray(value)) return value.map(normalizeThinkingText).filter(Boolean).join('\n');
+    if (typeof value === 'object') {
+        return normalizeThinkingText(value.thinking ?? value.reasoning_content ?? value.reasoning ?? value.text ?? value.content ?? '');
+    }
+    return String(value);
+}
+
+export function normalizeThinkingBlocks(blocks = []) {
+    if (!Array.isArray(blocks)) return [];
+    return blocks.map(block => {
+        if (!block || typeof block !== 'object') return null;
+        if (block.type === 'thinking' || block.type === 'redacted_thinking') return { ...block };
+        const thinking = normalizeThinkingText(block.thinking ?? block.text ?? block.content);
+        if (!thinking) return null;
+        return { type: 'thinking', thinking, ...(block.signature ? { signature: block.signature } : {}) };
+    }).filter(Boolean);
 }
 
 export function hasNativeToolCalls(turn) {
@@ -247,18 +280,18 @@ export function repairNativeToolTurns(turns = [], { synthesizeMissingResults = f
     return repaired;
 }
 
-export function toOpenAIChatMessages(turns = [], systemMessage = '') {
+export function toOpenAIChatMessages(turns = [], systemMessage = '', options = {}) {
     const messages = [];
     if (systemMessage) {
         messages.push({ role: 'system', content: systemMessage });
     }
     for (const turn of repairNativeToolTurns(turns, { synthesizeMissingResults: true })) {
         if (hasNativeToolCalls(turn)) {
-            messages.push({
+            messages.push(withOpenAIThinking({
                 role: 'assistant',
                 content: turn.content || null,
                 tool_calls: turn.native_tool_calls.map(toOpenAIChatToolCall)
-            });
+            }, turn, options));
         } else if (isNativeToolResultTurn(turn)) {
             messages.push({
                 role: 'tool',
@@ -267,7 +300,9 @@ export function toOpenAIChatMessages(turns = [], systemMessage = '') {
             });
         } else if (turn?.role === 'system') {
             messages.push({ role: 'user', content: `SYSTEM: ${stringifyToolResult(turn.content)}` });
-        } else if (turn?.role === 'assistant' || turn?.role === 'user') {
+        } else if (turn?.role === 'assistant') {
+            messages.push(withOpenAIThinking({ role: 'assistant', content: toOpenAIChatContent(turn.content) }, turn, options));
+        } else if (turn?.role === 'user') {
             messages.push({ role: turn.role, content: toOpenAIChatContent(turn.content) });
         }
     }
@@ -320,6 +355,7 @@ export function toAnthropicMessages(turns = []) {
     for (const turn of repairNativeToolTurns(turns, { synthesizeMissingResults: true })) {
         if (hasNativeToolCalls(turn)) {
             const content = [];
+            content.push(...toAnthropicThinkingBlocks(turn));
             if (turn.content) {
                 content.push({ type: 'text', text: turn.content });
             }
@@ -342,7 +378,7 @@ export function toAnthropicMessages(turns = []) {
                 }]
             });
         } else if (turn?.role === 'assistant') {
-            messages.push({ role: 'assistant', content: toAnthropicMessageContent(turn.content) });
+            messages.push({ role: 'assistant', content: [...toAnthropicThinkingBlocks(turn), ...toAnthropicMessageContent(turn.content)] });
         } else if (turn?.role === 'user') {
             messages.push({ role: 'user', content: toAnthropicMessageContent(turn.content) });
         } else if (turn?.role === 'system') {
@@ -357,6 +393,7 @@ export function toGeminiContents(turns = []) {
     for (const turn of repairNativeToolTurns(turns, { synthesizeMissingResults: true })) {
         if (hasNativeToolCalls(turn)) {
             const parts = [];
+            parts.push(...toGeminiThinkingParts(turn));
             if (turn.content) {
                 parts.push({ text: turn.content });
             }
@@ -380,7 +417,7 @@ export function toGeminiContents(turns = []) {
                 }]
             });
         } else if (turn?.role === 'assistant') {
-            contents.push({ role: 'model', parts: [{ text: stringifyToolResult(turn.content) }] });
+            contents.push({ role: 'model', parts: [...toGeminiThinkingParts(turn), { text: stringifyToolResult(turn.content) }] });
         } else if (turn?.role === 'user') {
             contents.push({ role: 'user', parts: [{ text: stringifyToolResult(turn.content) }] });
         } else if (turn?.role === 'system') {
@@ -391,6 +428,41 @@ export function toGeminiContents(turns = []) {
         contents.push({ role: 'user', parts: [{ text: '_' }] });
     }
     return normalizeGeminiContents(contents);
+}
+
+
+function withOpenAIThinking(message, turn, options = {}) {
+    const key = options.reasoningKey || options.reasoning_key || turn?.thinking_key;
+    if (!key) return message;
+    const thinking = normalizeThinkingText(turn?.thinking);
+    if (thinking || options.requireReasoningContent || options.require_reasoning_content) {
+        message[key] = thinking;
+    }
+    return message;
+}
+
+function toAnthropicThinkingBlocks(turn) {
+    const blocks = normalizeThinkingBlocks(turn?.thinking_blocks || turn?.thinkingBlocks);
+    if (blocks.length > 0) return blocks;
+    const thinking = normalizeThinkingText(turn?.thinking);
+    // Anthropic replay requires signed thinking blocks. Do not synthesize unsigned
+    // provider-only thinking blocks; keep the text in trace/history instead.
+    return thinking && turn?.thinking_signature
+        ? [{ type: 'thinking', thinking, signature: turn.thinking_signature }]
+        : [];
+}
+
+function toGeminiThinkingParts(turn) {
+    const blocks = normalizeThinkingBlocks(turn?.thinking_blocks || turn?.thinkingBlocks);
+    if (blocks.length > 0) {
+        return blocks.map(block => ({
+            text: normalizeThinkingText(block.thinking || block.text || block.content),
+            thought: true,
+            ...(block.thoughtSignature || block.thought_signature ? { thoughtSignature: block.thoughtSignature || block.thought_signature } : {})
+        })).filter(part => part.text);
+    }
+    const thinking = normalizeThinkingText(turn?.thinking);
+    return thinking ? [{ text: thinking, thought: true }] : [];
 }
 
 function toOpenAIChatToolCall(call) {
