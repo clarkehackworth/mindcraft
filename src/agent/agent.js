@@ -28,6 +28,10 @@ export class Agent {
         this.active_message_handlers = 0;
         this.active_native_tool_calls = new Map();
         this.message_handler_queue = Promise.resolve();
+        this.human_message_queue = [];
+        this.human_message_flush_timer = null;
+        this.human_message_interrupt_promise = Promise.resolve();
+        this.message_interrupt_epoch = 0;
 
         // Initialize components
         this.actions = new ActionManager(this);
@@ -267,6 +271,9 @@ export class Agent {
     }
 
     async handleMessage(source, message, max_responses=null, options={}) {
+        if (this._shouldBatchHumanMessage(source, message, options)) {
+            return this._enqueueHumanMessage(source, message, max_responses, options);
+        }
         if (this._shouldBypassMessageQueue(source, message)) {
             return this._runMessageHandler(source, message, max_responses, options);
         }
@@ -276,6 +283,74 @@ export class Agent {
             .then(() => this._runMessageHandler(source, message, max_responses, options));
         this.message_handler_queue = queued.catch(() => {});
         return queued;
+    }
+
+    _shouldBatchHumanMessage(source, message, options={}) {
+        if (options?.transient) return false;
+        const self_prompt = source === 'system' || source === this.name;
+        if (self_prompt || convoManager.isOtherAgent(source)) return false;
+        return !containsCommand(message);
+    }
+
+    _enqueueHumanMessage(source, message, max_responses=null, options={}) {
+        let resolveQueued;
+        let rejectQueued;
+        const queuedPromise = new Promise((resolve, reject) => {
+            resolveQueued = resolve;
+            rejectQueued = reject;
+        });
+        this.human_message_queue.push({ source, message, max_responses, options, resolveQueued, rejectQueued });
+        if ((this.active_message_handlers || 0) > 0) {
+            this.message_interrupt_epoch = (this.message_interrupt_epoch || 0) + 1;
+            this.human_message_interrupt_promise = this._interruptActiveTurnForNewHumanMessage()
+                .catch(error => console.warn('Failed to interrupt active turn for new user message:', error));
+        }
+        if (!this.human_message_flush_timer) {
+            this.human_message_flush_timer = setTimeout(() => {
+                this.human_message_flush_timer = null;
+                void this._flushHumanMessageQueue()
+                    .catch(error => console.error('Error flushing human message queue:', error));
+            }, 0);
+        }
+        return queuedPromise;
+    }
+
+    async _flushHumanMessageQueue() {
+        await (this.human_message_interrupt_promise || Promise.resolve());
+        const batch = this.human_message_queue.splice(0);
+        if (batch.length === 0) return false;
+        const compiled = this._compileHumanMessageBatch(batch);
+        try {
+            const result = await this._runMessageHandler(compiled.source, compiled.message, compiled.max_responses, compiled.options);
+            for (const item of batch) item.resolveQueued?.(result);
+            return result;
+        } catch (error) {
+            for (const item of batch) item.rejectQueued?.(error);
+            throw error;
+        }
+    }
+
+    _compileHumanMessageBatch(batch) {
+        const sources = [...new Set(batch.map(item => item.source))];
+        const sameSource = sources.length === 1;
+        const source = sameSource ? sources[0] : 'users';
+        const message = sameSource
+            ? batch.map(item => item.message).join('\n')
+            : batch.map(item => `${item.source}: ${item.message}`).join('\n');
+        const last = batch[batch.length - 1] || {};
+        return {
+            source,
+            message,
+            max_responses: last.max_responses ?? null,
+            options: last.options || {}
+        };
+    }
+
+    async _interruptActiveTurnForNewHumanMessage() {
+        const closed = await this.finishInterruptedNativeToolCalls('Tool interrupted by newer user message.');
+        if (closed > 0) {
+            this.requestInterrupt();
+        }
     }
 
     async _runMessageHandler(source, message, max_responses=null, options={}) {
@@ -337,7 +412,9 @@ export class Agent {
 
         console.log('received message from', source, ':', message);
 
-        const checkInterrupt = () => this.self_prompter.shouldInterrupt(self_prompt) || this.shut_up || convoManager.responseScheduledFor(source);
+        const interruptEpoch = this.message_interrupt_epoch || 0;
+        const isStaleTurn = () => interruptEpoch !== (this.message_interrupt_epoch || 0);
+        const checkInterrupt = () => isStaleTurn() || this.self_prompter.shouldInterrupt(self_prompt) || this.shut_up || convoManager.responseScheduledFor(source);
         
         if (!this.react_messages) {
             this.react_messages = new ReactMessageManager(this);
@@ -351,6 +428,10 @@ export class Agent {
             if (checkInterrupt()) break;
             let history = await reactTurn.buildRequestMessages();
             let res = await this.prompter.promptConvo(history, { turnStateKey: reactTurn.turnStateKey });
+            if (isStaleTurn()) {
+                console.log(`${this.name} dropped stale response to ${source} after newer user message.`);
+                break;
+            }
 
             if (isNativeToolResponse(res)) {
                 console.log(`${this.name} native tool calls from ${source}: ${formatNativeToolCallsForLog(res.tool_calls)}`);
@@ -361,7 +442,7 @@ export class Agent {
                     this.history.save();
                     break;
                 }
-                const executedAny = await this._executeNativeToolCalls(res, source, self_prompt);
+                const executedAny = await this._executeNativeToolCalls(res, source, self_prompt, checkInterrupt);
                 if (!executedAny) break;
                 used_command = true;
                 this.history.save();
@@ -488,10 +569,11 @@ export class Agent {
         return active.length;
     }
 
-    async _executeNativeToolCalls(nativeToolResponse, source, self_prompt) {
+    async _executeNativeToolCalls(nativeToolResponse, source, self_prompt, shouldAbort = () => false) {
         let executedAny = false;
         const metadata = nativeToolResponseMetadata(nativeToolResponse);
         for (const toolCall of nativeToolResponse.tool_calls) {
+            if (shouldAbort()) break;
             const commandName = toolCall.name ? (toolCall.name.startsWith('!') ? toolCall.name : `!${toolCall.name}`) : null;
             if (!commandName || !commandExists(commandName)) {
                 const msg = `Native tool ${toolCall.name || '<missing>'} does not map to a command.`;
@@ -513,6 +595,7 @@ export class Agent {
             executedAny = true;
 
             await this._completeActiveNativeToolCall(toolCall, formatNativeToolResultForModel(toolCall, execute_res));
+            if (shouldAbort()) break;
         }
         return executedAny;
     }

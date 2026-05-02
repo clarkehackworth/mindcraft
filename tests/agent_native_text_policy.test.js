@@ -61,21 +61,19 @@ test('interrupted native tool responses are closed with synthetic tool results b
     assert.deepEqual(turns.slice(-2).map(turn => turn.role), ['assistant', 'tool']);
 });
 
-test('conversation handlers are serialized so request history prefixes stay closed', async () => {
+test('human message queue drains all pending messages as one request', async () => {
     const { Agent } = await import('../src/agent/agent.js');
     const turns = [];
     const requests = [];
-    let releaseFirst;
-    const firstPromptStarted = new Promise(resolve => {
-        releaseFirst = resolve;
-    });
-    let promptCount = 0;
     const agent = Object.create(Agent.prototype);
     agent.name = 'bot';
     agent.shut_up = false;
     agent.last_sender = null;
     agent.active_message_handlers = 0;
-    agent.message_handler_queue = Promise.resolve();
+    agent.active_native_tool_calls = new Map();
+    agent.message_interrupt_epoch = 0;
+    agent.human_message_queue = [];
+    agent.human_message_interrupt_promise = Promise.resolve();
     agent.checkTaskDone = async () => {};
     agent.self_prompter = {
         shouldInterrupt: () => false,
@@ -91,28 +89,78 @@ test('conversation handlers are serialized so request history prefixes stay clos
     };
     agent.prompter = {
         promptConvo: async messages => {
-            promptCount += 1;
             requests.push(messages.map(turn => ({ ...turn })));
-            if (promptCount === 1) {
-                await firstPromptStarted;
-            }
-            return `reply ${promptCount}`;
+            return 'reply';
         },
         consumeLastConversationResponseMetadata: () => ({})
     };
     agent.routeResponse = () => {};
 
     const first = agent.handleMessage('Steve', 'first', 1);
-    await new Promise(resolve => setImmediate(resolve));
     const second = agent.handleMessage('Steve', 'second', 1);
-    await new Promise(resolve => setImmediate(resolve));
+    await Promise.all([first, second]);
 
     assert.equal(requests.length, 1);
+    assert.deepEqual(requests[0].map(turn => turn.content), ['Steve: first\nsecond']);
+    assert.deepEqual(turns.map(turn => turn.content), ['Steve: first\nsecond', 'reply']);
+});
+
+test('new human message interrupts and drops a stale pending LLM response', async () => {
+    const { Agent } = await import('../src/agent/agent.js');
+    const turns = [];
+    const requests = [];
+    let releaseFirst;
+    const firstPromptStarted = new Promise(resolve => {
+        releaseFirst = resolve;
+    });
+    let promptCount = 0;
+    const agent = Object.create(Agent.prototype);
+    agent.name = 'bot';
+    agent.shut_up = false;
+    agent.last_sender = null;
+    agent.active_message_handlers = 0;
+    agent.active_native_tool_calls = new Map();
+    agent.message_interrupt_epoch = 0;
+    agent.human_message_queue = [];
+    agent.human_message_interrupt_promise = Promise.resolve();
+    agent.checkTaskDone = async () => {};
+    agent.self_prompter = {
+        shouldInterrupt: () => false,
+        isActive: () => false,
+        handleUserPromptedCmd: () => {}
+    };
+    agent.bot = { modes: { flushBehaviorLog: () => '' } };
+    agent.history = {
+        addUserContext: async content => turns.push({ role: 'user', content }),
+        add: async (name, content) => turns.push(name === agent.name ? { role: 'assistant', content } : { role: 'user', content: `${name}: ${content}` }),
+        save: () => {},
+        getHistory: () => turns.map(turn => ({ ...turn }))
+    };
+    agent.prompter = {
+        promptConvo: async messages => {
+            const currentPrompt = ++promptCount;
+            requests.push(messages.map(turn => ({ ...turn })));
+            if (currentPrompt === 1) {
+                await firstPromptStarted;
+            }
+            return `reply ${currentPrompt}`;
+        },
+        consumeLastConversationResponseMetadata: () => ({})
+    };
+    agent.routeResponse = () => {};
+
+    const first = agent.handleMessage('Steve', 'first', 1);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    const second = agent.handleMessage('Steve', 'second', 1);
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    assert.equal(requests.length, 2);
     releaseFirst();
     await Promise.all([first, second]);
 
     assert.equal(requests.length, 2);
-    assert.deepEqual(requests[1].map(turn => turn.content), ['Steve: first', 'reply 1', 'Steve: second']);
+    assert.deepEqual(requests[1].map(turn => turn.content), ['Steve: first', 'Steve: second']);
+    assert.deepEqual(turns.map(turn => turn.content), ['Steve: first', 'Steve: second', 'reply 2']);
 });
 
 
