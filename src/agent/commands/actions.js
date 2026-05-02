@@ -53,6 +53,7 @@ export const actionsList = [
         name: '!stop',
         description: 'Force stop all actions and commands that are currently executing.',
         perform: async function (agent) {
+            await agent.finishInterruptedNativeToolCalls?.('Tool interrupted by user !stop command.');
             await agent.actions.stop();
             agent.clearBotLogs();
             agent.actions.cancelResume();

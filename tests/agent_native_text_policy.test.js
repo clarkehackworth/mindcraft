@@ -11,12 +11,96 @@ test('agent contains explicit AI text-command block in native tool mode', () => 
     assert.ok(agentSource.includes('continue;'));
 });
 
+
+
+test('interrupted native tool responses are closed with synthetic tool results before next request', async () => {
+    const { Agent } = await import('../src/agent/agent.js');
+    const turns = [];
+    const toolEvents = [];
+    let interruptChecks = 0;
+    let executed = false;
+    const agent = Object.create(Agent.prototype);
+    agent.name = 'bot';
+    agent.shut_up = false;
+    agent.last_sender = null;
+    agent.checkTaskDone = async () => {};
+    agent.self_prompter = {
+        shouldInterrupt: () => ++interruptChecks > 1,
+        isActive: () => false,
+        handleUserPromptedCmd: () => { executed = true; }
+    };
+    agent.bot = { modes: { flushBehaviorLog: () => '' } };
+    agent.history = {
+        addUserContext: async content => turns.push({ role: 'user', content }),
+        addNativeToolCall: async toolCall => {
+            toolEvents.push({ type: 'call', toolCall });
+            turns.push({ role: 'assistant', content: '', native_tool_calls: [toolCall] });
+        },
+        addNativeToolResult: async (toolCall, result) => {
+            toolEvents.push({ type: 'result', toolCall, result });
+            turns.push({ role: 'tool', tool_call_id: toolCall.id, content: result });
+        },
+        save: () => {},
+        getHistory: () => turns.map(turn => ({ ...turn }))
+    };
+    agent.prompter = {
+        promptConvo: async () => ({
+            type: 'tool_calls',
+            tool_calls: [{ id: 'call_interrupted', type: 'function', name: 'collectBlocks', arguments: '{"type":"oak_log","num":1}' }]
+        })
+    };
+    agent.routeResponse = () => {};
+
+    const usedCommand = await agent._handleMessageImpl('Steve', 'collect one oak log', 1);
+
+    assert.equal(usedCommand, true);
+    assert.equal(executed, false);
+    assert.deepEqual(toolEvents.map(event => event.type), ['call', 'result']);
+    assert.equal(toolEvents[1].toolCall.id, 'call_interrupted');
+    assert.match(toolEvents[1].result, /interrupted before execution/);
+    assert.deepEqual(turns.slice(-2).map(turn => turn.role), ['assistant', 'tool']);
+});
+
+
+
+test('user stop closes an executing native tool exactly once', async () => {
+    const { Agent } = await import('../src/agent/agent.js');
+    const toolCall = { id: 'call_running', type: 'function', name: 'collectBlocks', arguments: '{"type":"oak_log","num":1}' };
+    const results = [];
+    const agent = Object.create(Agent.prototype);
+    agent.active_native_tool_calls = new Map();
+    agent.history = {
+        addNativeToolResult: async (call, result) => results.push({ call, result }),
+        save: () => { results.push({ saved: true }); }
+    };
+
+    agent._trackActiveNativeToolCall(toolCall);
+    const interrupted = await agent.finishInterruptedNativeToolCalls('Tool interrupted by user !stop command.');
+    const lateCompletion = await agent._completeActiveNativeToolCall(toolCall, 'Action output arrived after stop.');
+
+    assert.equal(interrupted, 1);
+    assert.equal(lateCompletion, false);
+    assert.equal(results.filter(item => item.result).length, 1);
+    assert.equal(results[0].call.id, 'call_running');
+    assert.equal(results[0].result, 'Tool interrupted by user !stop command.');
+    assert.deepEqual(results[1], { saved: true });
+});
+
+test('human stop closes active native tool calls before waiting on action stop', () => {
+    const actionsSource = readFileSync('src/agent/commands/actions.js', 'utf8');
+    const stopSection = actionsSource.slice(actionsSource.indexOf("name: '!stop'"), actionsSource.indexOf("name: '!stfu'"));
+
+    assert.ok(stopSection.includes('finishInterruptedNativeToolCalls'));
+    assert.ok(stopSection.indexOf('finishInterruptedNativeToolCalls') < stopSection.indexOf('agent.actions.stop()'));
+});
+
 test('native tool execution records structured tool calls and tool results', () => {
     const agentSource = readFileSync('src/agent/agent.js', 'utf8');
     const nativeSection = agentSource.slice(agentSource.indexOf('async _executeNativeToolCalls'));
 
     assert.ok(nativeSection.includes('this.history.addNativeToolCall(toolCall)'));
-    assert.ok(nativeSection.includes('this.history.addNativeToolResult(toolCall, formatNativeToolResultForModel(toolCall, execute_res))'));
+    assert.ok(nativeSection.includes('this._trackActiveNativeToolCall(toolCall)'));
+    assert.ok(nativeSection.includes('this._completeActiveNativeToolCall(toolCall, formatNativeToolResultForModel(toolCall, execute_res))'));
 });
 
 test('native tool execution sends visible progress without storing display text in history', () => {

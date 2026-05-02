@@ -26,6 +26,7 @@ export class Agent {
         this.count_id = count_id;
         this._disconnectHandled = false;
         this.active_message_handlers = 0;
+        this.active_native_tool_calls = new Map();
 
         // Initialize components
         this.actions = new ActionManager(this);
@@ -334,7 +335,12 @@ export class Agent {
             if (isNativeToolResponse(res)) {
                 console.log(`${this.name} native tool calls from ${source}: ${formatNativeToolCallsForLog(res.tool_calls)}`);
 
-                if (checkInterrupt()) break;
+                if (checkInterrupt()) {
+                    await this._cancelNativeToolCalls(res, 'Tool call interrupted before execution by a newer message, stop command, or shutdown.');
+                    used_command = true;
+                    this.history.save();
+                    break;
+                }
                 const executedAny = await this._executeNativeToolCalls(res, source, self_prompt);
                 if (!executedAny) break;
                 used_command = true;
@@ -410,6 +416,57 @@ export class Agent {
         return used_command;
     }
 
+    async _cancelNativeToolCalls(nativeToolResponse, reason) {
+        for (const toolCall of nativeToolResponse.tool_calls || []) {
+            await this.history.addNativeToolCall(toolCall);
+            await this.history.addNativeToolResult(toolCall, reason || 'Tool call interrupted before execution.');
+        }
+    }
+
+    _getActiveNativeToolCalls() {
+        if (!this.active_native_tool_calls) {
+            this.active_native_tool_calls = new Map();
+        }
+        return this.active_native_tool_calls;
+    }
+
+    _getNativeToolCallId(toolCall) {
+        return toolCall?.id || toolCall?.function?.id || null;
+    }
+
+    _trackActiveNativeToolCall(toolCall) {
+        const id = this._getNativeToolCallId(toolCall);
+        if (!id) return;
+        this._getActiveNativeToolCalls().set(id, { toolCall, completed: false });
+    }
+
+    async _completeActiveNativeToolCall(toolCall, result) {
+        const id = this._getNativeToolCallId(toolCall);
+        if (!id) {
+            await this.history.addNativeToolResult(toolCall, result);
+            return true;
+        }
+        const active = this._getActiveNativeToolCalls();
+        const entry = active.get(id);
+        if (!entry) return false;
+        if (entry.completed) return false;
+        entry.completed = true;
+        active.delete(id);
+        await this.history.addNativeToolResult(toolCall, result);
+        return true;
+    }
+
+    async finishInterruptedNativeToolCalls(reason = 'Tool interrupted by user stop command.') {
+        const active = Array.from(this._getActiveNativeToolCalls().values());
+        for (const entry of active) {
+            await this._completeActiveNativeToolCall(entry.toolCall, reason);
+        }
+        if (active.length > 0) {
+            this.history.save();
+        }
+        return active.length;
+    }
+
     async _executeNativeToolCalls(nativeToolResponse, source, self_prompt) {
         let executedAny = false;
         for (const toolCall of nativeToolResponse.tool_calls) {
@@ -425,6 +482,7 @@ export class Agent {
             this.self_prompter.handleUserPromptedCmd(self_prompt, isAction(commandName));
             const display = `*used ${toolCall.name}*`;
             await this.history.addNativeToolCall(toolCall);
+            this._trackActiveNativeToolCall(toolCall);
             this.routeResponse(source, display);
 
             console.log(`[native-tool] calling ${commandName} args=${formatToolArgsForLog(toolCall.arguments)}`);
@@ -432,7 +490,7 @@ export class Agent {
             console.log(`[native-tool] ${commandName} result=${formatToolResultForLog(execute_res.result)}`);
             executedAny = true;
 
-            await this.history.addNativeToolResult(toolCall, formatNativeToolResultForModel(toolCall, execute_res));
+            await this._completeActiveNativeToolCall(toolCall, formatNativeToolResultForModel(toolCall, execute_res));
         }
         return executedAny;
     }
