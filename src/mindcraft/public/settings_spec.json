@@ -83,12 +83,7 @@
     "blocked_actions": {
         "type": "array",
         "description": "List of actions that are blocked",
-        "default": [
-            "!checkBlueprint",
-            "!checkBlueprintLevel",
-            "!getBlueprint",
-            "!getBlueprintLevel"
-        ]
+        "default": ["!checkBlueprint", "!checkBlueprintLevel", "!getBlueprint", "!getBlueprintLevel"]
     },
     "relevant_docs_count": {
         "type": "number",
@@ -124,11 +119,7 @@
         "type": "string",
         "description": "Whether to show \"full\" command syntax, \"shortened\" command syntax, or \"none\"",
         "default": "full",
-        "options": [
-            "full",
-            "shortened",
-            "none"
-        ]
+        "options": ["full", "shortened", "none"]
     },
     "chat_ingame": {
         "type": "boolean",

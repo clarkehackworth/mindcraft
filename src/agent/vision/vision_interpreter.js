@@ -58,7 +58,7 @@ export class VisionInterpreter {
         const bot = this.agent.bot;
         const maxDistance = 128; // Maximum distance to check for blocks
         const targetBlock = bot.blockAtCursor(maxDistance);
-
+        
         if (targetBlock) {
             return `Block at center view: ${targetBlock.name} at (${targetBlock.position.x}, ${targetBlock.position.y}, ${targetBlock.position.z})`;
         } else {
@@ -90,4 +90,4 @@ export class VisionInterpreter {
             return `Error reading image: ${error.message}`;
         }
     }
-}
+} 

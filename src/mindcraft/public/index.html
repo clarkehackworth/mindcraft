@@ -3584,8 +3584,8 @@
         }
         function stopAgent(n) { socket.emit('stop-agent', n); }
         function destroyAgent(n) { socket.emit('destroy-agent', n); }
-        function disconnectAllAgents() {
-            socket.emit('stop-all-agents');
+        function disconnectAllAgents() { 
+            socket.emit('stop-all-agents'); 
         }
         function confirmShutdown() {
             if (confirm('Are you sure you want to perform a full shutdown?\nThis will stop all agents and close the server.')) {
@@ -3619,4 +3619,4 @@
         window.toggleDetails = toggleDetails;
     </script>
 </body>
-</html>
+</html> 

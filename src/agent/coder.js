@@ -96,7 +96,7 @@ export class Coder {
             } catch (e) {
                 if (this.agent.bot.interrupt_code)
                     return null;
-
+                
                 console.warn('Generated code threw error: ' + e.toString());
                 console.warn('trying again...');
 
@@ -183,7 +183,7 @@ export class Coder {
         //     });
         // } commented for now, useful to keep files for debugging
         this.file_counter++;
-
+        
         let write_result = await this._writeFilePromise('.' + this.fp + filename, src);
         // This is where we determine the environment the agent's code should be exposed to.
         // It will only have access to these things, (in addition to basic javascript objects like Array, Object, etc.)
@@ -195,7 +195,7 @@ export class Coder {
             Vec3,
         });
         const mainFn = compartment.evaluate(src);
-
+        
         if (write_result) {
             console.error('Error writing code execution file: ' + write_result);
             return null;
