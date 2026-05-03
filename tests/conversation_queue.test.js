@@ -148,6 +148,30 @@ test('busy normal bot messages branch-decide before serialized ReAct delivery', 
     assert.deepEqual(agent.calls, [{ source: 'buddy', message: '(FROM OTHER BOT)\nhello while busy' }]);
 });
 
+test('busy bot action notices with state updates do not enter the main ReAct history', async () => {
+    const agent = resetConversationManager();
+    agent.isIdle = () => true;
+    agent.active_message_handlers = 0;
+    agent.actions.currentActionLabel = 'action:newAction';
+
+    await convoManager.receiveFromBot('buddy', { message: '*used equip*', start: true, end: false });
+    await convoManager.receiveFromBot('buddy', {
+        message: [
+            'State update:',
+            '* action: Idle',
+            '* inventory: water_bucket:1, diamond_pickaxe:1'
+        ].join('\n'),
+        start: false,
+        end: true
+    });
+    await delay(260);
+
+    assert.deepEqual(agent.promptShouldRespondCalls, []);
+    assert.deepEqual(agent.calls, []);
+    assert.equal(convoManager.responseScheduledFor('buddy'), false);
+    assert.deepEqual(convoManager._getConvo('buddy').in_queue, []);
+});
+
 test('busy normal bot messages can be ignored without stale queued replay', async () => {
     const agent = resetConversationManager(makeAgent({ shouldRespondToBot: false }));
     agent.isIdle = () => false;

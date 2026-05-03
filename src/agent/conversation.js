@@ -285,7 +285,9 @@ async function _scheduleProcessInMessage(sender, received, convo) {
         clearTimeout(convo.inMessageTimer);
         convo.inMessageGeneration++;
     }
-    const otherAgentBusy = isOtherBotActionNotice(received.message);
+    const pending = compileQueuedBotMessages(convo.in_queue);
+    const decisionMessage = pending?.message || received.message || '';
+    const otherAgentBusy = isOtherBotActionNotice(decisionMessage);
 
     const scheduleResponse = (delay) => {
         const generation = convo.inMessageGeneration;
@@ -295,7 +297,7 @@ async function _scheduleProcessInMessage(sender, received, convo) {
 
     const currentAction = agent.actions?.currentActionLabel || '';
     const canTalkOver = talkOverActions.some(a => currentAction.includes(a));
-    const agentBusy = !agent.isIdle() || (agent.active_message_handlers || 0) > 0;
+    const agentBusy = Boolean(currentAction) || !agent.isIdle() || (agent.active_message_handlers || 0) > 0;
 
     if (agentBusy && otherAgentBusy && !canTalkOver) {
         convo.in_queue = [];
@@ -308,8 +310,6 @@ async function _scheduleProcessInMessage(sender, received, convo) {
     }
     else if (agentBusy && !canTalkOver) {
         const decisionGeneration = convo.inMessageGeneration;
-        const pending = compileQueuedBotMessages(convo.in_queue);
-        const decisionMessage = pending?.message || received.message || '';
         const shouldRespond = await agent.prompter.promptShouldRespondToBot(
             `${sender}: ${_tagMessage(decisionMessage)}`,
             { cacheScope: 'botResponder' }
@@ -332,7 +332,7 @@ async function _scheduleProcessInMessage(sender, received, convo) {
 
 function isOtherBotActionNotice(message) {
     const text = String(message || '').trim();
-    return Boolean(containsCommand(text) || /^\*used\s+\w+\*/.test(text));
+    return Boolean(containsCommand(text) || /^\*used\s+\w+\*/.test(text) || /^State update:/i.test(text));
 }
 
 function _processInMessageQueue(name, expectedConvo=null, expectedGeneration=null, expectedTimer=null) {
