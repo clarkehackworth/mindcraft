@@ -10,6 +10,7 @@ const settings = {
 
     "base_profile": "assistant", // survival, assistant, creative, or god_mode
     "load_memory": true, // load memory from previous session
+
     "init_message": "Respond with hello world and your name", // sends to all on spawn
     "only_chat_with": [], // users that the bots listen to and send general messages to. if empty it will chat publicly
 
@@ -88,8 +89,7 @@ const settings = {
         // "profiles/replicate.json",
         // "profiles/llama.json",
         // "profiles/vllm.json",
-        // "profiles/andy-4.json",
-        // "profiles/andy-4-reasoning.json",
+        // "profiles/andy-4.2.json",      // Andy 4.2 via local LM Studio OpenAI-compatible server
         // "profiles/freeguy.json",
     ],
 };

@@ -40,7 +40,11 @@ export class OpenAICompletions {
 
     initClient() {
         this.params = this.params || {};
-        const apiKeyName = this.params.apiKeyName || this.params.api_key_name || 'OPENAI_API_KEY';
+        const hasExplicitApiKeyName = Object.prototype.hasOwnProperty.call(this.params, 'apiKeyName') ||
+            Object.prototype.hasOwnProperty.call(this.params, 'api_key_name');
+        const apiKeyName = hasExplicitApiKeyName
+            ? (this.params.apiKeyName ?? this.params.api_key_name)
+            : 'OPENAI_API_KEY';
         this.provider = this.params.provider || this.params.providerName || this.params.provider_name || inferProviderName(this.url) || 'openai';
         this.default_model = this.params.defaultModel || this.params.default_model || this.default_model || this.model_name;
 

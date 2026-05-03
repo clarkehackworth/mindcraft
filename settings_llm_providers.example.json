@@ -235,6 +235,13 @@
             "baseUrl": "https://api.together.xyz/v1",
             "keyName": "TOGETHER_API_KEY",
             "defaultModel": "meta-llama/Llama-3-70b-chat-hf"
+        },
+        "lmstudio": {
+            "format": "openai-completions",
+            "baseUrl": "http://127.0.0.1:1234/v1",
+            "keyName": null,
+            "defaultModel": "andy-4.2",
+            "comment": "Local LM Studio OpenAI-compatible server. Start LM Studio's local server and load the Andy 4.2 model before using profiles/andy-4.2.json."
         }
     },
     "embeddings": {
@@ -282,6 +289,13 @@
             "format": "replicate",
             "keyName": "REPLICATE_API_KEY",
             "defaultModel": "mark3labs/embeddings-gte-base"
+        },
+        "lmstudio": {
+            "format": "openai-embeddings",
+            "baseUrl": "http://127.0.0.1:1234/v1",
+            "keyName": null,
+            "defaultModel": "text-embedding-nomic-embed-text-v1.5",
+            "comment": "Local LM Studio embeddings endpoint for Andy 4.2 profile examples."
         }
     },
     "schemaVersion": 1

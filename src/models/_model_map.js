@@ -86,7 +86,7 @@ function applyProviderRegistry(profile, registry, label) {
         ...(profile.params || {})
     };
     for (const [key, value] of Object.entries(mergedParams)) {
-        if (value === null || value === undefined) {
+        if ((value === null || value === undefined) && key !== 'apiKeyName' && key !== 'api_key_name') {
             delete mergedParams[key];
         }
     }
@@ -101,7 +101,7 @@ function applyProviderRegistry(profile, registry, label) {
 }
 
 function normalizeProviderConfig(providerName, provider) {
-    const keyName = provider.keyName || provider.key_name || provider.apiKeyName || provider.api_key_name;
+    const keyName = firstDefined(provider.keyName, provider.key_name, provider.apiKeyName, provider.api_key_name);
     const baseUrl = provider.baseUrl || provider.base_url || provider.baseURL || provider.url;
     const format = provider.format || provider.apiFormat || provider.api_format || provider.protocol || provider.api;
     const api = provider.adapter || provider.api || apiFromFormat(format);
@@ -111,7 +111,7 @@ function normalizeProviderConfig(providerName, provider) {
         model: provider.model || provider.defaultModel || provider.default_model,
         url: baseUrl,
         params: {
-            ...(keyName ? { apiKeyName: keyName } : {}),
+            ...(keyName !== undefined ? { apiKeyName: keyName } : {}),
             ...(api === 'openai-completions' || api === 'openai-compatible' ? { provider: providerName } : {}),
             ...(api === 'anthropic-messages' ? { provider: providerName } : {}),
             ...(api === 'replicate' ? { provider: providerName } : {}),
@@ -120,6 +120,10 @@ function normalizeProviderConfig(providerName, provider) {
             ...(provider.provider_name ? { provider: provider.provider_name } : {})
         }
     };
+}
+
+function firstDefined(...values) {
+    return values.find(value => value !== undefined);
 }
 
 function apiFromFormat(format) {
