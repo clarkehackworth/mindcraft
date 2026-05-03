@@ -24,6 +24,10 @@ class ChatTraceProjector {
 
     addEvent(event) {
         if (!event || typeof event !== 'object') return;
+        if (isBranchDecisionEvent(event)) {
+            this.addBranchEvent(event);
+            return;
+        }
         if (event.ephemeral) return;
         switch (event.type) {
             case 'instruction_context':
@@ -70,6 +74,7 @@ class ChatTraceProjector {
             assistantThinking: '',
             assistantToolCalls: [],
             modelLabel: 'model',
+            branchDecision: null,
             ...seed
         };
     }
@@ -80,6 +85,66 @@ class ChatTraceProjector {
             this.thread.turns.push(this.current);
         }
         return this.current;
+    }
+
+
+    addBranchEvent(event) {
+        if (event.type === 'llm_request') {
+            this.captureThreadContext(event);
+            const turn = this.createTurn({
+                branchDecision: {
+                    request: event,
+                    response: null,
+                    errors: []
+                },
+                modelLabel: getEventModelLabel(event)
+            });
+            this.thread.turns.push(turn);
+            return;
+        }
+
+        if (event.type === 'llm_response') {
+            const branch = this.findOpenBranchTurn(event);
+            if (branch) {
+                branch.branchDecision.response = event;
+                branch.modelLabel = getEventModelLabel(event, branch.modelLabel);
+            } else {
+                this.thread.turns.push(this.createTurn({
+                    branchDecision: {
+                        request: null,
+                        response: event,
+                        errors: []
+                    },
+                    modelLabel: getEventModelLabel(event)
+                }));
+            }
+            return;
+        }
+
+        if (event.type === 'llm_error') {
+            const branch = this.findOpenBranchTurn(event) || this.createTurn({
+                branchDecision: {
+                    request: null,
+                    response: null,
+                    errors: []
+                },
+                modelLabel: getEventModelLabel(event)
+            });
+            branch.branchDecision.errors.push(event);
+            if (!this.thread.turns.includes(branch)) this.thread.turns.push(branch);
+        }
+    }
+
+    findOpenBranchTurn(event) {
+        const scope = event.cache_scope || event.cacheScope || event.tag || '';
+        return this.thread.turns.slice().reverse().find(turn => {
+            const branch = turn.branchDecision;
+            if (!branch || branch.response) return false;
+            const request = branch.request;
+            if (!request) return true;
+            const requestScope = request.cache_scope || request.cacheScope || request.tag || '';
+            return scope ? requestScope === scope : request.tag === event.tag;
+        });
     }
 
     addInstructionContext(event) {
@@ -210,6 +275,19 @@ class ChatTraceProjector {
         const responseCalls = callHelper('extractResponseToolCalls', turn.response?.response);
         turn.assistantToolCalls = hasToolRuns ? [] : responseCalls;
     }
+}
+
+
+function isBranchDecisionEvent(event) {
+    return Boolean(event?.branch || event?.tag === 'botResponder');
+}
+
+function getEventModelLabel(event, fallback = 'model') {
+    return event?.model?.display_label
+        || event?.model?.model
+        || event?.model?.api
+        || fallback
+        || 'model';
 }
 
 function isHistoryOnlyProjectionTurn(turn) {

@@ -2032,6 +2032,57 @@
             display: block;
         }
 
+
+        /* Ephemeral branch decisions are observability-only: rendered outside the main conversation branch. */
+        .chat-branch-event {
+            margin: 10px 0 14px 34px;
+            max-width: min(860px, 92%);
+            color: #9a9a9a;
+        }
+        .chat-branch-card {
+            border-left: 2px solid #5b5b5b;
+            padding: 7px 0 8px 12px;
+            background: linear-gradient(90deg, rgba(255,255,255,0.035), rgba(255,255,255,0));
+        }
+        .chat-branch-title {
+            display: flex;
+            align-items: baseline;
+            flex-wrap: wrap;
+            gap: 6px;
+            color: #858585;
+            font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        }
+        .chat-branch-title strong {
+            color: #cfcfcf;
+            font: 600 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        }
+        .chat-branch-question {
+            margin-top: 7px;
+            color: #bdbdbd;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            line-height: 1.45;
+        }
+        .chat-branch-decision {
+            margin-top: 6px;
+            color: #d7d7d7;
+            font-weight: 600;
+        }
+        .chat-branch-decision .chat-muted {
+            font-weight: 400;
+            margin-left: 6px;
+        }
+        .chat-branch-event .chat-details {
+            margin-top: 7px;
+            padding-top: 6px;
+            border-top-color: rgba(255,255,255,0.05);
+        }
+        .chat-branch-error {
+            margin-top: 6px;
+            color: #d79a9a;
+        }
+
+
     </style>
 </head>
 <body>
@@ -2890,6 +2941,7 @@
         }
 
         function renderChatTurn(turn, index) {
+            if (turn.branchDecision) return renderBranchDecision(turn.branchDecision, index);
             const hasRunContent = Boolean(turn.request || turn.response || turn.toolRuns.length || turn.errors.length);
             if (!hasRunContent && turn.historyMessages.length) {
                 return `<div class="agent-run-flat restored-run">${renderRestoredHistoryMessages(turn.historyMessages, index)}</div>`;
@@ -2902,6 +2954,49 @@
                     ${turn.errors.map(renderInlineError).join('')}
                     ${renderCompactEvent(turn.compacted)}
                 </div>`;
+        }
+
+
+        function renderBranchDecision(branch, index) {
+            const request = branch?.request;
+            const response = branch?.response;
+            const errors = Array.isArray(branch?.errors) ? branch.errors : [];
+            const model = request?.model?.display_label
+                || response?.model?.display_label
+                || request?.model?.model
+                || response?.model?.model
+                || request?.model?.api
+                || response?.model?.api
+                || 'model';
+            const scope = request?.cache_scope || request?.cacheScope || response?.cache_scope || response?.cacheScope || request?.tag || response?.tag || 'branch';
+            const timestamp = response?.timestamp || request?.timestamp;
+            const question = getBranchQuestionText(request);
+            const decision = getBranchDecisionText(response);
+            const tokenUsage = renderTokenUsage(response?.token_usage);
+            const errorText = errors.map(error => error.error?.message || stringifyChatText(error.error)).filter(Boolean).join('\n');
+            return `
+                <div class="chat-branch-event" data-branch-scope="${escapeHTML(scope)}">
+                    <div class="chat-branch-card">
+                        <div class="chat-branch-title"><strong>Branch decision</strong><span>${escapeHTML(scope)}</span><span>Run ${index + 1}</span><span>${escapeHTML(model)}</span><span>${escapeHTML(formatChatTime(timestamp))}</span>${tokenUsage}</div>
+                        ${question ? `<div class="chat-branch-question">${escapeHTML(question)}</div>` : '<div class="chat-branch-question chat-muted">No branch question recorded yet.</div>'}
+                        ${decision ? `<div class="chat-branch-decision">decision: ${escapeHTML(decision)}</div>` : '<div class="chat-branch-decision"><span class="chat-muted">waiting for branch response…</span></div>'}
+                        ${errorText ? `<div class="chat-branch-error">${escapeHTML(limitText(errorText, 300))}</div>` : ''}
+                        ${renderDetails('Branch request payload', request)}
+                        ${renderDetails('Branch response payload', response)}
+                        ${errors.map(error => renderDetails('Branch error payload', error)).join('')}
+                    </div>
+                </div>`;
+        }
+
+        function getBranchQuestionText(request) {
+            const messages = Array.isArray(request?.messages) ? request.messages : [];
+            const lastUser = messages.slice().reverse().find(message => message?.role === 'user');
+            return lastUser ? formatChatMessagePreview(lastUser) : '';
+        }
+
+        function getBranchDecisionText(response) {
+            const text = extractResponseText(response?.response) || stringifyChatText(response?.response);
+            return limitText(String(text || '').trim(), 300);
         }
 
         function renderCompactEvent(event) {

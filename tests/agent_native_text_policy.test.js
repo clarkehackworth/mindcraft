@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
 
 test('agent contains explicit AI text-command block in native tool mode', () => {
     const agentSource = readFileSync('src/agent/agent.js', 'utf8');
@@ -488,14 +489,51 @@ test('chat UI and trace projection render model thinking separately', () => {
     assert.equal(html.includes('renderThinking(item.event?.thinking)'), false);
 });
 
-test('chat trace projection hides ephemeral branch decisions from the main timeline', () => {
+test('chat trace projection renders ephemeral branch decisions outside the main timeline', () => {
     const projector = readFileSync('src/mindcraft/public/chat_trace_projector.js', 'utf8');
+    const html = readFileSync('src/mindcraft/public/index.html', 'utf8');
     const prompterSource = readFileSync('src/models/prompter.js', 'utf8');
 
+    assert.ok(projector.includes('isBranchDecisionEvent(event)'));
+    assert.ok(projector.includes('addBranchEvent(event)'));
+    assert.ok(projector.includes('branchDecision'));
     assert.ok(projector.includes('if (event.ephemeral) return;'));
+    assert.equal(projector.includes('if (event.ephemeral) return;\n        switch'), true);
+    assert.ok(html.includes('function renderBranchDecision'));
+    assert.ok(html.includes('class="chat-branch-event"'));
+    assert.ok(html.includes('Branch decision'));
+    assert.ok(html.includes('renderTokenUsage(response?.token_usage)'));
     assert.ok(prompterSource.includes('ephemeral: true'));
     assert.ok(prompterSource.includes('branch: true'));
     assert.ok(prompterSource.includes("cache_scope: options.cacheScope || 'botResponder'"));
+});
+
+test('ephemeral branch decisions do not update the main request delta baseline', () => {
+    const projectorSource = readFileSync('src/mindcraft/public/chat_trace_projector.js', 'utf8');
+    const window = {
+        selectVisibleRequestMessages: (messages, previousMessages = []) => messages.slice(previousMessages.length),
+        extractResponseText: response => typeof response === 'string' ? response : '',
+        extractResponseThinking: () => '',
+        extractResponseToolCalls: () => [],
+        getToolCallId: call => call?.id || null,
+        getToolName: call => call?.name || call?.function?.name || 'tool',
+        isHistoryTurnIncludedInRequest: () => false
+    };
+    vm.runInNewContext(projectorSource, { window });
+
+    const first = { role: 'user', content: 'Steve: start' };
+    const branchQuestion = { role: 'user', content: 'buddy: (FROM OTHER BOT)\nhello while busy' };
+    const thread = window.buildChatThread([
+        { type: 'llm_request', tag: 'conversation', messages: [first], model: { model: 'gpt-5.5' }, timestamp: 't1' },
+        { type: 'llm_response', tag: 'conversation', response: 'ok', model: { model: 'gpt-5.5' }, timestamp: 't2' },
+        { type: 'llm_request', tag: 'botResponder', branch: true, ephemeral: true, cache_scope: 'botResponder', messages: [first, branchQuestion], model: { model: 'gpt-5.5' }, timestamp: 't3' },
+        { type: 'llm_response', tag: 'botResponder', branch: true, ephemeral: true, cache_scope: 'botResponder', response: 'respond', token_usage: { input_uncached: 1, input_cached: 2, output: 3 }, model: { model: 'gpt-5.5' }, timestamp: 't4' },
+        { type: 'llm_request', tag: 'conversation', messages: [first, branchQuestion], model: { model: 'gpt-5.5' }, timestamp: 't5' }
+    ]);
+
+    assert.equal(thread.turns.length, 3);
+    assert.equal(thread.turns[1].branchDecision.response.token_usage.input_cached, 2);
+    assert.deepEqual(thread.turns[2].visibleRequestMessages, [branchQuestion]);
 });
 
 test('chat trace projection can show reasoning effort in the model label', () => {
