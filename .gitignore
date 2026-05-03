@@ -7,6 +7,7 @@ docs/
 scratch.js
 bots/**/action-code/**
 bots/**/
+keys.json
 settings_llm_providers.json
 services/viaproxy/jars/**
 services/viaproxy/logs/**
@@ -22,6 +23,7 @@ jill_*.json
 src/models/logs/*
 results/
 tests/results/
+src/mindcraft/public/trace-demo.json
 server_data/*
 tasks/construction_tasks/test_multiagent_construction_tasks.json
 tasks/construction_tasks/train_multiagent_construction_tasks.json

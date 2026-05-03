@@ -304,10 +304,6 @@ export class Agent {
         return !self_prompt && !convoManager.isOtherAgent(source);
     }
 
-    _hasQueuedPriorityHumanMessage() {
-        return (this.human_message_queue || []).some(item => this._isPriorityHumanSource(item.source));
-    }
-
     _enqueueHumanMessage(source, message, max_responses=null, options={}) {
         let resolveQueued;
         let rejectQueued;
@@ -317,9 +313,7 @@ export class Agent {
         });
         this.message_interrupt_epoch = (this.message_interrupt_epoch || 0) + 1;
         this.human_message_queue.push({ source, message, max_responses, options, resolveQueued, rejectQueued });
-        if (this._hasQueuedPriorityHumanMessage()) {
-            this._schedulePriorityHumanMessageInterrupt();
-        }
+        this._schedulePriorityHumanMessageInterrupt();
         if (!this.human_message_flush_timer) {
             this.human_message_flush_timer = setTimeout(() => {
                 this.human_message_flush_timer = null;

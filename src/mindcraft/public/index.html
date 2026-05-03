@@ -419,44 +419,6 @@
             align-items: center;
             min-height: 20px;
         }
-        .chat-card.request .chat-card-title span:first-child::before,
-        .chat-card.turn-card .chat-card-title span:first-child::before,
-        .chat-card.response .chat-card-title span:first-child::before,
-        .chat-card.tool-status .chat-card-title span:first-child::before,
-        .chat-system-card .chat-card-title span:first-child::before,
-        .chat-tools-card .chat-card-title span:first-child::before {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            height: 18px;
-            padding: 0 6px;
-            margin-right: 8px;
-            border-radius: 5px;
-            border: 1px solid #3a3a3a;
-            color: #bdbdbd;
-            background: #202020;
-            font-size: 10px;
-            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-            font-weight: 600;
-            letter-spacing: 0.02em;
-            text-transform: uppercase;
-        }
-        .chat-card.request .chat-card-title span:first-child::before { content: 'REQ'; }
-        .chat-card.turn-card .chat-card-title span:first-child::before,
-        .chat-card.response .chat-card-title span:first-child::before { content: 'AI'; }
-        .chat-card.tool-status .chat-card-title span:first-child::before { content: 'TOOL'; }
-        .chat-system-card .chat-card-title span:first-child::before {
-            content: 'SYS';
-            background: #2a2113;
-            border-color: #5a421f;
-            color: #f0c978;
-        }
-        .chat-tools-card .chat-card-title span:first-child::before {
-            content: 'TOOLS';
-            background: #132435;
-            border-color: #2b587c;
-            color: #9fd0f4;
-        }
         .chat-system-card .chat-card-title { color: #f5dfb2; }
         .chat-tools-card .chat-card-title { color: #c8e4f7; }
         .chat-tools-card .chat-tool-def {
@@ -842,24 +804,6 @@
         .agent-message.user-message {
             grid-template-columns: minmax(0, 1fr) 28px;
         }
-        .agent-avatar {
-            width: 28px;
-            height: 28px;
-            border-radius: 50%;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            background: #262626;
-            border: 1px solid #3a3a3a;
-            color: #cfcfcf;
-            font: 700 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        }
-        .agent-message.user-message .agent-avatar {
-            grid-column: 2;
-            background: #1d2a20;
-            border-color: #33563b;
-            color: #bfe6c6;
-        }
         .agent-message.user-message .agent-bubble {
             grid-column: 1;
             grid-row: 1;
@@ -980,10 +924,10 @@
             border-color: transparent;
         }
 
-        /* Chat polish: keep the agent trace useful without looking like a generated demo UI. */
+        /* Chat transcript layout: full-width agent work, right-aligned user turns, inline tool activity. */
         .chat-thread.agent-workspace {
-            background: #0f0f0f;
-            gap: 12px;
+            background: #0e0e0e;
+            gap: 10px;
         }
         .agent-context-card {
             box-shadow: none;
@@ -1002,238 +946,17 @@
             font-weight: 560;
         }
         .agent-run-flat {
-            gap: 8px;
-            padding: 2px 0 14px;
-        }
-        .agent-run-flat + .agent-run-flat {
-            border-top: 1px solid rgba(255,255,255,0.045);
-            padding-top: 14px;
-        }
-        .agent-message,
-        .agent-message.user-message {
-            display: block;
-        }
-        .agent-avatar {
-            display: none;
-        }
-        .agent-message.user-message .agent-bubble,
-        .agent-bubble {
-            max-width: none;
-            width: auto;
-            justify-self: auto;
-            grid-column: auto;
-            grid-row: auto;
-            border-radius: 9px;
-            padding: 11px 12px;
-            box-shadow: none;
-        }
-        .agent-message.user-message .agent-bubble {
-            margin-left: 8%;
-            background: #151914;
-            border: 1px solid #293127;
-        }
-        .agent-message.assistant-message .agent-bubble {
-            margin-right: 8%;
-            background: #141414;
-            border: 1px solid #292929;
-        }
-        .agent-bubble-meta {
-            color: #858585;
-            font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-            margin-bottom: 7px;
-        }
-        .agent-bubble-label,
-        .tool-run-label {
-            color: #a5a5a5;
-            font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-            text-transform: none;
-            letter-spacing: 0;
-            margin: 0 0 7px;
-        }
-        .chat-message-row .chat-muted:first-child {
-            background: transparent;
-            border-radius: 0;
-            padding: 0;
-            margin-bottom: 4px;
-            color: #858585;
-            font-size: 11px;
-            text-transform: none;
-        }
-        .agent-steps {
-            gap: 6px;
-            margin-top: 8px;
-        }
-        .agent-steps .agent-step,
-        .agent-step {
-            background: #151515;
-            border: 1px solid #2a2a2a;
-            border-radius: 8px;
-        }
-        .agent-steps .agent-step-header,
-        .agent-step-header {
-            background: transparent;
-            padding: 8px 10px;
-            border-bottom: 1px solid rgba(255,255,255,0.045);
-        }
-        .agent-step-name {
-            color: #d8d8d8;
-            font: 500 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        }
-        .agent-step-status {
-            color: #868686;
-            font-size: 11px;
-        }
-        .agent-step-status.running {
-            color: #b9a86a;
-        }
-        .agent-step-status.done {
-            color: #8fb893;
-        }
-        .agent-step-body {
-            padding: 8px 10px;
-            gap: 7px;
-        }
-        .chat-tool-args,
-        .chat-tool-result,
-        .chat-tool-params {
-            background: #101010;
-            border-color: #272727;
-            border-radius: 6px;
-            color: #cdcdcd;
-        }
-        .chat-tools-card .chat-tool-def {
-            background: rgba(255,255,255,0.025);
-            border-color: rgba(255,255,255,0.08);
-        }
-
-        /* Chat de-template pass: flatter, quieter, closer to practical agent logs. */
-        .chat-thread.agent-workspace {
-            background: #0e0e0e;
-            gap: 10px;
-        }
-        .agent-run-flat {
-            padding: 10px 0 12px;
+            gap: 12px;
+            padding: 12px 0 16px;
         }
         .agent-run-flat + .agent-run-flat {
             border-top: 1px solid rgba(255,255,255,0.055);
         }
-        .agent-message,
-        .agent-message.user-message {
+        .agent-message {
             display: block;
         }
         .agent-message + .agent-message {
             margin-top: 8px;
-        }
-        .agent-message.user-message .agent-bubble,
-        .agent-message.assistant-message .agent-bubble,
-        .agent-bubble {
-            margin: 0;
-            max-width: none;
-            width: auto;
-            background: #131313;
-            border: 1px solid #252525;
-            border-radius: 8px;
-            padding: 10px 12px;
-            box-shadow: none;
-        }
-        .agent-message.user-message .agent-bubble {
-            background: #121512;
-            border-color: #252d25;
-        }
-        .agent-message.assistant-message .agent-bubble {
-            background: #121212;
-            border-color: #272727;
-        }
-        .agent-bubble-meta {
-            color: #767676;
-            font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-            margin-bottom: 8px;
-        }
-        .agent-bubble-label,
-        .tool-run-label {
-            color: #888;
-            font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-            text-transform: none;
-            letter-spacing: 0;
-            margin-bottom: 6px;
-        }
-        .chat-message-row {
-            display: block;
-            border-top: 1px solid rgba(255,255,255,0.055);
-            padding-top: 8px;
-            margin-top: 8px;
-        }
-        .chat-message-row:first-child {
-            border-top: none;
-            padding-top: 0;
-            margin-top: 0;
-        }
-        .chat-message-text {
-            white-space: pre-wrap;
-            overflow-wrap: anywhere;
-            line-height: 1.45;
-        }
-        .agent-steps {
-            margin-top: 8px;
-            gap: 0;
-            border: 1px solid #272727;
-            border-radius: 8px;
-            overflow: hidden;
-            background: #111;
-        }
-        .agent-steps .agent-step,
-        .agent-step {
-            border: none;
-            border-radius: 0;
-            background: transparent;
-        }
-        .agent-step + .agent-step {
-            border-top: 1px solid rgba(255,255,255,0.06);
-        }
-        .agent-steps .agent-step-header,
-        .agent-step-header {
-            background: transparent;
-            border-bottom: none;
-            padding: 8px 10px;
-        }
-        .agent-step-name {
-            color: #d6d6d6;
-            font: 500 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        }
-        .agent-step-status {
-            color: #777;
-            font-size: 11px;
-        }
-        .agent-step-status.running { color: #b5a76d; }
-        .agent-step-status.done { color: #8aaa8d; }
-        .agent-step-body {
-            padding: 0 10px 9px;
-        }
-        .chat-tool-args,
-        .chat-tool-result,
-        .chat-tool-params {
-            background: #0d0d0d;
-            border-color: #232323;
-            color: #c9c9c9;
-            border-radius: 6px;
-            font-size: 0.84em;
-        }
-        .agent-message.user-message .agent-request-detail {
-            border-top: 1px solid rgba(255,255,255,0.055);
-            margin-top: 8px;
-            padding-top: 7px;
-        }
-        .agent-request-detail .chat-details summary,
-        .chat-details summary {
-            color: #777;
-            font-size: 12px;
-        }
-
-
-        /* Chat transcript direction: right user bubbles, full-width agent work, inline tool activity. */
-        .agent-run-flat {
-            gap: 12px;
-            padding: 12px 0 16px;
         }
         .agent-message.user-message {
             display: flex;
@@ -1247,6 +970,7 @@
             border: 1px solid #294229;
             border-radius: 16px 16px 5px 16px;
             padding: 11px 13px;
+            box-shadow: none;
         }
         .agent-message.assistant-message {
             display: block;
@@ -1259,6 +983,7 @@
             border: none;
             border-radius: 0;
             padding: 2px 0 0;
+            box-shadow: none;
         }
         .agent-message.assistant-message .agent-bubble.error {
             background: transparent;
@@ -1266,23 +991,17 @@
             border-radius: 0;
             padding: 0;
         }
-        .agent-message.assistant-message .agent-bubble-label {
-            color: #b8b8b8;
-            font-size: 12px;
-            margin-bottom: 6px;
+        .agent-message.assistant-message .agent-bubble-label,
+        .agent-message.user-message .agent-bubble-label,
+        .tool-run-label {
+            color: #8f8f8f;
+            font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            text-transform: none;
+            letter-spacing: 0;
+            margin: 0 0 6px;
         }
         .agent-message.user-message .agent-bubble-label {
             color: #b9d3ba;
-            font-size: 12px;
-            margin-bottom: 6px;
-        }
-        .agent-bubble-meta {
-            color: #7b7b7b;
-            font-size: 11px;
-            margin-bottom: 6px;
-        }
-        .agent-message.assistant-message .agent-bubble-meta {
-            margin-bottom: 4px;
         }
         .agent-bubble-meta {
             color: #626262;
@@ -1290,12 +1009,45 @@
             font-size: 10px;
             font-style: italic;
             font-weight: 300;
+            margin-bottom: 6px;
+        }
+        .agent-message.assistant-message .agent-bubble-meta {
+            margin-bottom: 4px;
         }
         .chat-token-usage {
             color: #626262;
             font-size: 1em;
             font-style: inherit;
             font-weight: inherit;
+        }
+        .chat-message-row {
+            display: block;
+            border-top: 1px solid rgba(255,255,255,0.055);
+            padding-top: 8px;
+            margin-top: 8px;
+        }
+        .chat-message-row:first-child {
+            border-top: none;
+            padding-top: 0;
+            margin-top: 0;
+        }
+        .chat-message-row .chat-muted:first-child {
+            background: transparent;
+            border-radius: 0;
+            padding: 0;
+            margin-bottom: 4px;
+            color: #858585;
+            font-size: 11px;
+            text-transform: none;
+        }
+        .chat-message-text {
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            line-height: 1.45;
+        }
+        .agent-empty {
+            color: #8f8f8f;
+            font-style: italic;
         }
         .agent-message.assistant-message .agent-text {
             background: transparent;
@@ -1307,38 +1059,18 @@
         }
         .tool-run-label {
             margin: 12px 0 6px;
-            color: #8f8f8f;
         }
-        .agent-steps {
-            margin: 6px 0 10px;
-            border: 1px solid #252525;
-            border-radius: 10px;
-            background: #101010;
-            overflow: hidden;
-        }
-        .agent-step-header {
-            padding: 9px 11px 5px;
-        }
-        .agent-step-name::before {
-            content: '↳';
-            color: #777;
-            margin-right: 8px;
-            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        }
-        .agent-step-name {
-            color: #dfdfdf;
-            font: 500 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        }
-        .agent-step-status.requested,
-        .agent-step-status.running { color: #a69763; }
-        .agent-step-status.done { color: #7f9c82; }
-        .agent-step-body {
-            padding: 0 11px 10px 31px;
-            gap: 8px;
+        .chat-tool-args,
+        .chat-tool-params {
+            background: #0d0d0d;
+            border: 1px solid #232323;
+            color: #c9c9c9;
+            border-radius: 6px;
+            font-size: 0.84em;
         }
         .chat-tool-args {
             background: #0c0c0c;
-            border: 1px solid #252525;
+            border-color: #252525;
             color: #d8d8d8;
             border-radius: 7px;
         }
@@ -1370,8 +1102,14 @@
         }
         .agent-message.user-message .agent-request-detail {
             border-top: 1px solid rgba(185, 211, 186, 0.14);
+            margin-top: 8px;
+            padding-top: 7px;
         }
-
+        .agent-request-detail .chat-details summary,
+        .chat-details summary {
+            color: #777;
+            font-size: 12px;
+        }
 
 
         /* Claude Code-style tool transcript: one line for the call, indented result/progress below. */
@@ -1430,9 +1168,13 @@
             color: #a2a2a2;
             font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
             min-width: 0;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
+            max-width: 100%;
+            overflow: visible;
+            overflow-wrap: anywhere;
+            text-overflow: clip;
+            white-space: normal;
+            word-break: break-word;
+            line-height: 1.35;
         }
         .agent-step-status {
             margin-left: auto;
@@ -1523,11 +1265,14 @@
         }
         .agent-step-params {
             grid-column: 3;
-            display: inline-block;
+            display: block;
+            align-self: start;
         }
         .agent-step-status {
             grid-column: 4;
             margin-left: 0;
+            align-self: start;
+            justify-self: end;
         }
 
 
@@ -1774,7 +1519,7 @@
         .footer-left { color: #cccccc; font-style: italic; }
 
 
-        /* Final neutral chat color override. */
+        /* Neutral compact context/tools panel. */
         .agent-context-card.chat-system-card,
         .agent-context-card.chat-tools-card,
         .chat-system-card,
@@ -1793,33 +1538,41 @@
         .agent-message.user-message .agent-bubble-label {
             color: #d0d0d0 !important;
         }
-
-
-
-        /* Tools context is one card; individual tools are plain rows, not nested cards. */
         .chat-tools-card .chat-tools-list {
-            display: block;
+            display: grid;
+            grid-template-columns: 1fr !important;
+            row-gap: 7px !important;
+            align-items: start;
         }
-        .chat-tools-card .chat-tool-def {
+        .chat-tools-card .chat-tool-def,
+        .chat-tools-card .chat-tool-def:first-child {
             background: transparent !important;
             border: none !important;
             border-radius: 0 !important;
-            padding: 9px 0 !important;
             margin: 0 !important;
-            border-top: 1px solid rgba(255,255,255,0.075) !important;
-        }
-        .chat-tools-card .chat-tool-def:first-child {
-            border-top: none !important;
-            padding-top: 0 !important;
+            padding: 3px 0 !important;
+            line-height: 1.25;
         }
         .chat-tools-card .chat-tool-name {
-            color: #e1e1e1;
-            font: 650 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            display: block !important;
+            color: #dedede;
+            font: 600 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        }
+        .chat-tools-card .chat-tool-name::before {
+            content: none !important;
         }
         .chat-tools-card .chat-tool-description {
-            color: #a5a5a5;
-            margin-top: 3px;
-            line-height: 1.4;
+            display: block !important;
+            color: #969696;
+            margin: 2px 0 0 0 !important;
+            font-size: 12px;
+            line-height: 1.3;
+        }
+        .chat-tools-card .chat-tool-description::before {
+            content: 'desc: ' !important;
+            color: #666;
+            font-size: 11px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
         }
         .chat-tools-card .chat-tool-params {
             display: block;
@@ -1827,138 +1580,14 @@
             border: none !important;
             border-radius: 0 !important;
             padding: 0 !important;
-            margin-top: 4px;
-            color: #8f8f8f;
-            font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            margin-top: 2px !important;
+            color: #777;
+            font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
             white-space: normal;
         }
-
-
-
-        /* No internal divider lines inside the tools context card. */
-        .chat-tools-card .chat-tool-def,
-        .chat-tools-card .chat-tool-def:first-child {
-            border-top: none !important;
-        }
-
-
-
-        /* Compact tools context list. */
-        .chat-tools-card .chat-tools-list {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-            column-gap: 18px;
-            row-gap: 4px;
-            align-items: start;
-        }
-        .chat-tools-card .chat-tool-def,
-        .chat-tools-card .chat-tool-def:first-child {
-            padding: 3px 0 !important;
-            line-height: 1.25;
-        }
-        .chat-tools-card .chat-tool-name {
-            display: inline;
-            color: #dedede;
-            font: 600 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        }
-        .chat-tools-card .chat-tool-description {
-            display: inline;
-            color: #969696;
-            margin: 0 0 0 6px;
-            font-size: 12px;
-            line-height: 1.25;
-        }
-        .chat-tools-card .chat-tool-description::before {
-            content: '— ';
-            color: #666;
-        }
-        .chat-tools-card .chat-tool-params {
-            margin-top: 1px;
-            color: #777;
-            font-size: 11px;
-            line-height: 1.2;
-        }
-
-
-
-        /* Tools list: no three-column layout and no disclosure triangle. */
-        .chat-tools-card .chat-tools-list {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            column-gap: 22px;
-        }
-        @media (max-width: 1100px) {
-            .chat-tools-card .chat-tools-list {
-                grid-template-columns: 1fr;
-            }
-        }
-        .chat-tools-card > summary.chat-card-title::after {
-            content: none !important;
-        }
-        .chat-tools-card > summary.chat-card-title,
-        .chat-tools-card > summary.chat-card-title::marker,
-        .chat-tools-card > summary.chat-card-title::-webkit-details-marker {
-            list-style: none;
-        }
-
-
-
-        /* Use a single compact tools column to keep spacing consistent. */
-        .chat-tools-card .chat-tools-list {
-            grid-template-columns: 1fr !important;
-            row-gap: 2px;
-        }
-        .chat-tools-card .chat-tool-def,
-        .chat-tools-card .chat-tool-def:first-child {
-            padding: 2px 0 !important;
-        }
-
-
-
-        /* Add consistent breathing room between tools without dividers. */
-        .chat-tools-card .chat-tools-list {
-            row-gap: 7px !important;
-        }
-        .chat-tools-card .chat-tool-def,
-        .chat-tools-card .chat-tool-def:first-child {
-            padding: 3px 0 !important;
-        }
-
-
-
-        /* Stack tool name, description, and parameters for clearer compact reading. */
-        .chat-tools-card .chat-tool-name {
-            display: block !important;
-        }
-        .chat-tools-card .chat-tool-description {
-            display: block !important;
-            margin: 2px 0 0 0 !important;
-            line-height: 1.3;
-        }
-        .chat-tools-card .chat-tool-description::before {
-            content: none !important;
-        }
-        .chat-tools-card .chat-tool-params {
-            margin-top: 2px !important;
-        }
-
-
-
-        /* Add a subtle prefix before each tool description. */
-        .chat-tools-card .chat-tool-description::before {
-            content: 'desc: ' !important;
-            color: #666;
-            font-size: 11px;
-            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        }
-
-
-
-        /* Prefix tool parameters and suppress any disclosure marker in the tools context. */
         .chat-tools-card .chat-tool-params::before {
             content: 'params · ' !important;
             color: #666;
-            font-size: 11px;
-            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
         }
         .chat-tools-card summary,
         .chat-tools-card summary::marker,
@@ -1966,20 +1595,10 @@
             list-style: none !important;
             display: block;
         }
-        .chat-tools-card summary::after {
+        .chat-tools-card summary::after,
+        .chat-tools-card > summary.chat-card-title::after {
             content: none !important;
         }
-
-
-
-        /* No marker before tool names in the tools context list. */
-        .chat-tools-card .chat-tool-name::before {
-            content: none !important;
-        }
-
-
-
-        /* Separate the Tools title from the count. */
         .chat-tools-card > summary.chat-card-title {
             display: flex !important;
             justify-content: flex-start !important;
@@ -1990,7 +1609,6 @@
             content: '· ';
             color: #777;
         }
-
 
 
         /* Unified context panel: system prompt and tools share one status surface. */
@@ -2152,22 +1770,6 @@
             color: #6a6a6a;
             font-weight: 300;
         }
-        .chat-branch-top {
-            display: flex;
-            align-items: baseline;
-            justify-content: space-between;
-            gap: 12px;
-            flex-wrap: wrap;
-        }
-        .chat-branch-top::before {
-            content: '↳';
-            color: #6a6a6a;
-            font-weight: 300;
-        }
-        .chat-branch-kind {
-            color: #8f8f8f;
-            font-weight: 300;
-        }
         .chat-branch-route {
             color: #777;
             font-weight: 300;
@@ -2186,11 +1788,6 @@
             color: #777;
             font-size: 11px;
             font-weight: 300;
-        }
-        .chat-branch-meta {
-            color: #737373;
-            font-weight: 300;
-            margin-left: auto;
         }
         .chat-branch-request-meta {
             display: flex;
@@ -3419,7 +3016,6 @@
             if (isTool) {
                 return `
                     <div class="agent-message assistant-message history-message">
-                        <div class="agent-avatar">T</div>
                         <div class="agent-bubble">
                             <div class="agent-bubble-meta">${escapeHTML(label)} · tool result</div>
                             ${renderToolOutput(turn.content, event)}
@@ -3429,7 +3025,6 @@
             }
             return `
                 <div class="agent-message ${isUser ? 'user-message' : 'assistant-message'} history-message">
-                    <div class="agent-avatar">${isUser ? 'U' : 'AI'}</div>
                     <div class="agent-bubble">
                         <div class="agent-bubble-meta">${escapeHTML(label)} · ${escapeHTML(role)}${event.restored_from_memory ? ' · memory' : ''}</div>
                         ${renderThinking(turn.thinking)}
@@ -3444,7 +3039,6 @@
             if (!request || !turn.visibleRequestMessages?.length) return '';
             return `
                 <div class="agent-message user-message">
-                    <div class="agent-avatar">U</div>
                     <div class="agent-bubble">
                         <div class="agent-bubble-meta">Run ${index + 1} · ${escapeHTML(summarizeRequest(request, turn.modelLabel))} · ${escapeHTML(formatChatTime(request.timestamp))}</div>
                         <div class="agent-bubble-label">User</div>
@@ -3459,7 +3053,6 @@
             const hasAssistantDisplay = Boolean(turn.assistantText || turn.assistantThinking || turn.assistantToolCalls.length);
             return `
                 <div class="agent-message assistant-message">
-                    <div class="agent-avatar">AI</div>
                     <div class="agent-bubble">
                         <div class="agent-bubble-meta">Run ${index + 1} · ${escapeHTML(turn.modelLabel || 'model')} · ${escapeHTML(formatChatTime(response?.timestamp))}${renderTokenUsage(response?.token_usage)}</div>
                         ${hasAssistantDisplay ? '<div class="agent-bubble-label">Assistant</div>' : ''}
@@ -3716,7 +3309,6 @@
             const message = limitText(event.error?.message || stringifyChatText(event.error), 1200);
             return `
                 <div class="agent-message assistant-message error-message">
-                    <div class="agent-avatar">!</div>
                     <div class="agent-bubble error">
                         <div class="agent-error-line">
                             <span class="agent-error-dot" aria-hidden="true">●</span>

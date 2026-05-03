@@ -886,6 +886,22 @@ test('running tool details do not preserve template whitespace as large blank ro
     assert.ok(html.includes('.chat-tool-output-extra > .chat-details'));
 });
 
+test('tool call parameters wrap without displacing the running status column', () => {
+    const html = readFileSync('src/mindcraft/public/index.html', 'utf8');
+    const paramsRules = [...html.matchAll(/\.agent-step-params \{[\s\S]*?\}/g)].map(match => match[0]).join('\n');
+    const headerRules = [...html.matchAll(/\.agent-step-header,\n\s*\.agent-steps \.agent-step-header \{[\s\S]*?\}/g)].map(match => match[0]).join('\n');
+    const statusRules = [...html.matchAll(/\.agent-step-status \{[\s\S]*?\}/g)].map(match => match[0]).join('\n');
+
+    assert.ok(paramsRules.includes('white-space: normal;'));
+    assert.ok(paramsRules.includes('overflow-wrap: anywhere;'));
+    assert.ok(paramsRules.includes('word-break: break-word;'));
+    assert.ok(paramsRules.includes('display: block;'));
+    assert.ok(headerRules.includes('grid-template-columns: 16px max-content minmax(0, 1fr) auto;'));
+    assert.ok(statusRules.includes('grid-column: 4;'));
+    assert.ok(statusRules.includes('justify-self: end;'));
+    assert.ok(statusRules.includes('white-space: nowrap;'));
+});
+
 test('runtime status UI avoids rebuilding inventory and armor DOM when state is unchanged', () => {
     const html = readFileSync('src/mindcraft/public/index.html', 'utf8');
 
