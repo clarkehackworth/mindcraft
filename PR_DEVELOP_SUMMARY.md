@@ -1,5 +1,13 @@
 # PR Summary vs develop
 
+## Verified functionality
+
+- Verified single-agent survival and construction flows.
+- Verified voice broadcast / narration behavior.
+- Verified multiple agents can run concurrently while cooperating with each other.
+- Tested and passed mainstream provider protocols: OpenAI Chat, OpenAI Responses, Gemini, and Anthropic-compatible messages.
+- Verified both user-sent messages and agent-to-agent messages still hit the conversation cache after branching/interruption.
+
 This PR updates Mindcraft from the legacy text-command/provider layout toward a native tool-calling runtime with richer multi-agent traceability and broader provider support.
 
 ## Functional changes
