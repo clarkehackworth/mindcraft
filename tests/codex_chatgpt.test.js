@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { WebSocketServer } from 'ws';
 import {
     CodexChatGPT,
     buildAuthorizeUrl,
@@ -299,7 +300,11 @@ test('Codex adapter forwards abort signals to the Responses request', async () =
     };
 
     try {
-        const model = new CodexChatGPT('gpt-5.5', 'https://example.test/backend-api/codex', { keysPath, sessionId: 'session-test' });
+        const model = new CodexChatGPT('gpt-5.5', 'https://example.test/backend-api/codex', {
+            keysPath,
+            sessionId: 'session-test',
+            enablePreviousResponseId: true
+        });
         await model.sendRequest([{ role: 'user', content: 'hi' }], 'Say ok.', '***', null, { signal: controller.signal });
         assert.equal(requests[0].init.signal, controller.signal);
     } finally {
@@ -328,7 +333,11 @@ test('Codex adapter sends native-login Responses request and normalizes tool cal
     };
 
     try {
-        const model = new CodexChatGPT('gpt-5.5', 'https://example.test/backend-api/codex', { keysPath, sessionId: 'session-test' });
+        const model = new CodexChatGPT('gpt-5.5', 'https://example.test/backend-api/codex', {
+            keysPath,
+            sessionId: 'session-test',
+            enablePreviousResponseId: true
+        });
         const response = await model.sendRequest(
             [{ role: 'user', content: 'call the tool' }],
             'Use the function.',
@@ -354,7 +363,7 @@ test('Codex adapter sends native-login Responses request and normalizes tool cal
 
 
 
-test('Codex adapter reuses previous_response_id for prefix-extension turns', async () => {
+test('Codex adapter expands response continuity when using HTTP transport', async () => {
     const { keysPath, cleanup } = writeTempKeys();
     const originalFetch = globalThis.fetch;
     const requests = [];
@@ -385,13 +394,17 @@ test('Codex adapter reuses previous_response_id for prefix-extension turns', asy
     };
 
     try {
-        const model = new CodexChatGPT('gpt-5.5', 'https://example.test/backend-api/codex', { keysPath, sessionId: 'session-test' });
+        const model = new CodexChatGPT('gpt-5.5', 'https://example.test/backend-api/codex', {
+            keysPath,
+            sessionId: 'session-test',
+            enablePreviousResponseId: true
+        });
         const first = await model.sendRequest(
             [{ role: 'user', content: 'first' }],
             'Use tools.',
             '***',
             [tool],
-            { cacheScope: 'conversation' }
+            { cacheScope: 'conversation', turnStateKey: 'react-1' }
         );
         assert.equal(first, 'ok');
 
@@ -404,16 +417,16 @@ test('Codex adapter reuses previous_response_id for prefix-extension turns', asy
             'Use tools.',
             '***',
             [tool],
-            { cacheScope: 'conversation' }
+            { cacheScope: 'conversation', turnStateKey: 'react-1' }
         );
         assert.equal(isNativeToolResponse(second), true);
 
         assert.equal(requests[0].body.previous_response_id, undefined);
         assert.equal(requests[0].body.input.length, 1);
-        assert.equal(requests[1].body.previous_response_id, 'resp_1');
-        assert.equal(requests[1].body.input.length, 1);
-        assert.equal(requests[1].body.input[0].role, 'user');
-        assert.equal(requests[1].body.input[0].content[0].text, 'second');
+        assert.equal(requests[1].body.previous_response_id, undefined);
+        assert.equal(requests[1].body.input.length, 3);
+        assert.equal(requests[1].body.input[2].role, 'user');
+        assert.equal(requests[1].body.input[2].content[0].text, 'second');
         assert.equal(requests[1].body.prompt_cache_key, 'session-test:conversation');
         assert.equal(requests[1].init.headers.session_id, 'session-test:conversation');
         assert.deepEqual(model.consumeLastRequestCacheTrace(), {
@@ -421,14 +434,309 @@ test('Codex adapter reuses previous_response_id for prefix-extension turns', asy
             prompt_cache_key: 'session-test:conversation',
             session_id: 'session-test:conversation',
             turn_state_present: false,
-            previous_response_id: 'resp_1',
-            incremental_input_items: 1,
+            previous_response_id: null,
+            incremental_input_items: null,
             full_input_items: 3,
-            incremental_reuse: true,
-            incremental_reuse_reason: 'prefix_reused'
+            incremental_reuse: false,
+            incremental_reuse_reason: 'http_previous_response_unsupported'
         });
     } finally {
         globalThis.fetch = originalFetch;
+        cleanup();
+    }
+});
+
+test('Codex adapter does not carry turn-state into a new bot-message branch', async () => {
+    const { keysPath, cleanup } = writeTempKeys();
+    const originalFetch = globalThis.fetch;
+    const requests = [];
+    const responses = [
+        [
+            'event: response.output_item.done',
+            'data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_1","name":"report_status","arguments":"{}"}}',
+            '',
+            'event: response.completed',
+            'data: {"type":"response.completed","response":{"id":"resp_1"}}',
+            ''
+        ].join('\n'),
+        [
+            'event: response.output_text.delta',
+            'data: {"type":"response.output_text.delta","delta":"ok"}',
+            '',
+            'event: response.completed',
+            'data: {"type":"response.completed","response":{"id":"resp_2"}}',
+            ''
+        ].join('\n')
+    ];
+    globalThis.fetch = async (url, init) => {
+        requests.push({ url, init, body: JSON.parse(init.body) });
+        return new Response(responses.shift(), {
+            status: 200,
+            headers: {
+                'content-type': 'text/event-stream',
+                'x-codex-turn-state': 'sticky-route-1'
+            }
+        });
+    };
+
+    try {
+        const model = new CodexChatGPT('gpt-5.5', 'https://example.test/backend-api/codex', {
+            keysPath,
+            sessionId: 'session-test',
+            enablePreviousResponseId: true
+        });
+        const first = await model.sendRequest(
+            [{ role: 'user', content: 'start a long action' }],
+            'Use tools.',
+            '***',
+            [tool],
+            { cacheScope: 'conversation', turnStateKey: 'react-1' }
+        );
+        assert.equal(isNativeToolResponse(first), true);
+
+        await model.sendRequest(
+            [
+                { role: 'user', content: 'start a long action' },
+                {
+                    role: 'assistant',
+                    content: '',
+                    native_tool_calls: [{ id: 'call_1', type: 'function', name: 'report_status', arguments: '{}' }]
+                },
+                { role: 'user', content: 'kimi: (FROM OTHER BOT)\nwhat resources do you have?' }
+            ],
+            'Use tools.',
+            '***',
+            [tool],
+            { cacheScope: 'conversation', turnStateKey: 'react-2' }
+        );
+
+        assert.equal(requests[0].body.previous_response_id, undefined);
+        assert.equal(requests[1].body.previous_response_id, undefined);
+        assert.equal(requests[1].init.headers['x-codex-turn-state'], undefined);
+        assert.equal(requests[1].body.prompt_cache_key, 'session-test:conversation');
+        assert.equal(requests[1].body.input.length, 4);
+        assert.equal(requests[1].body.input[1].type, 'function_call');
+        assert.equal(requests[1].body.input[2].type, 'function_call_output');
+        assert.equal(requests[1].body.input[3].content[0].text, 'kimi: (FROM OTHER BOT)\nwhat resources do you have?');
+        assert.equal(model.consumeLastRequestCacheTrace().incremental_reuse_reason, 'http_previous_response_unsupported');
+    } finally {
+        globalThis.fetch = originalFetch;
+        cleanup();
+    }
+});
+
+test('Codex adapter keeps forked branches on the shared prompt cache key without sharing turn-state', async () => {
+    const { keysPath, cleanup } = writeTempKeys();
+    const originalFetch = globalThis.fetch;
+    const requests = [];
+    const responseTexts = ['root ok', 'branch A ok', 'branch B ok', 'main after branch ok'];
+    const turnStates = ['sticky-root', 'sticky-branch-a', 'sticky-branch-b', 'sticky-main-after-branch'];
+    globalThis.fetch = async (url, init) => {
+        const index = requests.length;
+        requests.push({ url, init, body: JSON.parse(init.body) });
+        return new Response([
+            'event: response.output_item.done',
+            `data: {"type":"response.output_item.done","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"${responseTexts[index]}"}]}}`,
+            '',
+            'event: response.completed',
+            `data: {"type":"response.completed","response":{"id":"resp_${index + 1}"}}`,
+            ''
+        ].join('\n'), {
+            status: 200,
+            headers: {
+                'content-type': 'text/event-stream',
+                'x-codex-turn-state': turnStates[index]
+            }
+        });
+    };
+
+    try {
+        const model = new CodexChatGPT('gpt-5.5', 'https://example.test/backend-api/codex', {
+            keysPath,
+            sessionId: 'session-test',
+            enablePreviousResponseId: true
+        });
+        await model.sendRequest([{ role: 'user', content: 'root' }], 'Use tools.', '***', [tool], {
+            cacheScope: 'conversation',
+            turnStateKey: 'root'
+        });
+        await model.sendRequest([
+            { role: 'user', content: 'root' },
+            { role: 'assistant', content: 'root ok' },
+            { role: 'user', content: 'branch A' }
+        ], 'Use tools.', '***', [tool], {
+            cacheScope: 'conversation',
+            turnStateKey: 'branch-a'
+        });
+        await model.sendRequest([
+            { role: 'user', content: 'root' },
+            { role: 'assistant', content: 'root ok' },
+            { role: 'user', content: 'branch B' }
+        ], 'Use tools.', '***', [tool], {
+            cacheScope: 'conversation',
+            turnStateKey: 'branch-b'
+        });
+        await model.sendRequest([
+            { role: 'user', content: 'root' },
+            { role: 'assistant', content: 'root ok' },
+            { role: 'user', content: 'main after branch' }
+        ], 'Use tools.', '***', [tool], {
+            cacheScope: 'conversation',
+            turnStateKey: 'main-after-branch'
+        });
+
+        for (const request of requests) {
+            assert.equal(request.body.prompt_cache_key, 'session-test:conversation');
+            assert.equal(request.init.headers.session_id, 'session-test:conversation');
+            assert.equal(request.init.headers['x-client-request-id'], 'session-test:conversation');
+        }
+        assert.equal(requests[1].body.previous_response_id, undefined);
+        assert.equal(requests[1].body.input.length, 3);
+        assert.equal(requests[1].body.input[2].content[0].text, 'branch A');
+        assert.equal(requests[1].init.headers['x-codex-turn-state'], undefined);
+
+        assert.equal(requests[2].body.previous_response_id, undefined);
+        assert.equal(requests[2].body.input.length, 3);
+        assert.equal(requests[2].body.input[2].content[0].text, 'branch B');
+        assert.equal(requests[2].init.headers['x-codex-turn-state'], undefined);
+
+        assert.equal(requests[3].body.previous_response_id, undefined);
+        assert.equal(requests[3].body.input.length, 3);
+        assert.equal(requests[3].body.input[2].content[0].text, 'main after branch');
+        assert.equal(requests[3].init.headers['x-codex-turn-state'], undefined);
+        assert.equal(model.consumeLastRequestCacheTrace().incremental_reuse_reason, 'http_previous_response_unsupported');
+    } finally {
+        globalThis.fetch = originalFetch;
+        cleanup();
+    }
+});
+
+test('Codex adapter keeps forked WebSocket branches on the shared prompt cache key', async () => {
+    const { keysPath, cleanup } = writeTempKeys();
+    const wss = new WebSocketServer({ port: 0 });
+    const payloads = [];
+    const handshakes = [];
+    const texts = ['root ok', 'main 1 ok', 'main 2 ok', 'branch A ok', 'branch B ok', 'main after branch ok'];
+    wss.on('connection', (ws, request) => {
+        handshakes.push(request.headers);
+        ws.on('message', data => {
+            const payload = JSON.parse(data.toString('utf8'));
+            const index = payloads.length;
+            payloads.push(payload);
+            ws.send(JSON.stringify({
+                type: 'response.output_item.done',
+                item: {
+                    type: 'message',
+                    role: 'assistant',
+                    content: [{ type: 'output_text', text: texts[index] }]
+                }
+            }));
+            ws.send(JSON.stringify({
+                type: 'response.completed',
+                response: {
+                    id: `resp_${index + 1}`,
+                    usage: {
+                        input_tokens: 100 + index,
+                        input_tokens_details: { cached_tokens: index === 0 ? 0 : 80 },
+                        output_tokens: 3
+                    }
+                }
+            }));
+        });
+    });
+    await new Promise(resolve => wss.once('listening', resolve));
+
+    try {
+        const { port } = wss.address();
+        const model = new CodexChatGPT('gpt-5.5', `http://127.0.0.1:${port}/backend-api/codex`, {
+            keysPath,
+            sessionId: 'session-test',
+            useResponsesWebSocket: true,
+            responsesWebSocketIdleTimeoutMs: 5000
+        });
+        await model.sendRequest([{ role: 'user', content: 'root' }], 'Use tools.', '***', [tool], {
+            cacheScope: 'conversation',
+            turnStateKey: 'root'
+        });
+        await model.sendRequest([
+            { role: 'user', content: 'root' },
+            { role: 'assistant', content: 'root ok' },
+            { role: 'user', content: 'main 1' }
+        ], 'Use tools.', '***', [tool], {
+            cacheScope: 'conversation',
+            turnStateKey: 'main-1'
+        });
+        await model.sendRequest([
+            { role: 'user', content: 'root' },
+            { role: 'assistant', content: 'root ok' },
+            { role: 'user', content: 'main 1' },
+            { role: 'assistant', content: 'main 1 ok' },
+            { role: 'user', content: 'main 2 before fork' }
+        ], 'Use tools.', '***', [tool], {
+            cacheScope: 'conversation',
+            turnStateKey: 'main-2'
+        });
+        await model.sendRequest([
+            { role: 'user', content: 'root' },
+            { role: 'assistant', content: 'root ok' },
+            { role: 'user', content: 'main 1' },
+            { role: 'assistant', content: 'main 1 ok' },
+            { role: 'user', content: 'branch A' }
+        ], 'Use tools.', '***', [tool], {
+            cacheScope: 'conversation',
+            turnStateKey: 'branch-a'
+        });
+        await model.sendRequest([
+            { role: 'user', content: 'root' },
+            { role: 'assistant', content: 'root ok' },
+            { role: 'user', content: 'main 1' },
+            { role: 'assistant', content: 'main 1 ok' },
+            { role: 'user', content: 'branch B' }
+        ], 'Use tools.', '***', [tool], {
+            cacheScope: 'conversation',
+            turnStateKey: 'branch-b'
+        });
+        await model.sendRequest([
+            { role: 'user', content: 'root' },
+            { role: 'assistant', content: 'root ok' },
+            { role: 'user', content: 'main 1' },
+            { role: 'assistant', content: 'main 1 ok' },
+            { role: 'user', content: 'main after branch' }
+        ], 'Use tools.', '***', [tool], {
+            cacheScope: 'conversation',
+            turnStateKey: 'main-after-branch'
+        });
+
+        assert.equal(handshakes.length, 1);
+        assert.equal(handshakes[0].authorization, 'Bearer access-token-test');
+        assert.equal(handshakes[0]['openai-beta'], 'responses_websockets=2026-02-06');
+        assert.equal(handshakes[0].session_id, 'session-test:conversation');
+        assert.equal(payloads[0].type, 'response.create');
+        assert.equal(payloads[0].previous_response_id, undefined);
+        assert.equal(payloads[0].prompt_cache_key, 'session-test:conversation');
+        assert.equal(payloads[0].tool_choice, 'auto');
+        for (const payload of payloads) {
+            assert.equal(payload.prompt_cache_key, 'session-test:conversation');
+        }
+        assert.equal(payloads[1].previous_response_id, 'resp_1');
+        assert.equal(payloads[1].input.length, 1);
+        assert.equal(payloads[1].input[0].content[0].text, 'main 1');
+        assert.equal(payloads[2].previous_response_id, 'resp_2');
+        assert.equal(payloads[2].input.length, 1);
+        assert.equal(payloads[2].input[0].content[0].text, 'main 2 before fork');
+        assert.equal(payloads[3].previous_response_id, undefined);
+        assert.equal(payloads[3].input.length, 5);
+        assert.equal(payloads[3].input[4].content[0].text, 'branch A');
+        assert.equal(payloads[4].previous_response_id, undefined);
+        assert.equal(payloads[4].input.length, 5);
+        assert.equal(payloads[4].input[4].content[0].text, 'branch B');
+        assert.equal(payloads[5].previous_response_id, undefined);
+        assert.equal(payloads[5].input.length, 5);
+        assert.equal(payloads[5].input[4].content[0].text, 'main after branch');
+        assert.equal(model.lastTokenUsage.input_cached, 80);
+        model.closeResponsesWebSocket();
+    } finally {
+        await new Promise(resolve => wss.close(resolve));
         cleanup();
     }
 });
@@ -454,13 +762,23 @@ test('Codex adapter does not reuse previous_response_id when non-input fields ch
     };
 
     try {
-        const model = new CodexChatGPT('gpt-5.5', 'https://example.test/backend-api/codex', { keysPath, sessionId: 'session-test' });
-        await model.sendRequest([{ role: 'user', content: 'first' }], 'Use tools.', '***', [tool], { cacheScope: 'conversation' });
+        const model = new CodexChatGPT('gpt-5.5', 'https://example.test/backend-api/codex', {
+            keysPath,
+            sessionId: 'session-test',
+            enablePreviousResponseId: true
+        });
+        await model.sendRequest([{ role: 'user', content: 'first' }], 'Use tools.', '***', [tool], {
+            cacheScope: 'conversation',
+            turnStateKey: 'react-1'
+        });
         await model.sendRequest([
             { role: 'user', content: 'first' },
             { role: 'assistant', content: 'ok' },
             { role: 'user', content: 'second' }
-        ], 'Changed instructions.', '***', [tool], { cacheScope: 'conversation' });
+        ], 'Changed instructions.', '***', [tool], {
+            cacheScope: 'conversation',
+            turnStateKey: 'react-1'
+        });
 
         assert.equal(requests[1].body.previous_response_id, undefined);
         assert.equal(requests[1].body.input.length, 3);
@@ -566,7 +884,7 @@ test('Codex adapter requests reasoning summaries when reasoning effort is config
     assert.ok(body.include.includes('reasoning.encrypted_content'));
 });
 
-test('Codex adapter replays turn-state across conversation scope for sticky cache routing', async () => {
+test('Codex adapter replays turn-state only inside one ReAct turn', async () => {
     const { keysPath, cleanup } = writeTempKeys();
     const originalFetch = globalThis.fetch;
     const requests = [];
@@ -607,7 +925,7 @@ test('Codex adapter replays turn-state across conversation scope for sticky cach
         assert.equal(requests[0].init.headers['x-client-request-id'], 'session-test:conversation');
         assert.equal(requests[0].init.headers['x-codex-turn-state'], undefined);
         assert.equal(requests[1].init.headers['x-codex-turn-state'], 'sticky-route-1');
-        assert.equal(requests[2].init.headers['x-codex-turn-state'], 'sticky-route-1');
+        assert.equal(requests[2].init.headers['x-codex-turn-state'], undefined);
     } finally {
         globalThis.fetch = originalFetch;
         cleanup();

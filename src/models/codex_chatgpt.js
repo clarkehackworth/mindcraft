@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { spawn } from 'child_process';
 import { createServer } from 'http';
 import { createHash, randomBytes, randomUUID } from 'crypto';
+import WebSocket from 'ws';
 import open from 'open';
 import { createNativeToolResponse, normalizeThinkingText, toResponsesInputItems } from './native_tools.js';
 import { setLastTokenUsage } from './token_usage.js';
@@ -18,6 +19,9 @@ const DEFAULT_ORIGINATOR = 'codex_cli_rs';
 const LOGIN_TIMEOUT_MS = 15 * 60 * 1000;
 const DEFAULT_LOGIN_PORT = 1455;
 const DEFAULT_FETCH = globalThis.fetch;
+const RESPONSES_WEBSOCKET_BETA_HEADER_VALUE = 'responses_websockets=2026-02-06';
+const DEFAULT_WEBSOCKET_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+const CONTINUITY_BASELINE_INPUT = Symbol('codexContinuityBaselineInput');
 
 export class CodexChatGPT {
     static prefix = 'codex';
@@ -72,6 +76,25 @@ export class CodexChatGPT {
         delete this.params.session_id;
         this.originator = this.params.originator || process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE || DEFAULT_ORIGINATOR;
         delete this.params.originator;
+        const transport = String(this.params.transport || this.params.codexTransport || this.params.codex_transport || '').toLowerCase();
+        const webSocketParam = this.params.responsesWebSocket ?? this.params.responses_websocket ?? this.params.useResponsesWebSocket ?? this.params.use_responses_websocket;
+        this.useResponsesWebSocket = webSocketParam ?? (transport ? transport === 'websocket' || transport === 'ws' : isChatGptCodexUrl(this.url));
+        this.responsesWebSocketDisabled = transport === 'http' || transport === 'https';
+        this.responsesWebSocket = null;
+        this.responsesWebSocketHeaders = null;
+        this.responsesWebSocketIdleTimeoutMs = Number.parseInt(this.params.responsesWebSocketIdleTimeoutMs || this.params.responses_websocket_idle_timeout_ms || DEFAULT_WEBSOCKET_IDLE_TIMEOUT_MS, 10);
+        delete this.params.transport;
+        delete this.params.codexTransport;
+        delete this.params.codex_transport;
+        delete this.params.responsesWebSocket;
+        delete this.params.responses_websocket;
+        delete this.params.useResponsesWebSocket;
+        delete this.params.use_responses_websocket;
+        delete this.params.responsesWebSocketIdleTimeoutMs;
+        delete this.params.responses_websocket_idle_timeout_ms;
+        this.enablePreviousResponseId = Boolean(this.params.enablePreviousResponseId || this.params.enable_previous_response_id);
+        delete this.params.enablePreviousResponseId;
+        delete this.params.enable_previous_response_id;
         this.turnStateByKey = new Map();
         this.responseContinuityByKey = new Map();
         this.lastRequestCacheTrace = null;
@@ -118,7 +141,7 @@ export class CodexChatGPT {
             this.rememberTurnState(options, response);
 
             const parsed = await parseCodexResponsesSse(await response.text());
-            this.rememberResponseContinuity(options, body, parsed);
+            this.rememberResponseContinuity(this.lastSentResponsesOptions || options, this.lastSentResponsesBody || body, parsed);
             console.log('Received.');
             setLastTokenUsage(this, parsed.usage);
             this.lastThinking = parsed.thinking || '';
@@ -181,6 +204,10 @@ export class CodexChatGPT {
 
     getCacheTraceMetadata(options = {}) {
         const scopedSessionId = buildScopedPromptCacheKey(this.sessionId, options?.cacheScope);
+        const responseContinuityKey = this.getResponseContinuityKey(options);
+        const responseContinuityEntries = responseContinuityKey
+            ? this.responseContinuityByKey.get(responseContinuityKey)
+            : null;
         return {
             cache_scope: options?.cacheScope || null,
             turn_state_key: options?.turnStateKey || null,
@@ -189,7 +216,7 @@ export class CodexChatGPT {
                 prompt_cache_key: scopedSessionId,
                 session_id: scopedSessionId,
                 turn_state_present: Boolean(this.getTurnState(options)),
-                previous_response_id_available: Boolean(this.responseContinuityByKey.get(scopedSessionId)?.responseId)
+                previous_response_id_available: Boolean(responseContinuityEntries?.some(entry => entry.responseId))
             }
         };
     }
@@ -201,12 +228,102 @@ export class CodexChatGPT {
     }
 
     async fetchResponses(endpoint, body, auth, options = {}) {
+        this.lastSentResponsesBody = body;
+        this.lastSentResponsesOptions = options;
+        if (this.useResponsesWebSocket && !this.responsesWebSocketDisabled) {
+            try {
+                return await this.fetchResponsesWebSocket(endpoint, body, auth, options);
+            } catch (err) {
+                if (isAbortError(err)) throw err;
+                this.closeResponsesWebSocket();
+                this.responsesWebSocketDisabled = true;
+                console.log(`Codex Responses WebSocket failed; falling back to HTTP. ${sanitizeCodexError(err)}`);
+            }
+        }
+        const httpBody = expandContinuityRequestBody(body);
+        if (httpBody !== body && this.lastRequestCacheTrace?.incremental_reuse) {
+            this.lastRequestCacheTrace = {
+                ...this.lastRequestCacheTrace,
+                previous_response_id: null,
+                incremental_input_items: null,
+                full_input_items: Array.isArray(httpBody.input) ? httpBody.input.length : this.lastRequestCacheTrace.full_input_items,
+                incremental_reuse: false,
+                incremental_reuse_reason: 'http_previous_response_unsupported'
+            };
+        }
+        this.lastSentResponsesBody = httpBody;
+        this.lastSentResponsesOptions = options;
         return await codexFetch(endpoint, {
             method: 'POST',
             headers: this.buildHeaders(auth, options),
-            body: JSON.stringify(body),
+            body: JSON.stringify(httpBody),
             signal: options?.signal
         });
+    }
+
+    async fetchResponsesWebSocket(endpoint, body, auth, options = {}) {
+        const wsOptions = {
+            ...(options || {}),
+            transportSupportsPreviousResponseId: true,
+            responseContinuityLatestOnly: true
+        };
+        const wsBody = structuredCloneSafe(expandContinuityRequestBody(body));
+        this.applyPreviousResponseContinuity(wsOptions, wsBody);
+        this.lastSentResponsesBody = wsBody;
+        this.lastSentResponsesOptions = wsOptions;
+        const ws = await this.ensureResponsesWebSocket(endpoint, auth, options);
+        const responseText = await streamCodexResponsesWebSocket(ws, toResponseCreateWebSocketRequest(wsBody), {
+            signal: options?.signal,
+            idleTimeoutMs: this.responsesWebSocketIdleTimeoutMs,
+            onClosed: () => {
+                this.responsesWebSocket = null;
+                this.responsesWebSocketHeaders = null;
+            }
+        });
+        return new Response(responseText, {
+            status: 200,
+            headers: this.responsesWebSocketHeaders || {}
+        });
+    }
+
+    async ensureResponsesWebSocket(endpoint, auth, options = {}) {
+        if (this.responsesWebSocket?.readyState === WebSocket.OPEN) {
+            return this.responsesWebSocket;
+        }
+        this.closeResponsesWebSocket();
+        const headers = this.buildWebSocketHeaders(auth, options);
+        const { ws, headers: responseHeaders } = await connectCodexResponsesWebSocket(toWebSocketUrl(endpoint), headers, {
+            signal: options?.signal,
+            timeoutMs: this.responsesWebSocketIdleTimeoutMs
+        });
+        this.responsesWebSocket = ws;
+        this.responsesWebSocketHeaders = responseHeaders;
+        ws.once('close', () => {
+            if (this.responsesWebSocket === ws) {
+                this.responsesWebSocket = null;
+                this.responsesWebSocketHeaders = null;
+            }
+        });
+        return ws;
+    }
+
+    closeResponsesWebSocket() {
+        if (this.responsesWebSocket) {
+            try {
+                this.responsesWebSocket.close();
+            } catch {
+                // Best-effort cleanup.
+            }
+        }
+        this.responsesWebSocket = null;
+        this.responsesWebSocketHeaders = null;
+    }
+
+    buildWebSocketHeaders(auth, options = {}) {
+        const headers = { ...this.buildHeaders(auth, options) };
+        delete headers['Content-Type'];
+        headers['OpenAI-Beta'] = RESPONSES_WEBSOCKET_BETA_HEADER_VALUE;
+        return headers;
     }
 
     buildHeaders(auth, options = {}) {
@@ -248,22 +365,33 @@ export class CodexChatGPT {
     }
 
     getTurnStateKey(options = {}) {
-        // Match Codex CLI's session/conversation-level continuity. The backend may
-        // return x-codex-turn-state as a sticky-routing token; if we key it by
-        // individual ReAct request IDs, a new human message starts a fresh route
-        // and prompt-cache accounting can fall back to zero even when the history
-        // prefix is stable. Scope it only by prompt-cache scope so conversation,
-        // coding, vision, etc. do not leak into one another.
-        return buildScopedPromptCacheKey(this.sessionId, options?.cacheScope);
+        // Match Codex CLI's turn-scoped sticky-routing contract. The backend may
+        // return x-codex-turn-state during a ReAct turn; replay it only for
+        // follow-up requests in that same turn. Leaking it into the next inbound
+        // bot/user message can route an otherwise cacheable prompt to the wrong
+        // backend state and cause full prompt-cache misses.
+        return this.getTurnScopedContinuityKey(options);
     }
 
     getResponseContinuityKey(options = {}) {
+        // The ChatGPT Codex HTTP endpoint rejects previous_response_id; Codex
+        // CLI uses that field only on its websocket transport. Keep the
+        // branch-aware continuity machinery behind an explicit transport opt-in
+        // so the default HTTP path relies on prompt_cache_key and never 400s.
+        if (!this.enablePreviousResponseId && !options?.transportSupportsPreviousResponseId) return null;
         return buildScopedPromptCacheKey(this.sessionId, options?.cacheScope);
+    }
+
+    getTurnScopedContinuityKey(options = {}) {
+        const turnStateKey = String(options?.turnStateKey || '').trim();
+        if (!turnStateKey) return null;
+        const scopedSessionId = buildScopedPromptCacheKey(this.sessionId, options?.cacheScope);
+        return buildScopedPromptCacheKey(scopedSessionId, `turn:${turnStateKey}`);
     }
 
     applyPreviousResponseContinuity(options = {}, body) {
         const key = this.getResponseContinuityKey(options);
-        const previous = this.responseContinuityByKey.get(key);
+        const previousEntries = key ? this.responseContinuityByKey.get(key) : null;
         const baseTrace = {
             protocol: 'openai-codex-responses',
             prompt_cache_key: body.prompt_cache_key,
@@ -276,13 +404,28 @@ export class CodexChatGPT {
             incremental_reuse_reason: 'no_previous_response'
         };
 
-        if (!previous?.responseId) {
+        if (!previousEntries?.length) {
             this.lastRequestCacheTrace = baseTrace;
             return;
         }
 
         const requestSignature = codexRequestSignature(body);
-        if (requestSignature !== previous.requestSignature) {
+        const candidateEntries = options?.responseContinuityLatestOnly
+            ? previousEntries.slice(0, 1)
+            : previousEntries;
+        let sawMatchingSignature = false;
+        let bestMatch = null;
+        for (const entry of candidateEntries) {
+            if (requestSignature !== entry.requestSignature) continue;
+            sawMatchingSignature = true;
+            const delta = getIncrementalResponsesInput(body.input, entry.baselineInput);
+            if (!delta) continue;
+            if (!bestMatch || entry.baselineInput.length > bestMatch.entry.baselineInput.length) {
+                bestMatch = { entry, delta };
+            }
+        }
+
+        if (!sawMatchingSignature) {
             this.lastRequestCacheTrace = {
                 ...baseTrace,
                 incremental_reuse_reason: 'non_input_fields_changed'
@@ -290,8 +433,7 @@ export class CodexChatGPT {
             return;
         }
 
-        const delta = getIncrementalResponsesInput(body.input, previous.baselineInput);
-        if (!delta) {
+        if (!bestMatch) {
             this.lastRequestCacheTrace = {
                 ...baseTrace,
                 incremental_reuse_reason: 'input_not_previous_prefix'
@@ -299,12 +441,13 @@ export class CodexChatGPT {
             return;
         }
 
-        body.previous_response_id = previous.responseId;
-        body.input = delta;
+        body.previous_response_id = bestMatch.entry.responseId;
+        body.input = bestMatch.delta;
+        body[CONTINUITY_BASELINE_INPUT] = bestMatch.entry.baselineInput;
         this.lastRequestCacheTrace = {
             ...baseTrace,
-            previous_response_id: previous.responseId,
-            incremental_input_items: delta.length,
+            previous_response_id: bestMatch.entry.responseId,
+            incremental_input_items: bestMatch.delta.length,
             incremental_reuse: true,
             incremental_reuse_reason: 'prefix_reused'
         };
@@ -314,16 +457,16 @@ export class CodexChatGPT {
         const responseId = parsed.responseId;
         if (!responseId) return;
         const key = this.getResponseContinuityKey(options);
+        if (!key) return;
         const sentInput = body.previous_response_id
             ? [
-                ...(this.responseContinuityByKey.get(key)?.baselineInput || []),
+                ...(body[CONTINUITY_BASELINE_INPUT] || []),
                 ...(body.input || [])
             ]
             : (body.input || []);
-        const outputItems = parsed.outputItems?.length
-            ? parsed.outputItems
-            : synthesizeCodexOutputItems(parsed);
-        this.responseContinuityByKey.set(key, {
+        const outputItems = synthesizeCodexOutputItems(parsed);
+        const entries = this.responseContinuityByKey.get(key) || [];
+        entries.unshift({
             responseId,
             requestSignature: codexRequestSignature(body),
             baselineInput: normalizeResponsesItemsForContinuity([
@@ -331,6 +474,8 @@ export class CodexChatGPT {
                 ...outputItems
             ])
         });
+        entries.length = Math.min(entries.length, 32);
+        this.responseContinuityByKey.set(key, entries);
         if (this.responseContinuityByKey.size > 64) {
             const oldestKey = this.responseContinuityByKey.keys().next().value;
             this.responseContinuityByKey.delete(oldestKey);
@@ -529,6 +674,196 @@ export function buildScopedPromptCacheKey(baseKey, cacheScope) {
     const scope = String(cacheScope || '').trim();
     if (!scope) return base;
     return `${base}:${scope}`;
+}
+
+function toResponseCreateWebSocketRequest(body = {}) {
+    return {
+        type: 'response.create',
+        ...body,
+        tool_choice: body.tool_choice || 'auto'
+    };
+}
+
+function expandContinuityRequestBody(body = {}) {
+    if (!body?.previous_response_id) return body;
+    const expanded = {
+        ...body,
+        input: [
+            ...(body[CONTINUITY_BASELINE_INPUT] || []),
+            ...(body.input || [])
+        ]
+    };
+    delete expanded.previous_response_id;
+    return expanded;
+}
+
+function toWebSocketUrl(endpoint) {
+    const url = new URL(endpoint);
+    if (url.protocol === 'https:') url.protocol = 'wss:';
+    if (url.protocol === 'http:') url.protocol = 'ws:';
+    return url.toString();
+}
+
+function isChatGptCodexUrl(url) {
+    try {
+        const parsed = new URL(url);
+        return parsed.hostname === 'chatgpt.com' && parsed.pathname.includes('/backend-api/codex');
+    } catch {
+        return false;
+    }
+}
+
+async function connectCodexResponsesWebSocket(url, headers, { signal, timeoutMs = DEFAULT_WEBSOCKET_IDLE_TIMEOUT_MS } = {}) {
+    if (signal?.aborted) throw abortError();
+    return await new Promise((resolve, reject) => {
+        let settled = false;
+        let responseHeaders = {};
+        const ws = new WebSocket(url, {
+            headers,
+            perMessageDeflate: true,
+            family: 4,
+            handshakeTimeout: Math.min(Math.max(timeoutMs, 1000), 30000)
+        });
+
+        const cleanup = () => {
+            ws.off('open', onOpen);
+            ws.off('upgrade', onUpgrade);
+            ws.off('unexpected-response', onUnexpectedResponse);
+            ws.off('error', onError);
+            signal?.removeEventListener?.('abort', onAbort);
+        };
+        const fail = (error) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            try {
+                ws.close();
+            } catch {
+                // Best-effort cleanup.
+            }
+            reject(error);
+        };
+        const onAbort = () => fail(abortError());
+        const onUpgrade = response => {
+            responseHeaders = normalizeNodeHeaders(response?.headers || {});
+        };
+        const onOpen = () => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            resolve({ ws, headers: responseHeaders });
+        };
+        const onUnexpectedResponse = (_request, response) => {
+            const chunks = [];
+            response.on('data', chunk => chunks.push(Buffer.from(chunk)));
+            response.on('end', () => {
+                const body = Buffer.concat(chunks).toString('utf8');
+                const error = new Error(`WebSocket upgrade failed with status=${response.statusCode} ${body.slice(0, 300)}`);
+                error.status = response.statusCode;
+                fail(error);
+            });
+            response.on('error', fail);
+        };
+        const onError = error => fail(error);
+
+        ws.once('open', onOpen);
+        ws.once('upgrade', onUpgrade);
+        ws.once('unexpected-response', onUnexpectedResponse);
+        ws.once('error', onError);
+        signal?.addEventListener?.('abort', onAbort, { once: true });
+    });
+}
+
+async function streamCodexResponsesWebSocket(ws, payload, { signal, idleTimeoutMs = DEFAULT_WEBSOCKET_IDLE_TIMEOUT_MS, onClosed } = {}) {
+    if (signal?.aborted) throw abortError();
+    return await new Promise((resolve, reject) => {
+        let settled = false;
+        const chunks = [];
+        const timeout = setTimeout(() => {
+            fail(new Error('idle timeout waiting for Codex Responses WebSocket'));
+        }, Math.max(1000, idleTimeoutMs));
+
+        const cleanup = () => {
+            clearTimeout(timeout);
+            ws.off('message', onMessage);
+            ws.off('error', onError);
+            ws.off('close', onClose);
+            signal?.removeEventListener?.('abort', onAbort);
+        };
+        const fail = (error) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            reject(error);
+        };
+        const finish = () => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            resolve(chunks.join(''));
+        };
+        const onAbort = () => {
+            try {
+                ws.close();
+            } catch {
+                // Best-effort cleanup.
+            }
+            fail(abortError());
+        };
+        const onError = error => fail(error);
+        const onClose = () => {
+            onClosed?.();
+            fail(new Error('websocket closed before response.completed'));
+        };
+        const onMessage = data => {
+            const text = Buffer.isBuffer(data) ? data.toString('utf8') : String(data);
+            let event = null;
+            try {
+                event = JSON.parse(text);
+            } catch {
+                return;
+            }
+            if (event?.type === 'error') {
+                const message = event.error?.message || event.message || text;
+                const error = new Error(message);
+                error.status = event.status || event.status_code;
+                fail(error);
+                return;
+            }
+            chunks.push(`data: ${text}\n\n`);
+            if (event?.type === 'response.failed') {
+                const error = new Error(event.response?.error?.message || 'Codex Responses WebSocket failed');
+                error.status = event.response?.status;
+                fail(error);
+                return;
+            }
+            if (event?.type === 'response.completed') {
+                finish();
+            }
+        };
+
+        ws.on('message', onMessage);
+        ws.once('error', onError);
+        ws.once('close', onClose);
+        signal?.addEventListener?.('abort', onAbort, { once: true });
+        ws.send(JSON.stringify(payload), error => {
+            if (error) fail(error);
+        });
+    });
+}
+
+function normalizeNodeHeaders(headers = {}) {
+    const normalized = {};
+    for (const [key, value] of Object.entries(headers)) {
+        normalized[key] = Array.isArray(value) ? value.join(', ') : String(value);
+    }
+    return normalized;
+}
+
+function abortError() {
+    const error = new Error('aborted');
+    error.name = 'AbortError';
+    return error;
 }
 
 function codexRequestSignature(body = {}) {
