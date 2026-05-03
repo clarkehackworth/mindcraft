@@ -282,7 +282,7 @@ const longDelay = 5000;
 async function _scheduleProcessInMessage(sender, received, convo) {
     if (convo.inMessageTimer)
         clearTimeout(convo.inMessageTimer);
-    let otherAgentBusy = containsCommand(received.message);
+    const otherAgentBusy = isOtherBotActionNotice(received.message);
 
     const scheduleResponse = (delay) => {
         const generation = convo.inMessageGeneration;
@@ -290,33 +290,31 @@ async function _scheduleProcessInMessage(sender, received, convo) {
         convo.inMessageTimer = timer;
     };
 
-    if (!agent.isIdle() && otherAgentBusy) {
-        // both are busy
-        let canTalkOver = talkOverActions.some(a => agent.actions.currentActionLabel.includes(a));
-        if (canTalkOver)
-            scheduleResponse(fastDelay);
-        // otherwise don't respond
+    const currentAction = agent.actions?.currentActionLabel || '';
+    const canTalkOver = talkOverActions.some(a => currentAction.includes(a));
+    const agentBusy = !agent.isIdle() || (agent.active_message_handlers || 0) > 0;
+
+    if (agentBusy && !canTalkOver) {
+        // Do not ask the LLM whether to respond here. That botResponder request
+        // bypassed the main message queue, showed raw '*used ...*' payloads as
+        // user turns, and could run beside the active ReAct request. Keep the
+        // bot message in the conversation queue and let agent.handleMessage()
+        // serialize it through the normal ReAct queue when this timer fires.
+        scheduleResponse(otherAgentBusy ? longDelay : fastDelay);
     }
-    else if (otherAgentBusy)
-        // other bot is busy but I'm not
+    else if (otherAgentBusy) {
+        // The other bot is reporting an action; give it a moment so consecutive
+        // action notices can be consumed together with stable boundaries.
         scheduleResponse(longDelay);
-    else if (!agent.isIdle()) {
-        // I'm busy but other bot isn't
-        let canTalkOver = talkOverActions.some(a => agent.actions.currentActionLabel.includes(a));
-        if (canTalkOver) {
-            scheduleResponse(fastDelay);
-        }
-        else {
-            let shouldRespond = await agent.prompter.promptShouldRespondToBot(received.message);
-            console.log(`${agent.name} decided to ${shouldRespond?'respond':'not respond'} to ${sender}`);
-            if (shouldRespond)
-                scheduleResponse(fastDelay);
-        }
     }
     else {
-        // neither are busy
         scheduleResponse(fastDelay);
     }
+}
+
+function isOtherBotActionNotice(message) {
+    const text = String(message || '').trim();
+    return Boolean(containsCommand(text) || /^\*used\s+\w+\*/.test(text));
 }
 
 function _processInMessageQueue(name, expectedConvo=null, expectedGeneration=null, expectedTimer=null) {

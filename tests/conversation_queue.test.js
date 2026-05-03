@@ -7,11 +7,13 @@ const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 function makeAgent() {
     const calls = [];
     const history = [];
+    const promptShouldRespondCalls = [];
     return {
         name: 'tester',
         last_sender: null,
         shut_up: true,
         actions: { currentActionLabel: '' },
+        active_message_handlers: 0,
         isIdle: () => true,
         openChat: () => {},
         handleMessage: (source, message) => calls.push({ source, message }),
@@ -23,10 +25,14 @@ function makeAgent() {
             start: () => {},
         },
         prompter: {
-            promptShouldRespondToBot: async () => true,
+            promptShouldRespondToBot: async (message) => {
+                promptShouldRespondCalls.push(message);
+                return true;
+            },
         },
         calls,
         historyCalls: history,
+        promptShouldRespondCalls,
     };
 }
 
@@ -113,4 +119,30 @@ test('empty queued bot message flush does not call handleMessage', async () => {
 
     assert.deepEqual(agent.calls, []);
     assert.equal(convo.inMessageTimer, null);
+});
+
+test('busy bot messages stay queued instead of making sidecar botResponder requests', async () => {
+    const agent = resetConversationManager();
+    agent.isIdle = () => false;
+    agent.active_message_handlers = 1;
+    agent.actions.currentActionLabel = 'action:collectBlocks';
+
+    await convoManager.receiveFromBot('buddy', { message: '*used collectBlocks*', start: true, end: false });
+
+    assert.equal(convoManager.responseScheduledFor('buddy'), true);
+    assert.deepEqual(agent.promptShouldRespondCalls, []);
+    assert.deepEqual(agent.calls, []);
+});
+
+test('busy normal bot messages are serialized through handleMessage with source marker', async () => {
+    const agent = resetConversationManager();
+    agent.isIdle = () => false;
+    agent.active_message_handlers = 1;
+    agent.actions.currentActionLabel = 'action:collectBlocks';
+
+    await convoManager.receiveFromBot('buddy', { message: 'hello while busy', start: true, end: false });
+    await delay(260);
+
+    assert.deepEqual(agent.promptShouldRespondCalls, []);
+    assert.deepEqual(agent.calls, [{ source: 'buddy', message: '(FROM OTHER BOT)\nhello while busy' }]);
 });
