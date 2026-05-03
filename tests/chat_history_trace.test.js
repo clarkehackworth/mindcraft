@@ -308,6 +308,95 @@ test('history compaction counts only new turns after the latest compact summary'
     }
 });
 
+
+test('history compaction accepts numeric settings from web/runtime strings', async () => {
+    const originalCwd = process.cwd();
+    const dir = mkdtempSync(path.join(tmpdir(), 'mindcraft-compact-string-settings-'));
+    try {
+        process.chdir(dir);
+        setSettings({
+            show_chat_history: false,
+            log_chat_trace: false,
+            max_messages: '4',
+            compact_message_threshold_percent: '100'
+        });
+        const summarized = [];
+        const history = new History({
+            name: 'compactbot',
+            prompter: {
+                promptCompactSummary: async turns => {
+                    summarized.push(turns.map(t => t.content || t.name).join('|'));
+                    return `summary of ${turns.length} turns`;
+                }
+            },
+            self_prompter: { state: {} },
+            task: {}
+        });
+
+        await history.add('Steve', 'one');
+        await history.add('compactbot', 'two');
+        await history.add('Steve', 'three');
+        await history.add('compactbot', 'four');
+
+        assert.equal(summarized.length, 1);
+        assert.equal(history.memory, 'summary of 4 turns');
+        assert.equal(history.turns.length, 2);
+        assert.equal(history.turns[0].compact_boundary, true);
+    } finally {
+        setSettings({});
+        process.chdir(originalCwd);
+        rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('history compaction closes stale pending native tool calls before later turns', async () => {
+    const originalCwd = process.cwd();
+    const dir = mkdtempSync(path.join(tmpdir(), 'mindcraft-compact-stale-tools-'));
+    try {
+        process.chdir(dir);
+        setSettings({
+            show_chat_history: true,
+            log_chat_trace: true,
+            max_messages: 4,
+            compact_message_threshold_percent: 100
+        });
+        const summarized = [];
+        const history = new History({
+            name: 'compactbot',
+            prompter: {
+                promptCompactSummary: async turns => {
+                    summarized.push(turns.map(t => t.content || t.name).join('|'));
+                    return `summary of ${turns.length} turns`;
+                }
+            },
+            self_prompter: { state: {} },
+            task: {}
+        });
+
+        const toolCall = { id: 'call_1', type: 'function', name: 'collectBlocks', arguments: '{"type":"oak_log"}' };
+        await history.add('Steve', 'collect wood');
+        await history.addNativeToolCall(toolCall);
+        assert.equal(summarized.length, 0);
+
+        await history.add('Steve', 'new request after interrupted tool');
+
+        assert.equal(summarized.length, 1);
+        assert.match(summarized[0], /Tool result was not recorded before the next conversation turn/);
+        assert.equal(history.hasPendingToolCall(), false);
+        assert.equal(history.turns[0].compact_boundary, true);
+
+        const events = readFileSync(history.chat_history_latest_fp, 'utf8')
+            .trim()
+            .split('\n')
+            .map(line => JSON.parse(line));
+        assert.ok(events.some(event => event.type === 'history_tool_results_synthesized'));
+    } finally {
+        setSettings({});
+        process.chdir(originalCwd);
+        rmSync(dir, { recursive: true, force: true });
+    }
+});
+
 test('history compaction waits for native tool results before compacting', async () => {
     const originalCwd = process.cwd();
     const dir = mkdtempSync(path.join(tmpdir(), 'mindcraft-compact-tools-'));

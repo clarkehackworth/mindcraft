@@ -28,7 +28,7 @@ export class History {
 
         // Message-count context window. Compaction uses the active context after the
         // latest compact boundary and summarizes that whole active context.
-        this.max_messages = Number.isFinite(settings.max_messages) ? settings.max_messages : Infinity;
+        this.max_messages = normalizePositiveNumber(settings.max_messages, Infinity);
         this.compact_message_threshold_percent = normalizePercent(settings.compact_message_threshold_percent, 100);
         this.instruction_contexts_traced = false;
 
@@ -186,9 +186,23 @@ export class History {
         });
     }
 
+
+    closeStalePendingToolCalls() {
+        const { turns, inserted } = synthesizeStalePendingToolResults(this.turns);
+        if (inserted.length === 0) return false;
+        this.turns = turns;
+        this.traceEvent('history_tool_results_synthesized', {
+            reason: 'stale_pending_native_tool_calls_before_next_turn',
+            inserted_results: inserted,
+            active_turn_count: this.turns.length
+        });
+        return true;
+    }
+
     async _pushTurn(turn) {
         turn = normalizeHistoryTurn(turn);
         this.turns.push(turn);
+        this.closeStalePendingToolCalls();
         this.traceEvent('history_turn_added', {
             turn,
             active_turn_count: this.turns.length
@@ -524,6 +538,12 @@ function makeJsonSafe(value, seen = new WeakSet()) {
 }
 
 
+function normalizePositiveNumber(value, fallback) {
+    const num = Number(value);
+    if (!Number.isFinite(num) || num <= 0) return fallback;
+    return num;
+}
+
 function normalizePercent(value, fallback) {
     const num = Number(value);
     if (!Number.isFinite(num) || num <= 0) return fallback;
@@ -556,6 +576,52 @@ function createCompactSummaryTurn(summary, archiveFile) {
         is_compact_summary: true,
         archive_file: archiveFile || null
     };
+}
+
+
+function synthesizeStalePendingToolResults(turns = []) {
+    const repaired = [];
+    const pending = new Map();
+    const inserted = [];
+
+    const flushPending = () => {
+        if (pending.size === 0) return;
+        for (const call of pending.values()) {
+            const resultTurn = createNativeToolResultTurn(call, 'Tool result was not recorded before the next conversation turn. Treat the tool call as interrupted and continue from the latest state.');
+            resultTurn.synthetic_tool_result = true;
+            resultTurn.synthetic_reason = 'stale_pending_native_tool_call';
+            repaired.push(resultTurn);
+            inserted.push(resultTurn);
+        }
+        pending.clear();
+    };
+
+    for (const turn of turns || []) {
+        if (hasNativeToolCalls(turn)) {
+            flushPending();
+            repaired.push(turn);
+            for (const call of turn.native_tool_calls) {
+                pending.set(call.id, call);
+            }
+            continue;
+        }
+
+        if (isNativeToolResultTurn(turn)) {
+            if (turn.tool_call_id && pending.has(turn.tool_call_id)) {
+                pending.delete(turn.tool_call_id);
+            }
+            repaired.push(turn);
+            continue;
+        }
+
+        flushPending();
+        repaired.push(turn);
+    }
+
+    // Leave trailing pending calls untouched. They may still be executing, and
+    // action interruption code is responsible for closing them before the next
+    // conversational turn is appended.
+    return { turns: repaired, inserted };
 }
 
 function getModelContextTurns(turns = []) {
