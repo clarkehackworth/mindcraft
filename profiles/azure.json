@@ -5,8 +5,8 @@
         "model": "gpt-5-nano"
     },
     "embedding": {
-        "provider": "",
-        "model": ""
+        "provider": "azure",
+        "model": "<embedding-deployment-name>"
     },
     "code_model": {
         "provider": "",
