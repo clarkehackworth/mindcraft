@@ -46,7 +46,17 @@ export class Coder {
             if (this.agent.bot.interrupt_code)
                 return null;
             const messages_copy = JSON.parse(JSON.stringify(messages));
-            let res = await this.agent.prompter.promptCoding(messages_copy);
+            const llmAbortController = this.agent.beginActiveLLMRequest?.();
+            let res;
+            try {
+                res = await this.agent.prompter.promptCoding(messages_copy, { signal: llmAbortController?.signal });
+            } catch (error) {
+                if (this.agent.bot.interrupt_code || isAbortError(error))
+                    return null;
+                throw error;
+            } finally {
+                this.agent.endActiveLLMRequest?.(llmAbortController);
+            }
             if (this.agent.bot.interrupt_code)
                 return null;
             let contains_code = res.indexOf('```') !== -1;
@@ -130,7 +140,7 @@ export class Coder {
         if (missingSkills.length > 0) {
             result += 'These functions do not exist:\n';
             result += missingSkills.join('\n');
-            console.log(result)
+            console.log(result);
             return result;
         }
 
@@ -205,7 +215,7 @@ export class Coder {
 
     _sanitizeCode(code) {
         code = code.trim();
-        const remove_strs = ['Javascript', 'javascript', 'js']
+        const remove_strs = ['Javascript', 'javascript', 'js'];
         for (let r of remove_strs) {
             if (code.startsWith(r)) {
                 code = code.slice(r.length);
@@ -235,4 +245,8 @@ export function createCodeGenerationMessages(prompt) {
         role: 'user',
         content: `Code generation task:\n${task}\n\nWrite the implementation as a JavaScript code block.`
     }];
+}
+
+function isAbortError(error) {
+    return error?.name === 'AbortError' || String(error?.message || error || '').includes('aborted');
 }

@@ -427,12 +427,12 @@ test('Codex adapter expands response continuity when using HTTP transport', asyn
         assert.equal(requests[1].body.input.length, 3);
         assert.equal(requests[1].body.input[2].role, 'user');
         assert.equal(requests[1].body.input[2].content[0].text, 'second');
-        assert.equal(requests[1].body.prompt_cache_key, 'session-test:conversation');
-        assert.equal(requests[1].init.headers.session_id, 'session-test:conversation');
+        assert.equal(requests[1].body.prompt_cache_key, 'session-test');
+        assert.equal(requests[1].init.headers.session_id, 'session-test');
         assert.deepEqual(model.consumeLastRequestCacheTrace(), {
             protocol: 'openai-codex-responses',
-            prompt_cache_key: 'session-test:conversation',
-            session_id: 'session-test:conversation',
+            prompt_cache_key: 'session-test',
+            session_id: 'session-test',
             turn_state_present: false,
             previous_response_id: null,
             incremental_input_items: null,
@@ -513,7 +513,7 @@ test('Codex adapter does not carry turn-state into a new bot-message branch', as
         assert.equal(requests[0].body.previous_response_id, undefined);
         assert.equal(requests[1].body.previous_response_id, undefined);
         assert.equal(requests[1].init.headers['x-codex-turn-state'], undefined);
-        assert.equal(requests[1].body.prompt_cache_key, 'session-test:conversation');
+        assert.equal(requests[1].body.prompt_cache_key, 'session-test');
         assert.equal(requests[1].body.input.length, 4);
         assert.equal(requests[1].body.input[1].type, 'function_call');
         assert.equal(requests[1].body.input[2].type, 'function_call_output');
@@ -586,9 +586,9 @@ test('Codex adapter keeps forked branches on the shared prompt cache key without
         });
 
         for (const request of requests) {
-            assert.equal(request.body.prompt_cache_key, 'session-test:conversation');
-            assert.equal(request.init.headers.session_id, 'session-test:conversation');
-            assert.equal(request.init.headers['x-client-request-id'], 'session-test:conversation');
+            assert.equal(request.body.prompt_cache_key, 'session-test');
+            assert.equal(request.init.headers.session_id, 'session-test');
+            assert.equal(request.init.headers['x-client-request-id'], 'session-test');
         }
         assert.equal(requests[1].body.previous_response_id, undefined);
         assert.equal(requests[1].body.input.length, 3);
@@ -710,13 +710,13 @@ test('Codex adapter keeps forked WebSocket branches on the shared prompt cache k
         assert.equal(handshakes.length, 1);
         assert.equal(handshakes[0].authorization, 'Bearer access-token-test');
         assert.equal(handshakes[0]['openai-beta'], 'responses_websockets=2026-02-06');
-        assert.equal(handshakes[0].session_id, 'session-test:conversation');
+        assert.equal(handshakes[0].session_id, 'session-test');
         assert.equal(payloads[0].type, 'response.create');
         assert.equal(payloads[0].previous_response_id, undefined);
-        assert.equal(payloads[0].prompt_cache_key, 'session-test:conversation');
+        assert.equal(payloads[0].prompt_cache_key, 'session-test');
         assert.equal(payloads[0].tool_choice, 'auto');
         for (const payload of payloads) {
-            assert.equal(payload.prompt_cache_key, 'session-test:conversation');
+            assert.equal(payload.prompt_cache_key, 'session-test');
         }
         assert.equal(payloads[1].previous_response_id, 'resp_1');
         assert.equal(payloads[1].input.length, 1);
@@ -763,8 +763,8 @@ test('Codex WebSocket transport serializes concurrent requests to avoid response
                     response: {
                         id: `resp_${text}`,
                         usage: {
-                            input_tokens: 10,
-                            input_tokens_details: { cached_tokens: 0 },
+                            input_tokens: text === 'slow' ? 111 : 222,
+                            input_tokens_details: { cached_tokens: text === 'slow' ? 11 : 22 },
                             output_tokens: 2
                         }
                     }
@@ -783,9 +783,11 @@ test('Codex WebSocket transport serializes concurrent requests to avoid response
             responsesWebSocketIdleTimeoutMs: 5000
         });
 
+        const slowOptions = { cacheScope: 'conversation' };
+        const fastOptions = { cacheScope: 'botResponder' };
         const [slow, fast] = await Promise.all([
-            model.sendRequest([{ role: 'user', content: 'slow' }], 'Decide.', '***', null, { cacheScope: 'conversation' }),
-            model.sendRequest([{ role: 'user', content: 'fast' }], 'Decide.', '***', null, { cacheScope: 'botResponder' })
+            model.sendRequest([{ role: 'user', content: 'slow' }], 'Decide.', '***', null, slowOptions),
+            model.sendRequest([{ role: 'user', content: 'fast' }], 'Decide.', '***', null, fastOptions)
         ]);
 
         assert.equal(slow, 'slow ok');
@@ -794,6 +796,14 @@ test('Codex WebSocket transport serializes concurrent requests to avoid response
         assert.equal(payloads.length, 2);
         assert.equal(payloads[0].input[0].content[0].text, 'slow');
         assert.equal(payloads[1].input[0].content[0].text, 'fast');
+        assert.equal(payloads[0].prompt_cache_key, 'session-test');
+        assert.equal(payloads[1].prompt_cache_key, 'session-test');
+        const slowMetadata = model.consumeLastRequestTraceMetadata(slowOptions);
+        const fastMetadata = model.consumeLastRequestTraceMetadata(fastOptions);
+        assert.equal(slowMetadata.transport_cache.prompt_cache_key, 'session-test');
+        assert.equal(fastMetadata.transport_cache.prompt_cache_key, 'session-test');
+        assert.equal(slowMetadata.token_usage.input_uncached, 100);
+        assert.equal(fastMetadata.token_usage.input_uncached, 200);
         model.closeResponsesWebSocket();
     } finally {
         await new Promise(resolve => wss.close(resolve));
@@ -916,15 +926,15 @@ test('Codex adapter keeps prompt cache key stable across multi-turn tool replay'
     const first = model.buildRequestBody('gpt-5.5', turns, 'Use tools.', [tool]);
     const second = model.buildRequestBody('gpt-5.5', turns, 'Use tools.', [tool]);
     const conversation = model.buildRequestBody('gpt-5.5', turns, 'Use tools.', [tool], { cacheScope: 'conversation' });
-    const coding = model.buildRequestBody('gpt-5.5', [{ role: 'user', content: 'write code' }], 'Write code.', null, { cacheScope: 'coding' });
+    const coding = model.buildRequestBody('gpt-5.5', [{ role: 'user', content: 'write code' }], 'Write code.', null, { cacheScope: 'coding', transportCacheScope: 'coding' });
 
     assert.equal(first.prompt_cache_key, 'stable-cache-session');
     assert.equal(second.prompt_cache_key, 'stable-cache-session');
-    assert.equal(conversation.prompt_cache_key, 'stable-cache-session:conversation');
+    assert.equal(conversation.prompt_cache_key, 'stable-cache-session');
     assert.equal(coding.prompt_cache_key, 'stable-cache-session:coding');
     assert.equal(model.buildHeaders({ accessToken: 'token', accountId: 'account' }).session_id, 'stable-cache-session');
-    assert.equal(model.buildHeaders({ accessToken: 'token', accountId: 'account' }, { cacheScope: 'conversation' }).session_id, 'stable-cache-session:conversation');
-    assert.equal(model.buildHeaders({ accessToken: 'token', accountId: 'account' }, { cacheScope: 'coding' })['x-client-request-id'], 'stable-cache-session:coding');
+    assert.equal(model.buildHeaders({ accessToken: 'token', accountId: 'account' }, { cacheScope: 'conversation' }).session_id, 'stable-cache-session');
+    assert.equal(model.buildHeaders({ accessToken: 'token', accountId: 'account' }, { cacheScope: 'coding', transportCacheScope: 'coding' })['x-client-request-id'], 'stable-cache-session:coding');
     assert.deepEqual(second.input, first.input);
     assert.deepEqual(
         first.input.filter(item => item.type === 'function_call' || item.type === 'function_call_output').map(item => item.call_id),
@@ -981,8 +991,8 @@ test('Codex adapter replays turn-state only inside one ReAct turn', async () => 
             turnStateKey: 'react-2'
         });
 
-        assert.equal(requests[0].init.headers.session_id, 'session-test:conversation');
-        assert.equal(requests[0].init.headers['x-client-request-id'], 'session-test:conversation');
+        assert.equal(requests[0].init.headers.session_id, 'session-test');
+        assert.equal(requests[0].init.headers['x-client-request-id'], 'session-test');
         assert.equal(requests[0].init.headers['x-codex-turn-state'], undefined);
         assert.equal(requests[1].init.headers['x-codex-turn-state'], 'sticky-route-1');
         assert.equal(requests[2].init.headers['x-codex-turn-state'], undefined);

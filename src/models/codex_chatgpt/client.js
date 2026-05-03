@@ -116,6 +116,8 @@ export class CodexChatGPT {
         delete this.params.enable_previous_response_id;
         this.turnStateByKey = new Map();
         this.responseContinuityByKey = new Map();
+        this.requestStateByOptions = new WeakMap();
+        this.lastCompletedRequestState = null;
         this.lastRequestCacheTrace = null;
     }
 
@@ -126,6 +128,7 @@ export class CodexChatGPT {
     }
 
     async sendRequest(turns, systemMessage, stop_seq='***', tools=null, options = {}) {
+        const requestState = this.beginRequestState(options);
         this.lastTokenUsage = null;
         this.lastThinking = '';
         const model = this.model_name || this.default_model;
@@ -162,8 +165,10 @@ export class CodexChatGPT {
             const parsed = await parseCodexResponsesSse(await response.text());
             this.rememberResponseContinuity(response.codexSentOptions || options, response.codexSentBody || body, parsed);
             console.log('Received.');
-            setLastTokenUsage(this, parsed.usage);
-            this.lastThinking = parsed.thinking || '';
+            requestState.tokenUsage = setLastTokenUsage(this, parsed.usage);
+            requestState.thinking = parsed.thinking || '';
+            this.lastThinking = requestState.thinking;
+            this.lastCompletedRequestState = requestState;
             if (parsed.toolCalls.length > 0) {
                 return createNativeToolResponse(parsed.toolCalls, this.provider, { thinking: this.lastThinking });
             }
@@ -196,7 +201,7 @@ export class CodexChatGPT {
     }
 
     buildRequestBody(model, turns, systemMessage, tools=null, options = {}) {
-        const promptCacheKey = buildScopedPromptCacheKey(this.sessionId, options?.cacheScope);
+        const promptCacheKey = this.getTransportSessionId(options);
         const reasoning = buildCodexReasoning(this.params.reasoning);
         const include = buildCodexInclude(this.params.include, reasoning);
         const body = {
@@ -222,13 +227,14 @@ export class CodexChatGPT {
     }
 
     getCacheTraceMetadata(options = {}) {
-        const scopedSessionId = buildScopedPromptCacheKey(this.sessionId, options?.cacheScope);
+        const scopedSessionId = this.getTransportSessionId(options);
         const responseContinuityKey = this.getResponseContinuityKey(options);
         const responseContinuityEntries = responseContinuityKey
             ? this.responseContinuityByKey.get(responseContinuityKey)
             : null;
         return {
             cache_scope: options?.cacheScope || null,
+            transport_cache_scope: this.getTransportCacheScope(options) || null,
             turn_state_key: options?.turnStateKey || null,
             transport_cache: {
                 protocol: 'openai-codex-responses',
@@ -240,10 +246,17 @@ export class CodexChatGPT {
         };
     }
 
-    consumeLastRequestCacheTrace() {
-        const value = this.lastRequestCacheTrace;
-        this.lastRequestCacheTrace = null;
-        return value || null;
+    consumeLastRequestTraceMetadata(options = {}) {
+        const state = this.consumeRequestState(options);
+        return {
+            transport_cache: state?.cacheTrace || null,
+            token_usage: state?.tokenUsage || null,
+            thinking: state?.thinking || ''
+        };
+    }
+
+    consumeLastRequestCacheTrace(options = {}) {
+        return this.consumeLastRequestTraceMetadata(options).transport_cache || null;
     }
 
     async fetchResponses(endpoint, body, auth, options = {}) {
@@ -260,15 +273,17 @@ export class CodexChatGPT {
             }
         }
         const httpBody = expandContinuityRequestBody(body);
-        if (httpBody !== body && this.lastRequestCacheTrace?.incremental_reuse) {
-            this.lastRequestCacheTrace = {
-                ...this.lastRequestCacheTrace,
+        const requestState = this.getRequestState(options);
+        if (httpBody !== body && requestState.cacheTrace?.incremental_reuse) {
+            requestState.cacheTrace = {
+                ...requestState.cacheTrace,
                 previous_response_id: null,
                 incremental_input_items: null,
-                full_input_items: Array.isArray(httpBody.input) ? httpBody.input.length : this.lastRequestCacheTrace.full_input_items,
+                full_input_items: Array.isArray(httpBody.input) ? httpBody.input.length : requestState.cacheTrace.full_input_items,
                 incremental_reuse: false,
                 incremental_reuse_reason: 'http_previous_response_unsupported'
             };
+            this.lastRequestCacheTrace = requestState.cacheTrace;
         }
         this.lastSentResponsesBody = httpBody;
         this.lastSentResponsesOptions = options;
@@ -359,7 +374,7 @@ export class CodexChatGPT {
     }
 
     buildHeaders(auth, options = {}) {
-        const scopedSessionId = buildScopedPromptCacheKey(this.sessionId, options?.cacheScope);
+        const scopedSessionId = this.getTransportSessionId(options);
         const headers = {
             'Authorization': `Bearer ${auth.accessToken}`,
             'ChatGPT-Account-ID': auth.accountId,
@@ -411,23 +426,24 @@ export class CodexChatGPT {
         // branch-aware continuity machinery behind an explicit transport opt-in
         // so the default HTTP path relies on prompt_cache_key and never 400s.
         if (!this.enablePreviousResponseId && !options?.transportSupportsPreviousResponseId) return null;
-        return buildScopedPromptCacheKey(this.sessionId, options?.cacheScope);
+        return this.getTransportSessionId(options);
     }
 
     getTurnScopedContinuityKey(options = {}) {
         const turnStateKey = String(options?.turnStateKey || '').trim();
         if (!turnStateKey) return null;
-        const scopedSessionId = buildScopedPromptCacheKey(this.sessionId, options?.cacheScope);
+        const scopedSessionId = this.getTransportSessionId(options);
         return buildScopedPromptCacheKey(scopedSessionId, `turn:${turnStateKey}`);
     }
 
     applyPreviousResponseContinuity(options = {}, body) {
         const key = this.getResponseContinuityKey(options);
         const previousEntries = key ? this.responseContinuityByKey.get(key) : null;
+        const requestState = this.getRequestState(options);
         const baseTrace = {
             protocol: 'openai-codex-responses',
             prompt_cache_key: body.prompt_cache_key,
-            session_id: buildScopedPromptCacheKey(this.sessionId, options?.cacheScope),
+            session_id: this.getTransportSessionId(options),
             turn_state_present: Boolean(this.getTurnState(options)),
             previous_response_id: null,
             incremental_input_items: null,
@@ -437,6 +453,7 @@ export class CodexChatGPT {
         };
 
         if (!previousEntries?.length) {
+            requestState.cacheTrace = baseTrace;
             this.lastRequestCacheTrace = baseTrace;
             return;
         }
@@ -458,31 +475,34 @@ export class CodexChatGPT {
         }
 
         if (!sawMatchingSignature) {
-            this.lastRequestCacheTrace = {
+            requestState.cacheTrace = {
                 ...baseTrace,
                 incremental_reuse_reason: 'non_input_fields_changed'
             };
+            this.lastRequestCacheTrace = requestState.cacheTrace;
             return;
         }
 
         if (!bestMatch) {
-            this.lastRequestCacheTrace = {
+            requestState.cacheTrace = {
                 ...baseTrace,
                 incremental_reuse_reason: 'input_not_previous_prefix'
             };
+            this.lastRequestCacheTrace = requestState.cacheTrace;
             return;
         }
 
         body.previous_response_id = bestMatch.entry.responseId;
         body.input = bestMatch.delta;
         body[CONTINUITY_BASELINE_INPUT] = bestMatch.entry.baselineInput;
-        this.lastRequestCacheTrace = {
+        requestState.cacheTrace = {
             ...baseTrace,
             previous_response_id: bestMatch.entry.responseId,
             incremental_input_items: bestMatch.delta.length,
             incremental_reuse: true,
             incremental_reuse_reason: 'prefix_reused'
         };
+        this.lastRequestCacheTrace = requestState.cacheTrace;
     }
 
     rememberResponseContinuity(options = {}, body, parsed = {}) {
@@ -512,6 +532,51 @@ export class CodexChatGPT {
             const oldestKey = this.responseContinuityByKey.keys().next().value;
             this.responseContinuityByKey.delete(oldestKey);
         }
+    }
+
+    getTransportCacheScope(options = {}) {
+        return String(options?.transportCacheScope ?? options?.transport_cache_scope ?? '').trim();
+    }
+
+    getTransportSessionId(options = {}) {
+        return buildScopedPromptCacheKey(this.sessionId, this.getTransportCacheScope(options));
+    }
+
+    beginRequestState(options = {}) {
+        const state = { cacheTrace: null, tokenUsage: null, thinking: '' };
+        if (options && typeof options === 'object') {
+            this.requestStateByOptions.set(options, state);
+        }
+        return state;
+    }
+
+    getRequestState(options = {}) {
+        if (options && typeof options === 'object') {
+            const existing = this.requestStateByOptions.get(options);
+            if (existing) return existing;
+            const state = { cacheTrace: null, tokenUsage: null, thinking: '' };
+            this.requestStateByOptions.set(options, state);
+            return state;
+        }
+        if (!this.lastCompletedRequestState) {
+            this.lastCompletedRequestState = { cacheTrace: this.lastRequestCacheTrace, tokenUsage: this.lastTokenUsage, thinking: this.lastThinking || '' };
+        }
+        return this.lastCompletedRequestState;
+    }
+
+    consumeRequestState(options = {}) {
+        if (options && typeof options === 'object') {
+            const state = this.requestStateByOptions.get(options);
+            if (state) {
+                this.requestStateByOptions.delete(options);
+                if (this.lastCompletedRequestState === state) this.lastCompletedRequestState = null;
+                return state;
+            }
+        }
+        const state = this.lastCompletedRequestState || { cacheTrace: this.lastRequestCacheTrace, tokenUsage: this.lastTokenUsage, thinking: this.lastThinking || '' };
+        this.lastCompletedRequestState = null;
+        this.lastRequestCacheTrace = null;
+        return state;
     }
 
     async embed() {

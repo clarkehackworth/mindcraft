@@ -40,6 +40,9 @@ test('native prompt markdown rejects text-command and fake tool-call examples in
     assert.match(conversing, /Do NOT write legacy text commands/i);
     assert.doesNotMatch(conversing, legacyToolSyntax);
     assert.doesNotMatch(botResponder, legacyToolSyntax);
+    assert.match(botResponder, /\$INCOMING_MESSAGE/);
+    assert.doesNotMatch(botResponder, /\$TO_SUMMARIZE/);
+    assert.doesNotMatch(botResponder, /Actual Conversation/i);
 });
 
 

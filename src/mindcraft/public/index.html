@@ -2939,8 +2939,11 @@
         }
 
         function getBranchQuestionText(request) {
+            if (request?.incoming_message) return request.incoming_message;
             const messages = Array.isArray(request?.messages) ? request.messages : [];
-            const lastUser = messages.slice().reverse().find(message => message?.role === 'user');
+            const reversedUsers = messages.slice().reverse().filter(message => message?.role === 'user');
+            const incomingUser = reversedUsers.find(message => String(message?.content || '').includes('(FROM OTHER BOT)'));
+            const lastUser = incomingUser || reversedUsers[0];
             return lastUser ? formatChatMessagePreview(lastUser) : '';
         }
 

@@ -54,7 +54,7 @@ const settings = {
         // "profiles/codex.json",     // Codex ChatGPT login: codex:gpt-5.5
         // "profiles/openrouter.json",// OpenRouter / OpenAI Chat Completions: moonshotai/kimi-k2.6
         // "profiles/kimi.json",      // Kimi Anthropic-compatible: kimi-k2.6
-        // "profiles/gemini.json",    // Gemini / google-generative-ai: gemini-3.1-pro-preview
+        // "profiles/gemini.json",    // Gemini / google-generative-ai: gemini-2.5-flash
 
         // OpenAI / ChatGPT
         // "profiles/gpt.json",

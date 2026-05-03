@@ -79,17 +79,14 @@ export class Prompter {
             max_tokens = this.profile.max_tokens;
 
         let chat_model_profile = selectAPI(this.profile.model);
-        this.chat_model = createModel(chat_model_profile);
+        this.chat_model = createModel(cloneModelProfile(chat_model_profile));
         this.applyModelSessionIdentity(this.chat_model, chat_model_profile, 'conversation');
 
-        if (hasModelSelection(this.profile.code_model)) {
-            let code_model_profile = selectAPI(this.profile.code_model);
-            this.code_model = createModel(code_model_profile);
-            this.applyModelSessionIdentity(this.code_model, code_model_profile, 'coding');
-        }
-        else {
-            this.code_model = this.chat_model;
-        }
+        const code_model_profile = hasModelSelection(this.profile.code_model)
+            ? selectAPI(this.profile.code_model)
+            : cloneModelProfile(chat_model_profile);
+        this.code_model = createModel(cloneModelProfile(code_model_profile));
+        this.applyModelSessionIdentity(this.code_model, code_model_profile, 'coding');
 
         if (hasModelSelection(this.profile.vision_model)) {
             let vision_model_profile = selectAPI(this.profile.vision_model);
@@ -265,10 +262,7 @@ export class Prompter {
                 this.agent.history.traceLLMRequest('conversation', this.chat_model, prompt, requestMessages, tools, requestTraceMetadata);
                 generation = await this.chat_model.sendRequest(requestMessages, prompt, '***', tools, requestOptions);
                 this.captureConversationResponseMetadata(this.chat_model, generation);
-                const lastRequestCacheTrace = this.chat_model.consumeLastRequestCacheTrace?.();
-                const responseTraceMetadata = lastRequestCacheTrace
-                    ? { transport_cache: lastRequestCacheTrace }
-                    : requestTraceMetadata;
+                const responseTraceMetadata = consumeModelRequestTraceMetadata(this.chat_model, requestOptions, requestTraceMetadata);
                 this.agent.history.traceLLMResponse('conversation', this.chat_model, generation, responseTraceMetadata);
                 if (isNativeToolResponse(generation)) {
                     await this._saveLog(prompt, requestMessages, JSON.stringify(generation), 'conversation');
@@ -356,31 +350,44 @@ export class Prompter {
         return '\n*NATIVE TOOL FALLBACK WARNING\nThis model adapter does not advertise native tool calling support, so Mindcraft is temporarily falling back to text !command syntax for AI actions. Prefer a native-tool-capable provider when available. Human users may still type !commands.*\n' + docs;
     }
 
-    async promptCoding(messages) {
+    async promptCoding(messages, options = {}) {
         if (this.awaiting_coding) {
             console.warn('Already awaiting coding response, returning no response.');
             return '```//no response```';
         }
         this.awaiting_coding = true;
-        await this.checkCooldown();
-        let prompt = this.profile.coding;
-        prompt = await this.replaceStrings(prompt, messages);
+        try {
+            await this.checkCooldown();
+            let prompt = this.profile.coding;
+            prompt = await this.replaceStrings(prompt, messages);
 
-        this.agent.history.traceLLMRequest('coding', this.code_model, prompt, messages);
-        let resp = await this.code_model.sendRequest(messages, prompt, '***', null, { cacheScope: 'coding' });
-        this.agent.history.traceLLMResponse('coding', this.code_model, resp);
-        this.awaiting_coding = false;
-        await this._saveLog(prompt, messages, resp, 'coding');
-        return resp;
+            const requestOptions = { cacheScope: 'coding', transportCacheScope: 'coding', signal: options.signal };
+            const requestTraceMetadata = this.code_model.getCacheTraceMetadata?.(requestOptions) || {
+                cache_scope: requestOptions.cacheScope,
+                transport_cache_scope: requestOptions.transportCacheScope
+            };
+            this.agent.history.traceLLMRequest('coding', this.code_model, prompt, messages, null, requestTraceMetadata);
+            let resp = await this.code_model.sendRequest(messages, prompt, '***', null, requestOptions);
+            this.agent.history.traceLLMResponse('coding', this.code_model, resp, consumeModelRequestTraceMetadata(this.code_model, requestOptions, requestTraceMetadata));
+            await this._saveLog(prompt, messages, resp, 'coding');
+            return resp;
+        } finally {
+            this.awaiting_coding = false;
+        }
     }
 
     async promptCompactSummary(to_summarize) {
         await this.checkCooldown();
         let prompt = this.profile.saving_memory;
         prompt = await this.replaceStrings(prompt, null, to_summarize);
-        this.agent.history.traceLLMRequest('compactSummary', this.chat_model, prompt, to_summarize);
-        let resp = await this.chat_model.sendRequest([], prompt, '***', null, { cacheScope: 'compactSummary' });
-        this.agent.history.traceLLMResponse('compactSummary', this.chat_model, resp);
+        const requestOptions = { cacheScope: 'compactSummary', transportCacheScope: 'compactSummary' };
+        const requestTraceMetadata = this.chat_model.getCacheTraceMetadata?.(requestOptions) || {
+            cache_scope: requestOptions.cacheScope,
+            transport_cache_scope: requestOptions.transportCacheScope
+        };
+        this.agent.history.traceLLMRequest('compactSummary', this.chat_model, prompt, to_summarize, null, requestTraceMetadata);
+        let resp = await this.chat_model.sendRequest([], prompt, '***', null, requestOptions);
+        this.agent.history.traceLLMResponse('compactSummary', this.chat_model, resp, consumeModelRequestTraceMetadata(this.chat_model, requestOptions, requestTraceMetadata));
         await this._saveLog(prompt, to_summarize, resp, 'compactSummary');
         if (resp?.includes('</think>')) {
             const [_, afterThink] = resp.split('</think>');
@@ -395,14 +402,24 @@ export class Prompter {
 
     async promptShouldRespondToBot(new_message, options = {}) {
         await this.checkCooldown();
-        let prompt = this.profile.bot_responder;
-        let messages = this.agent.history.getHistory();
-        messages.push({role: 'user', content: new_message});
-        prompt = await this.replaceStrings(prompt, null, messages);
-        const traceMetadata = { ephemeral: true, branch: true, cache_scope: options.cacheScope || 'botResponder' };
-        this.agent.history.traceLLMRequest('botResponder', this.chat_model, prompt, messages, null, traceMetadata);
-        let res = await this.chat_model.sendRequest([], prompt, '***', null, { cacheScope: options.cacheScope || 'botResponder' });
-        this.agent.history.traceLLMResponse('botResponder', this.chat_model, res, traceMetadata);
+        const historyMessages = this.agent.history.getHistory();
+        const requestMessages = [
+            ...(await this.buildConversationMessages(historyMessages)),
+            { role: 'user', content: await this.buildBotResponderUserPrompt(new_message) }
+        ];
+        const prompt = await this.buildConversationSystemPrompt(historyMessages);
+        const requestOptions = { cacheScope: options.cacheScope || 'botResponder', signal: options.signal };
+        const tools = this.isNativeToolMode() ? getCommandToolDefinitions(this.agent) : null;
+        const traceMetadata = {
+            ephemeral: true,
+            branch: true,
+            incoming_message: new_message,
+            ...(this.chat_model.getCacheTraceMetadata?.(requestOptions) || { cache_scope: options.cacheScope || 'botResponder' })
+        };
+        this.agent.history.traceLLMRequest('botResponder', this.chat_model, prompt, requestMessages, tools, traceMetadata);
+        let res = await this.chat_model.sendRequest(requestMessages, prompt, '***', tools, requestOptions);
+        const responseTraceMetadata = consumeModelRequestTraceMetadata(this.chat_model, requestOptions, traceMetadata);
+        this.agent.history.traceLLMResponse('botResponder', this.chat_model, res, responseTraceMetadata);
         const decision = normalizeBotResponderDecision(res);
         if (decision !== 'respond' && decision !== 'ignore') {
             console.warn(`Invalid botResponder decision for ${this.agent.name}: ${decision}`);
@@ -410,13 +427,25 @@ export class Prompter {
         return decision === 'respond';
     }
 
+    async buildBotResponderUserPrompt(newMessage) {
+        const incomingMessage = String(newMessage ?? '');
+        const prompt = String(this.profile.bot_responder || '')
+            .replaceAll('$INCOMING_MESSAGE', incomingMessage);
+        return await this.replaceStrings(prompt, [], []);
+    }
+
     async promptVision(messages, imageBuffer) {
         await this.checkCooldown();
         let prompt = this.profile.image_analysis;
         prompt = await this.replaceStrings(prompt, messages);
-        this.agent.history.traceLLMRequest('vision', this.vision_model, prompt, messages);
-        const res = await this.vision_model.sendVisionRequest(messages, prompt, imageBuffer, { cacheScope: 'vision' });
-        this.agent.history.traceLLMResponse('vision', this.vision_model, res);
+        const requestOptions = { cacheScope: 'vision', transportCacheScope: 'vision' };
+        const requestTraceMetadata = this.vision_model.getCacheTraceMetadata?.(requestOptions) || {
+            cache_scope: requestOptions.cacheScope,
+            transport_cache_scope: requestOptions.transportCacheScope
+        };
+        this.agent.history.traceLLMRequest('vision', this.vision_model, prompt, messages, null, requestTraceMetadata);
+        const res = await this.vision_model.sendVisionRequest(messages, prompt, imageBuffer, requestOptions);
+        this.agent.history.traceLLMResponse('vision', this.vision_model, res, consumeModelRequestTraceMetadata(this.vision_model, requestOptions, requestTraceMetadata));
         return res;
     }
 
@@ -430,9 +459,14 @@ export class Prompter {
         user_message = await this.replaceStrings(user_message, messages, null, last_goals);
         let user_messages = [{role: 'user', content: user_message}];
 
-        this.agent.history.traceLLMRequest('goalSetting', this.chat_model, system_message, user_messages);
-        let res = await this.chat_model.sendRequest(user_messages, system_message, '***', null, { cacheScope: 'goalSetting' });
-        this.agent.history.traceLLMResponse('goalSetting', this.chat_model, res);
+        const requestOptions = { cacheScope: 'goalSetting', transportCacheScope: 'goalSetting' };
+        const requestTraceMetadata = this.chat_model.getCacheTraceMetadata?.(requestOptions) || {
+            cache_scope: requestOptions.cacheScope,
+            transport_cache_scope: requestOptions.transportCacheScope
+        };
+        this.agent.history.traceLLMRequest('goalSetting', this.chat_model, system_message, user_messages, null, requestTraceMetadata);
+        let res = await this.chat_model.sendRequest(user_messages, system_message, '***', null, requestOptions);
+        this.agent.history.traceLLMResponse('goalSetting', this.chat_model, res, consumeModelRequestTraceMetadata(this.chat_model, requestOptions, requestTraceMetadata));
 
         let goal = null;
         try {
@@ -536,6 +570,18 @@ function extractCodeTaskContent(messages) {
 function stableModelSessionIdentity(parts) {
     const text = JSON.stringify(parts || {});
     return `mindcraft-${createHash('sha256').update(text).digest('hex').slice(0, 24)}`;
+}
+
+function cloneModelProfile(profile) {
+    return JSON.parse(JSON.stringify(profile || {}));
+}
+
+function consumeModelRequestTraceMetadata(model, requestOptions, fallbackMetadata = {}) {
+    const requestMetadata = model?.consumeLastRequestTraceMetadata?.(requestOptions);
+    const metadata = { ...(fallbackMetadata || {}) };
+    if (requestMetadata?.transport_cache) metadata.transport_cache = requestMetadata.transport_cache;
+    if (requestMetadata?.token_usage) metadata.token_usage = requestMetadata.token_usage;
+    return metadata;
 }
 
 export function normalizeBotResponderDecision(response) {

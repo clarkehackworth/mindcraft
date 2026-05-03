@@ -447,8 +447,8 @@ test('minecraft command echoes are filtered without blocking normal human chat',
     assert.equal(isMinecraftCommandEchoMessage('Removed 10 item(s) from 2 players]'), true);
     assert.equal(isMinecraftCommandEchoMessage('Gave 64 oak_log to Ninot_Quyi'), true);
     assert.equal(isMinecraftCommandEchoMessage('/clear @a'), true);
-    assert.equal(isMinecraftCommandEchoMessage('Ninot_Quyi: 给我做个石头镐子'), false);
-    assert.equal(isMinecraftCommandEchoMessage('给我做个石头镐子'), false);
+    assert.equal(isMinecraftCommandEchoMessage('Ninot_Quyi: make me a stone pickaxe'), false);
+    assert.equal(isMinecraftCommandEchoMessage('make me a stone pickaxe'), false);
     assert.equal(isMinecraftCommandEchoMessage('I removed 10 items from a chest'), false);
 });
 
@@ -554,6 +554,48 @@ test('newAction code generation uses an isolated tool-internal prompt', async ()
     assert.equal(messages.some(message => message.content.includes('Code generation started')), false);
     assert.ok(prompterSource.includes('extractCodeTaskContent(messages)'));
     assert.ok(prompterSource.includes("msg.content.startsWith('Code generation task:')"));
+    assert.ok(coderSource.includes('beginActiveLLMRequest'));
+    assert.ok(coderSource.includes('promptCoding(messages_copy, { signal: llmAbortController?.signal })'));
+    assert.equal(prompterSource.includes('this.code_model = this.chat_model'), false);
+    assert.ok(prompterSource.includes(': cloneModelProfile(chat_model_profile)'));
+    assert.ok(prompterSource.includes('createModel(cloneModelProfile(code_model_profile))'));
+});
+
+test('newAction coding prompt clears in-flight state when interrupted', async () => {
+    const { Prompter } = await import('../src/models/prompter.js');
+    const prompter = Object.create(Prompter.prototype);
+    const signal = AbortSignal.abort();
+    const captured = {};
+    prompter.awaiting_coding = false;
+    prompter.profile = { coding: 'Write code for $NAME.' };
+    prompter.agent = {
+        name: 'codex',
+        history: {
+            traceLLMRequest: () => {},
+            traceLLMResponse: () => {}
+        }
+    };
+    prompter.checkCooldown = async () => {};
+    prompter.replaceStrings = async prompt => prompt.replaceAll('$NAME', 'codex');
+    prompter.code_model = {
+        getCacheTraceMetadata: () => ({}),
+        sendRequest: async (_messages, _prompt, _stop, _tools, options) => {
+            captured.options = options;
+            const error = new Error('aborted');
+            error.name = 'AbortError';
+            throw error;
+        }
+    };
+
+    await assert.rejects(
+        () => prompter.promptCoding([{ role: 'user', content: 'Code generation task:\nstop' }], { signal }),
+        /aborted/
+    );
+
+    assert.equal(prompter.awaiting_coding, false);
+    assert.equal(captured.options.cacheScope, 'coding');
+    assert.equal(captured.options.transportCacheScope, 'coding');
+    assert.equal(captured.options.signal, signal);
 });
 
 test('botResponder decisions reject native tool calls instead of treating them as responses', async () => {
@@ -566,6 +608,69 @@ test('botResponder decisions reject native tool calls instead of treating them a
         tool_calls: [{ id: 'call_1', name: 'newAction', arguments: '{}' }]
     }), 'invalid_tool_call');
     assert.equal(normalizeBotResponderDecision(''), 'invalid_empty');
+});
+
+test('botResponder forks structured conversation history and appends only a decision user prompt', async () => {
+    const { Prompter } = await import('../src/models/prompter.js');
+    const historyTurns = [{ role: 'user', content: 'Steve: mine iron first' }];
+    const captured = {};
+    const prompter = Object.create(Prompter.prototype);
+    prompter.agent = {
+        name: 'codex',
+        actions: { currentActionLabel: 'collectBlocks iron_ore' },
+        history: {
+            getHistory: () => historyTurns.map(turn => ({ ...turn })),
+            traceLLMRequest: (tag, model, systemPrompt, messages, tools, metadata) => {
+                captured.request = { tag, model, systemPrompt, messages, tools, metadata };
+            },
+            traceLLMResponse: (tag, model, response, metadata) => {
+                captured.response = { tag, model, response, metadata };
+            }
+        }
+    };
+    prompter.profile = {
+        conversing: 'Stable system for $NAME.',
+        bot_responder: 'Current action: $ACTION\nIncoming message:\n$INCOMING_MESSAGE\nOnly respond or ignore.'
+    };
+    prompter.checkCooldown = async () => {};
+    prompter.chat_model = {
+        supportsNativeToolCalls: true,
+        getCacheTraceMetadata: options => ({
+            cache_scope: options.cacheScope,
+            transport_cache_scope: options.transportCacheScope || null,
+            transport_cache: { prompt_cache_key: 'session' }
+        }),
+        consumeLastRequestTraceMetadata: () => ({
+            transport_cache: { prompt_cache_key: 'session', incremental_reuse: false },
+            token_usage: { input_uncached: 12, input_cached: 34, output: 1 }
+        }),
+        sendRequest: async (messages, systemPrompt, stop, tools, options) => {
+            captured.sent = { messages, systemPrompt, stop, tools, options };
+            return 'ignore';
+        }
+    };
+
+    const shouldRespond = await prompter.promptShouldRespondToBot('kimi: (FROM OTHER BOT)\nhelp now');
+
+    assert.equal(shouldRespond, false);
+    assert.equal(captured.sent.systemPrompt, 'Stable system for codex.');
+    assert.equal(captured.sent.options.cacheScope, 'botResponder');
+    assert.equal(captured.sent.options.transportCacheScope, undefined);
+    assert.equal(Array.isArray(captured.sent.tools), true);
+    assert.ok(captured.sent.tools.length > 0);
+    assert.deepEqual(captured.sent.messages[0], historyTurns[0]);
+    assert.equal(captured.sent.messages.length, 2);
+    assert.match(captured.sent.messages[1].content, /Current action: collectBlocks iron_ore/);
+    assert.match(captured.sent.messages[1].content, /Incoming message:\nkimi: \(FROM OTHER BOT\)\nhelp now/);
+    assert.doesNotMatch(captured.sent.systemPrompt, /kimi|mine iron|Incoming message|Actual Conversation/);
+    assert.deepEqual(captured.request.messages, captured.sent.messages);
+    assert.deepEqual(captured.request.tools, captured.sent.tools);
+    assert.equal(captured.request.metadata.incoming_message, 'kimi: (FROM OTHER BOT)\nhelp now');
+    assert.equal(captured.request.metadata.cache_scope, 'botResponder');
+    assert.equal(captured.request.metadata.transport_cache_scope, null);
+    assert.equal(captured.response.metadata.transport_cache.prompt_cache_key, 'session');
+    assert.equal(captured.response.metadata.token_usage.input_cached, 34);
+    assert.equal(historyTurns.length, 1);
 });
 
 
@@ -636,6 +741,7 @@ test('chat trace projection renders ephemeral branch decisions outside the main 
     assert.ok(html.includes('function renderBranchPayloadBlock'));
     assert.ok(html.includes('function parseBranchQuestion'));
     assert.ok(html.includes('function normalizeBranchInlineMessage'));
+    assert.ok(html.includes('request?.incoming_message'));
     assert.ok(html.includes('class="chat-branch-event"'));
     assert.ok(html.includes('chat-branch-say'));
     assert.ok(html.includes(' say:'));
@@ -1013,6 +1119,7 @@ test('conversation and coding requests use separate prompt cache scopes', () => 
 
     assert.ok(prompterSource.includes("cacheScope: 'conversation'"));
     assert.ok(prompterSource.includes("cacheScope: 'coding'"));
+    assert.ok(prompterSource.includes("transportCacheScope: 'coding'"));
     assert.ok(prompterSource.includes("cacheScope: 'compactSummary'"));
     assert.ok(prompterSource.includes("cacheScope: options.cacheScope || 'botResponder'"));
     assert.ok(prompterSource.includes("cacheScope: 'vision'"));
