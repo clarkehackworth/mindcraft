@@ -224,6 +224,125 @@ test('new human message skips stale queued self prompt before consuming a ReAct 
     assert.deepEqual(turns.map(turn => turn.content), ['Steve: new request', 'reply']);
 });
 
+test('queued human message stops active action before prompting even without native tool calls', async () => {
+    const { Agent } = await import('../src/agent/agent.js');
+    const events = [];
+    const turns = [];
+    const requests = [];
+    const agent = Object.create(Agent.prototype);
+    agent.name = 'bot';
+    agent.shut_up = false;
+    agent.last_sender = null;
+    agent.active_message_handlers = 1;
+    agent.active_native_tool_calls = new Map();
+    agent.message_interrupt_epoch = 0;
+    agent.message_handler_queue = Promise.resolve();
+    agent.human_message_queue = [];
+    agent.human_message_interrupt_promise = Promise.resolve();
+    agent.checkTaskDone = async () => {};
+    agent.self_prompter = {
+        shouldInterrupt: () => false,
+        isActive: () => false,
+        handleUserPromptedCmd: () => {}
+    };
+    agent.actions = {
+        executing: true,
+        stop: async () => {
+            events.push('stop-action');
+            agent.actions.executing = false;
+        }
+    };
+    agent.bot = { modes: { flushBehaviorLog: () => '' } };
+    agent.history = {
+        addUserContext: async content => {
+            events.push(`user:${content}`);
+            turns.push({ role: 'user', content });
+        },
+        add: async (name, content) => turns.push(name === agent.name ? { role: 'assistant', content } : { role: 'user', content: `${name}: ${content}` }),
+        save: () => {},
+        getHistory: () => turns.map(turn => ({ ...turn }))
+    };
+    agent.prompter = {
+        promptConvo: async messages => {
+            events.push('prompt');
+            requests.push(messages.map(turn => ({ ...turn })));
+            return '';
+        }
+    };
+    agent.routeResponse = () => {};
+
+    await agent.handleMessage('Steve', 'urgent correction', 1);
+
+    assert.ok(events.indexOf('stop-action') !== -1);
+    assert.ok(events.indexOf('stop-action') < events.findIndex(event => event.startsWith('user:')));
+    assert.ok(events.findIndex(event => event.startsWith('user:')) < events.indexOf('prompt'));
+    assert.deepEqual(requests[0].map(turn => turn.content), ['Steve: urgent correction']);
+});
+
+test('queued admin message stops action then closes active native tool before prompting', async () => {
+    const { Agent } = await import('../src/agent/agent.js');
+    const toolCall = { id: 'call_running', type: 'function', name: 'collectBlocks', arguments: '{"type":"oak_log","num":1}' };
+    const events = [];
+    const turns = [{ role: 'assistant', content: '', native_tool_calls: [toolCall] }];
+    const requests = [];
+    const agent = Object.create(Agent.prototype);
+    agent.name = 'bot';
+    agent.shut_up = false;
+    agent.last_sender = null;
+    agent.active_message_handlers = 0;
+    agent.active_native_tool_calls = new Map([[toolCall.id, { toolCall, completed: false }]]);
+    agent.message_interrupt_epoch = 0;
+    agent.message_handler_queue = Promise.resolve();
+    agent.human_message_queue = [];
+    agent.human_message_interrupt_promise = Promise.resolve();
+    agent.checkTaskDone = async () => {};
+    agent.self_prompter = {
+        shouldInterrupt: () => false,
+        isActive: () => false,
+        handleUserPromptedCmd: () => {}
+    };
+    agent.actions = {
+        executing: true,
+        stop: async () => {
+            events.push('stop-action');
+            agent.actions.executing = false;
+        }
+    };
+    agent.bot = { modes: { flushBehaviorLog: () => '' } };
+    agent.history = {
+        addUserContext: async content => {
+            events.push(`user:${content}`);
+            turns.push({ role: 'user', content });
+        },
+        addNativeToolResult: async (call, result) => {
+            events.push(`tool-result:${result}`);
+            turns.push({ role: 'tool', tool_call_id: call.id, name: call.name, content: result });
+        },
+        add: async (name, content) => turns.push(name === agent.name ? { role: 'assistant', content } : { role: 'user', content: `${name}: ${content}` }),
+        save: () => events.push('save'),
+        getHistory: () => turns.map(turn => ({ ...turn }))
+    };
+    agent.prompter = {
+        promptConvo: async messages => {
+            events.push('prompt');
+            requests.push(messages.map(turn => ({ ...turn })));
+            return '';
+        }
+    };
+    agent.routeResponse = () => {};
+
+    await agent.handleMessage('ADMIN', 'stop and listen', 1);
+
+    const toolResultIndex = events.findIndex(event => event.startsWith('tool-result:'));
+    const userIndex = events.findIndex(event => event.startsWith('user:'));
+    assert.ok(events.indexOf('stop-action') < toolResultIndex);
+    assert.ok(toolResultIndex < userIndex);
+    assert.ok(userIndex < events.indexOf('prompt'));
+    assert.match(events[toolResultIndex], /newer user\/admin message/);
+    assert.deepEqual(requests[0].map(turn => turn.role), ['assistant', 'tool', 'user']);
+    assert.equal(requests[0][2].content, 'ADMIN: stop and listen');
+});
+
 
 
 test('user stop closes an executing native tool exactly once', async () => {
@@ -437,6 +556,18 @@ test('newAction code generation uses an isolated tool-internal prompt', async ()
     assert.ok(prompterSource.includes("msg.content.startsWith('Code generation task:')"));
 });
 
+test('botResponder decisions reject native tool calls instead of treating them as responses', async () => {
+    const { normalizeBotResponderDecision } = await import('../src/models/prompter.js');
+
+    assert.equal(normalizeBotResponderDecision('respond'), 'respond');
+    assert.equal(normalizeBotResponderDecision('ignore because busy'), 'ignore');
+    assert.equal(normalizeBotResponderDecision({
+        type: 'tool_calls',
+        tool_calls: [{ id: 'call_1', name: 'newAction', arguments: '{}' }]
+    }), 'invalid_tool_call');
+    assert.equal(normalizeBotResponderDecision(''), 'invalid_empty');
+});
+
 
 
 test('chat UI projects instruction context trace events', () => {
@@ -500,12 +631,34 @@ test('chat trace projection renders ephemeral branch decisions outside the main 
     assert.ok(projector.includes('if (event.ephemeral) return;'));
     assert.equal(projector.includes('if (event.ephemeral) return;\n        switch'), true);
     assert.ok(html.includes('function renderBranchDecision'));
+    assert.ok(html.includes('function renderBranchRequestMeta'));
+    assert.ok(html.includes('function renderBranchPayloadDetails'));
+    assert.ok(html.includes('function renderBranchPayloadBlock'));
+    assert.ok(html.includes('function parseBranchQuestion'));
+    assert.ok(html.includes('function normalizeBranchInlineMessage'));
     assert.ok(html.includes('class="chat-branch-event"'));
-    assert.ok(html.includes('Branch decision'));
-    assert.ok(html.includes('renderTokenUsage(response?.token_usage)'));
+    assert.ok(html.includes('chat-branch-say'));
+    assert.ok(html.includes(' say:'));
+    assert.ok(html.includes('chat-branch-status'));
+    assert.ok(html.includes('chat-branch-bottom'));
+    assert.ok(html.includes('renderBranchRequestMeta(model, response?.token_usage, timestamp)'));
+    assert.ok(html.includes('input uncached'));
+    assert.ok(html.includes('input cached'));
+    assert.ok(html.includes('output'));
+    assert.ok(html.includes('chat-branch-payload-list'));
     assert.ok(prompterSource.includes('ephemeral: true'));
     assert.ok(prompterSource.includes('branch: true'));
     assert.ok(prompterSource.includes("cache_scope: options.cacheScope || 'botResponder'"));
+});
+
+test('chat UI labels non respond-ignore branch outputs as invalid instead of decided', () => {
+    const html = readFileSync('src/mindcraft/public/index.html', 'utf8');
+
+    assert.ok(html.includes('function getBranchDecisionInfo(response, errors = [])'));
+    assert.ok(html.includes('unexpected tool call:'));
+    assert.ok(html.includes("return { state: 'invalid', label: 'invalid'"));
+    assert.equal(html.includes("default: return 'decided'"), false);
+    assert.equal(html.includes('formatBranchDecisionState'), false);
 });
 
 test('ephemeral branch decisions do not update the main request delta baseline', () => {
@@ -534,6 +687,52 @@ test('ephemeral branch decisions do not update the main request delta baseline',
     assert.equal(thread.turns.length, 3);
     assert.equal(thread.turns[1].branchDecision.response.token_usage.input_cached, 2);
     assert.deepEqual(thread.turns[2].visibleRequestMessages, [branchQuestion]);
+});
+
+test('late user history stays at the end while an active tool turn awaits the next request', () => {
+    const projectorSource = readFileSync('src/mindcraft/public/chat_trace_projector.js', 'utf8');
+    const window = {
+        selectVisibleRequestMessages: (messages, previousMessages = []) => messages.slice(previousMessages.length),
+        extractResponseText: response => typeof response === 'string' ? response : '',
+        extractResponseThinking: () => '',
+        extractResponseToolCalls: response => response?.tool_calls || [],
+        getToolCallId: call => call?.id || null,
+        getToolName: call => call?.name || call?.function?.name || 'tool',
+        isHistoryTurnIncludedInRequest: (turn, requestMessages = []) => requestMessages.some(message => message.role === turn?.role && message.content === turn?.content)
+    };
+    vm.runInNewContext(projectorSource, { window });
+
+    const first = { role: 'user', content: 'Steve: mine iron' };
+    const late = { role: 'user', content: 'Steve: stop and listen' };
+    const toolCall = { id: 'call_collect', type: 'function', name: 'collectBlocks', arguments: '{"type":"iron_ore","num":16}' };
+    const branchQuestion = { role: 'user', content: 'buddy: (FROM OTHER BOT)\nhello while busy' };
+    const beforeRequest = window.buildChatThread([
+        { type: 'llm_request', tag: 'conversation', messages: [first], model: { model: 'gpt-5.5' }, timestamp: 't1' },
+        { type: 'llm_response', tag: 'conversation', response: { tool_calls: [toolCall] }, model: { model: 'gpt-5.5' }, timestamp: 't2' },
+        { type: 'tool_call', tag: 'conversation', tool_call: toolCall, timestamp: 't3' },
+        { type: 'llm_request', tag: 'botResponder', branch: true, ephemeral: true, cache_scope: 'botResponder', messages: [first, branchQuestion], model: { model: 'gpt-5.5' }, timestamp: 't4' },
+        { type: 'llm_response', tag: 'botResponder', branch: true, ephemeral: true, cache_scope: 'botResponder', response: 'ignore', model: { model: 'gpt-5.5' }, timestamp: 't5' },
+        { type: 'history_turn_added', turn: late, timestamp: 't6' }
+    ]);
+
+    assert.equal(beforeRequest.turns.length, 3);
+    assert.equal(beforeRequest.turns[2].historyMessages[0].turn.content, late.content);
+    assert.equal(beforeRequest.turns[0].inlineHistoryMessages.length, 0);
+
+    const afterRequest = window.buildChatThread([
+        { type: 'llm_request', tag: 'conversation', messages: [first], model: { model: 'gpt-5.5' }, timestamp: 't1' },
+        { type: 'llm_response', tag: 'conversation', response: { tool_calls: [toolCall] }, model: { model: 'gpt-5.5' }, timestamp: 't2' },
+        { type: 'tool_call', tag: 'conversation', tool_call: toolCall, timestamp: 't3' },
+        { type: 'llm_request', tag: 'botResponder', branch: true, ephemeral: true, cache_scope: 'botResponder', messages: [first, branchQuestion], model: { model: 'gpt-5.5' }, timestamp: 't4' },
+        { type: 'llm_response', tag: 'botResponder', branch: true, ephemeral: true, cache_scope: 'botResponder', response: 'ignore', model: { model: 'gpt-5.5' }, timestamp: 't5' },
+        { type: 'history_turn_added', turn: late, timestamp: 't6' },
+        { type: 'llm_request', tag: 'conversation', messages: [first, late], model: { model: 'gpt-5.5' }, timestamp: 't7' }
+    ]);
+
+    assert.equal(afterRequest.turns.length, 3);
+    assert.deepEqual(afterRequest.turns[2].visibleRequestMessages, [late]);
+    assert.equal(afterRequest.turns[2].historyMessages[0].turn.content, late.content);
+    assert.equal(afterRequest.turns[2].inlineHistoryMessages.length, 0);
 });
 
 test('chat trace projection can show reasoning effort in the model label', () => {
@@ -610,6 +809,93 @@ test('chat UI does not render redundant tool argument expanders', () => {
     assert.equal(html.includes('Tool arguments'), false);
 });
 
+test('chat UI renders inline failures as flat ReAct-style rows', () => {
+    const html = readFileSync('src/mindcraft/public/index.html', 'utf8');
+    const renderInlineError = html.slice(html.indexOf('function renderInlineError'), html.indexOf('function renderErrorCard'));
+    const assistantErrorRule = html.match(/\.agent-message\.assistant-message \.agent-bubble\.error \{[\s\S]*?\}/)?.[0] || '';
+    const chatErrorRule = html.match(/\.chat-card\.error \{[\s\S]*?\}/)?.[0] || '';
+
+    assert.ok(renderInlineError.includes('agent-error-line'));
+    assert.ok(renderInlineError.includes('agent-error-body'));
+    assert.ok(renderInlineError.includes('agent-error-glyph'));
+    assert.ok(renderInlineError.includes('agent-error-detail'));
+    assert.equal(renderInlineError.includes('agent-bubble-label">Error'), false);
+    assert.equal(renderInlineError.includes('class="agent-text"'), false);
+    assert.ok(assistantErrorRule.includes('background: transparent;'));
+    assert.ok(assistantErrorRule.includes('border: none;'));
+    assert.ok(assistantErrorRule.includes('border-radius: 0;'));
+    assert.ok(chatErrorRule.includes('background: transparent;'));
+    assert.ok(chatErrorRule.includes('border-radius: 0;'));
+    assert.ok(chatErrorRule.includes('box-shadow: none;'));
+});
+
+test('chat UI keeps late user messages below active tool output while waiting for next request', () => {
+    const html = readFileSync('src/mindcraft/public/index.html', 'utf8');
+    const renderChatTurn = html.slice(html.indexOf('function renderChatTurn'), html.indexOf('function renderBranchDecision'));
+
+    assert.ok(renderChatTurn.includes('const inlineHistory = renderInlineHistoryMessages(turn);'));
+    assert.ok(renderChatTurn.includes("const inlineHistoryBeforeAssistant = turn.toolRuns.length ? '' : inlineHistory;"));
+    assert.ok(renderChatTurn.includes("const inlineHistoryAfterAssistant = turn.toolRuns.length ? inlineHistory : '';"));
+    assert.ok(renderChatTurn.indexOf('${renderAssistantWorkMessage(turn, index)}') < renderChatTurn.indexOf('${inlineHistoryAfterAssistant}'));
+});
+
+test('runtime chat UI batches live trace renders and keeps a cached event-key index', () => {
+    const html = readFileSync('src/mindcraft/public/index.html', 'utf8');
+    const traceHandler = html.slice(html.indexOf("socket.on('agent-trace'"), html.indexOf('// Subscribe to aggregated state updates'));
+    const appendChatEvents = html.slice(html.indexOf('function appendChatEvents'), html.indexOf('function getChatEventKey'));
+
+    assert.ok(html.includes('const agentChatEventKeys = {};'));
+    assert.ok(html.includes('const pendingChatPanelRenders = {};'));
+    assert.ok(html.includes('function scheduleChatPanelRender(name, options = {})'));
+    assert.ok(html.includes('window.requestAnimationFrame || (callback => window.setTimeout(callback, 16))'));
+    assert.ok(traceHandler.includes('scheduleChatPanelRender(agentName);'));
+    assert.equal(traceHandler.includes('renderChatPanel(agentName);'), false);
+    assert.ok(appendChatEvents.includes('const existingKeys = getAgentChatEventKeys(name);'));
+    assert.equal(appendChatEvents.includes('new Set(agentChatEvents[name].map(getChatEventKey))'), false);
+});
+
+test('runtime chat UI lazily hydrates JSON payload DOM only when details are open', () => {
+    const html = readFileSync('src/mindcraft/public/index.html', 'utf8');
+    const renderDetails = html.slice(html.indexOf('function renderDetails'), html.indexOf('function registerChatJsonPayload'));
+
+    assert.ok(html.includes('const chatDetailPayloads = new Map();'));
+    assert.ok(html.includes('function enableChatLazyDetails(panel)'));
+    assert.ok(html.includes('function hydrateChatJsonContainers(root)'));
+    assert.ok(html.includes('function renderLazyChatJsonContainer(payloadId)'));
+    assert.ok(renderDetails.includes('registerChatJsonPayload(label, value, detailId)'));
+    assert.ok(renderDetails.includes('renderLazyChatJsonContainer(payloadId)'));
+    assert.equal(renderDetails.includes('<pre class="chat-json">${escapeHTML(json)}</pre>'), false);
+});
+
+test('runtime chat JSON hydration does not insert whitespace-only line boxes before payloads', () => {
+    const html = readFileSync('src/mindcraft/public/index.html', 'utf8');
+    const renderJson = html.slice(html.indexOf('function renderChatJsonPayloadHTML'), html.indexOf('function getChatDetailId'));
+
+    assert.ok(renderJson.includes('return `<div class="chat-json-wrap"><button'));
+    assert.ok(renderJson.includes('<pre class="chat-json">${escapeHTML(json)}</pre></div>`;'));
+    assert.equal(renderJson.includes('return `\\n'), false);
+});
+
+test('running tool details do not preserve template whitespace as large blank rows', () => {
+    const html = readFileSync('src/mindcraft/public/index.html', 'utf8');
+
+    assert.ok(html.includes('.chat-tool-output-detail.chat-tool-result'));
+    assert.ok(html.includes('white-space: normal;'));
+    assert.ok(html.includes('.chat-tool-output-extra {'));
+    assert.ok(html.includes('flex-direction: column;'));
+    assert.ok(html.includes('.chat-tool-output-extra > .chat-details'));
+});
+
+test('runtime status UI avoids rebuilding inventory and armor DOM when state is unchanged', () => {
+    const html = readFileSync('src/mindcraft/public/index.html', 'utf8');
+
+    assert.ok(html.includes('const agentUiRenderCache = {};'));
+    assert.ok(html.includes('function setTextIfChanged(element, text)'));
+    assert.ok(html.includes('function getAgentUiRenderCache(name)'));
+    assert.ok(html.includes('if (renderCache.armorKey !== armorKey)'));
+    assert.ok(html.includes('if (renderCache.inventoryKey === inventoryKey) return;'));
+});
+
 test('New Agent forms hide hidden settings and keep profile upload separate', () => {
     const html = readFileSync('src/mindcraft/public/index.html', 'utf8');
 
@@ -668,7 +954,8 @@ test('chat UI projection suppresses history turns duplicated by the following re
 
     assert.ok(projector.includes('class ChatTraceProjector'));
     assert.ok(projector.includes('takePendingHistoryOnlyTurn()'));
-    assert.ok(projector.includes('isHistoryOnlyProjectionTurn(this.current)'));
+    assert.ok(projector.includes('const pending = this.thread.turns[this.thread.turns.length - 1];'));
+    assert.ok(projector.includes('isHistoryOnlyProjectionTurn(pending)'));
     assert.ok(projector.includes('this.thread.turns.pop()'));
     assert.ok(projector.includes('removeRequestIncludedHistory(turn, requestMessages)'));
     assert.ok(projector.includes("callHelper('isHistoryTurnIncludedInRequest', historyEvent.turn, requestMessages)"));

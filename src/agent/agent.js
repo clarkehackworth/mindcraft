@@ -295,9 +295,17 @@ export class Agent {
 
     _shouldBatchHumanMessage(source, message, options={}) {
         if (options?.transient) return false;
-        const self_prompt = source === 'system' || source === this.name;
-        if (self_prompt || convoManager.isOtherAgent(source)) return false;
+        if (!this._isPriorityHumanSource(source)) return false;
         return !containsCommand(message);
+    }
+
+    _isPriorityHumanSource(source) {
+        const self_prompt = source === 'system' || source === this.name;
+        return !self_prompt && !convoManager.isOtherAgent(source);
+    }
+
+    _hasQueuedPriorityHumanMessage() {
+        return (this.human_message_queue || []).some(item => this._isPriorityHumanSource(item.source));
     }
 
     _enqueueHumanMessage(source, message, max_responses=null, options={}) {
@@ -309,12 +317,8 @@ export class Agent {
         });
         this.message_interrupt_epoch = (this.message_interrupt_epoch || 0) + 1;
         this.human_message_queue.push({ source, message, max_responses, options, resolveQueued, rejectQueued });
-        if ((this.active_message_handlers || 0) > 0) {
-            const previousInterrupt = this.human_message_interrupt_promise || Promise.resolve();
-            this.human_message_interrupt_promise = previousInterrupt
-                .catch(error => console.warn('Failed to interrupt active turn for new user message:', error))
-                .then(() => this._interruptActiveTurnForNewHumanMessage())
-                .catch(error => console.warn('Failed to interrupt active turn for new user message:', error));
+        if (this._hasQueuedPriorityHumanMessage()) {
+            this._schedulePriorityHumanMessageInterrupt();
         }
         if (!this.human_message_flush_timer) {
             this.human_message_flush_timer = setTimeout(() => {
@@ -324,6 +328,14 @@ export class Agent {
             }, 0);
         }
         return queuedPromise;
+    }
+
+    _schedulePriorityHumanMessageInterrupt() {
+        const previousInterrupt = this.human_message_interrupt_promise || Promise.resolve();
+        this.human_message_interrupt_promise = previousInterrupt
+            .catch(error => console.warn('Failed to interrupt active turn for new user/admin message:', error))
+            .then(() => this._interruptActiveTurnForNewHumanMessage())
+            .catch(error => console.warn('Failed to interrupt active turn for new user/admin message:', error));
     }
 
     async _flushHumanMessageQueue() {
@@ -358,9 +370,18 @@ export class Agent {
     }
 
     async _interruptActiveTurnForNewHumanMessage() {
-        this.abortActiveLLMRequest('Interrupted by newer user message.');
-        const closed = await this.finishInterruptedNativeToolCalls('Tool interrupted by newer user message.');
-        if (closed > 0) {
+        this.abortActiveLLMRequest('Interrupted by newer user/admin message.');
+        const actionWasExecuting = Boolean(this.actions?.executing);
+        if (actionWasExecuting) {
+            if (typeof this.actions.stop === 'function') {
+                await this.actions.stop();
+            }
+            else if (this.bot) {
+                this.requestInterrupt();
+            }
+        }
+        const closed = await this.finishInterruptedNativeToolCalls('Tool interrupted by newer user/admin message.');
+        if (closed > 0 && !actionWasExecuting && this.bot && typeof this.requestInterrupt === 'function') {
             this.requestInterrupt();
         }
     }
@@ -639,6 +660,10 @@ export class Agent {
             await this.history.addNativeToolCall(toolCall, undefined, metadata);
             this._trackActiveNativeToolCall(toolCall);
             this.routeResponse(source, display);
+            if (shouldAbort()) {
+                await this._completeActiveNativeToolCall(toolCall, 'Tool call interrupted before execution by a newer message, stop command, or shutdown.');
+                break;
+            }
 
             console.log(`[native-tool] calling ${commandName} args=${formatToolArgsForLog(toolCall.arguments)}`);
             const execute_res = await executeCommandToolCall(this, toolCall);

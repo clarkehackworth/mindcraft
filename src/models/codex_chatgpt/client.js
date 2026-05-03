@@ -100,6 +100,7 @@ export class CodexChatGPT {
         this.responsesWebSocketDisabled = transport === 'http' || transport === 'https';
         this.responsesWebSocket = null;
         this.responsesWebSocketHeaders = null;
+        this.responsesWebSocketQueue = Promise.resolve();
         this.responsesWebSocketIdleTimeoutMs = Number.parseInt(this.params.responsesWebSocketIdleTimeoutMs || this.params.responses_websocket_idle_timeout_ms || DEFAULT_WEBSOCKET_IDLE_TIMEOUT_MS, 10);
         delete this.params.transport;
         delete this.params.codexTransport;
@@ -159,7 +160,7 @@ export class CodexChatGPT {
             this.rememberTurnState(options, response);
 
             const parsed = await parseCodexResponsesSse(await response.text());
-            this.rememberResponseContinuity(this.lastSentResponsesOptions || options, this.lastSentResponsesBody || body, parsed);
+            this.rememberResponseContinuity(response.codexSentOptions || options, response.codexSentBody || body, parsed);
             console.log('Received.');
             setLastTokenUsage(this, parsed.usage);
             this.lastThinking = parsed.thinking || '';
@@ -250,7 +251,7 @@ export class CodexChatGPT {
         this.lastSentResponsesOptions = options;
         if (this.useResponsesWebSocket && !this.responsesWebSocketDisabled) {
             try {
-                return await this.fetchResponsesWebSocket(endpoint, body, auth, options);
+                return await this.enqueueResponsesWebSocketRequest(() => this.fetchResponsesWebSocket(endpoint, body, auth, options));
             } catch (err) {
                 if (isAbortError(err)) throw err;
                 this.closeResponsesWebSocket();
@@ -271,12 +272,25 @@ export class CodexChatGPT {
         }
         this.lastSentResponsesBody = httpBody;
         this.lastSentResponsesOptions = options;
-        return await codexFetch(endpoint, {
+        const response = await codexFetch(endpoint, {
             method: 'POST',
             headers: this.buildHeaders(auth, options),
             body: JSON.stringify(httpBody),
             signal: options?.signal
         });
+        return attachSentResponsesMetadata(response, httpBody, options);
+    }
+
+    async enqueueResponsesWebSocketRequest(task) {
+        const previous = this.responsesWebSocketQueue.catch(() => {});
+        let release;
+        this.responsesWebSocketQueue = new Promise(resolve => { release = resolve; });
+        await previous;
+        try {
+            return await task();
+        } finally {
+            release?.();
+        }
     }
 
     async fetchResponsesWebSocket(endpoint, body, auth, options = {}) {
@@ -298,10 +312,10 @@ export class CodexChatGPT {
                 this.responsesWebSocketHeaders = null;
             }
         });
-        return new Response(responseText, {
+        return attachSentResponsesMetadata(new Response(responseText, {
             status: 200,
             headers: this.responsesWebSocketHeaders || {}
-        });
+        }), wsBody, wsOptions);
     }
 
     async ensureResponsesWebSocket(endpoint, auth, options = {}) {
@@ -522,3 +536,9 @@ export {
     toCodexResponseItem,
     toCodexResponsesTools
 } from './protocol.js';
+
+function attachSentResponsesMetadata(response, body, options = {}) {
+    response.codexSentBody = body;
+    response.codexSentOptions = options;
+    return response;
+}

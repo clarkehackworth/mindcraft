@@ -178,6 +178,12 @@ class ChatTraceProjector {
     }
 
     addHistoryTurn(event) {
+        if (shouldAppendAsPendingHistoryTurn(this.current, event)) {
+            const pending = this.ensurePendingHistoryTurn();
+            pending.historyMessages.push(event);
+            this.updateTurnProjection(pending);
+            return;
+        }
         const turn = this.ensureTurn();
         turn.historyMessages.push(event);
         this.updateTurnProjection(turn);
@@ -225,10 +231,20 @@ class ChatTraceProjector {
         }
     }
 
+    ensurePendingHistoryTurn() {
+        const last = this.thread.turns[this.thread.turns.length - 1];
+        if (isHistoryOnlyProjectionTurn(last)) return last;
+        const pending = this.createTurn();
+        this.thread.turns.push(pending);
+        return pending;
+    }
+
     takePendingHistoryOnlyTurn() {
-        if (!isHistoryOnlyProjectionTurn(this.current)) return [];
-        const pendingHistoryMessages = this.current.historyMessages;
+        const pending = this.thread.turns[this.thread.turns.length - 1];
+        if (!isHistoryOnlyProjectionTurn(pending)) return [];
+        const pendingHistoryMessages = pending.historyMessages;
         this.thread.turns.pop();
+        if (this.current === pending) this.current = null;
         return pendingHistoryMessages;
     }
 
@@ -299,6 +315,13 @@ function isHistoryOnlyProjectionTurn(turn) {
         && (!turn.errors || turn.errors.length === 0)
         && Array.isArray(turn.historyMessages)
         && turn.historyMessages.length > 0;
+}
+
+function shouldAppendAsPendingHistoryTurn(currentTurn, event) {
+    const role = event?.turn?.role;
+    if (role !== 'user') return false;
+    if (!currentTurn || isHistoryOnlyProjectionTurn(currentTurn)) return false;
+    return Boolean(currentTurn.response || currentTurn.errors?.length || currentTurn.toolRuns?.length);
 }
 
 function shouldRenderInlineHistoryEvent(event, requestMessages, hasToolRuns) {

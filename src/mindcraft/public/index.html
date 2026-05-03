@@ -369,8 +369,14 @@
             background: #161616;
         }
         .chat-card.error {
-            background: #1a1212;
-            border-color: #5d2626;
+            background: transparent;
+            border-color: rgba(255,255,255,0.08);
+            border-left: none;
+            border-right: none;
+            border-bottom: none;
+            border-radius: 0;
+            box-shadow: none;
+            padding: 8px 0 9px;
         }
         .chat-card.request::before { background: #7f7f7f; }
         .chat-card.turn-card::before,
@@ -970,8 +976,8 @@
             font-style: italic;
         }
         .agent-bubble.error {
-            background: #1a1212;
-            border-color: #5d2626;
+            background: transparent;
+            border-color: transparent;
         }
 
         /* Chat polish: keep the agent trace useful without looking like a generated demo UI. */
@@ -1255,10 +1261,10 @@
             padding: 2px 0 0;
         }
         .agent-message.assistant-message .agent-bubble.error {
-            background: #1a1212;
-            border: 1px solid #5d2626;
-            border-radius: 10px;
-            padding: 10px 12px;
+            background: transparent;
+            border: none;
+            border-radius: 0;
+            padding: 0;
         }
         .agent-message.assistant-message .agent-bubble-label {
             color: #b8b8b8;
@@ -1277,6 +1283,19 @@
         }
         .agent-message.assistant-message .agent-bubble-meta {
             margin-bottom: 4px;
+        }
+        .agent-bubble-meta {
+            color: #626262;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 10px;
+            font-style: italic;
+            font-weight: 300;
+        }
+        .chat-token-usage {
+            color: #626262;
+            font-size: 1em;
+            font-style: inherit;
+            font-weight: inherit;
         }
         .agent-message.assistant-message .agent-text {
             background: transparent;
@@ -1540,6 +1559,9 @@
             cursor: pointer;
             color: #777;
         }
+        .chat-tool-output-detail.chat-tool-result {
+            white-space: normal;
+        }
         .chat-tool-output-detail > summary {
             list-style: none;
         }
@@ -1553,7 +1575,15 @@
             cursor: text;
         }
         .chat-tool-output-extra {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
             margin: 4px 0 0 18px;
+            white-space: normal;
+        }
+        .chat-tool-output-extra > .chat-details,
+        .chat-tool-output-extra > .chat-internal-tool-events {
+            margin-top: 0;
         }
         .chat-tool-result::before { content: none; }
         .agent-step.tool-running .agent-step-name,
@@ -1566,6 +1596,72 @@
         @keyframes toolTextOpacityWave {
             0%, 100% { opacity: .45; }
             50% { opacity: 1; }
+        }
+
+        .agent-error-line {
+            display: grid;
+            grid-template-columns: 16px max-content minmax(0, 1fr) auto;
+            column-gap: 6px;
+            align-items: baseline;
+            min-height: 22px;
+            color: #9a9a9a;
+        }
+        .agent-error-dot {
+            grid-column: 1;
+            justify-self: center;
+            color: #9d6a6a;
+            font-size: 11px;
+            line-height: 1;
+        }
+        .agent-error-label {
+            grid-column: 2;
+            color: #e3e3e3;
+            font: 650 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            white-space: nowrap;
+        }
+        .agent-error-status {
+            grid-column: 4;
+            color: #a87f7f;
+            font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            white-space: nowrap;
+        }
+        .agent-error-body {
+            display: grid;
+            grid-template-columns: 18px minmax(0, 1fr);
+            padding: 2px 0 0 20px;
+            color: #8f8f8f;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            line-height: 1.45;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+        }
+        .agent-error-glyph {
+            color: #5f5f5f;
+            white-space: pre;
+        }
+        .agent-error-text {
+            min-width: 0;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+        }
+        .agent-error-detail {
+            margin: 2px 0 0 38px;
+        }
+        .agent-error-detail .chat-details {
+            margin: 0;
+            padding: 0;
+            border-top: none;
+        }
+        .agent-error-detail .chat-details summary {
+            color: #6f6f6f;
+            font-size: 12px;
+        }
+        .agent-error-detail .chat-details[open] {
+            margin-top: 6px;
+        }
+        .agent-error-detail .chat-details[open] .chat-json {
+            margin: 6px 0 0 0;
+            max-height: 220px;
         }
 
 
@@ -2033,53 +2129,173 @@
         }
 
 
-        /* Ephemeral branch decisions are observability-only: rendered outside the main conversation branch. */
+        /* Ephemeral branch decisions are observability-only; render them as a flat router trace, not as normal ReAct work. */
         .chat-branch-event {
-            margin: 10px 0 14px 34px;
-            max-width: min(860px, 92%);
-            color: #9a9a9a;
+            position: relative;
+            width: 100%;
+            max-width: none;
+            margin: 0;
+            padding: 8px 0 9px;
+            border-top: 1px solid rgba(190, 190, 190, 0.12);
+            color: #8f8f8f;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 11px;
+            font-style: italic;
+            font-weight: 300;
+            line-height: 1.5;
         }
-        .chat-branch-card {
-            border-left: 2px solid #5b5b5b;
-            padding: 7px 0 8px 12px;
-            background: linear-gradient(90deg, rgba(255,255,255,0.035), rgba(255,255,255,0));
+        .chat-branch-event::before {
+            content: '↳';
+            position: absolute;
+            top: 8px;
+            left: 0;
+            color: #6a6a6a;
+            font-weight: 300;
         }
-        .chat-branch-title {
+        .chat-branch-top {
             display: flex;
             align-items: baseline;
+            justify-content: space-between;
+            gap: 12px;
             flex-wrap: wrap;
+        }
+        .chat-branch-top::before {
+            content: '↳';
+            color: #6a6a6a;
+            font-weight: 300;
+        }
+        .chat-branch-kind {
+            color: #8f8f8f;
+            font-weight: 300;
+        }
+        .chat-branch-route {
+            color: #777;
+            font-weight: 300;
+        }
+        .chat-branch-status {
+            color: #a8a8a8;
+            font-size: 11px;
+            font-weight: 300;
+        }
+        .chat-branch-status--respond,
+        .chat-branch-status--ignore,
+        .chat-branch-status--pending,
+        .chat-branch-status--error,
+        .chat-branch-status--invalid { color: #a8a8a8; }
+        .chat-branch-result-detail {
+            color: #777;
+            font-size: 11px;
+            font-weight: 300;
+        }
+        .chat-branch-meta {
+            color: #737373;
+            font-weight: 300;
+            margin-left: auto;
+        }
+        .chat-branch-request-meta {
+            display: flex;
+            align-items: baseline;
+            flex-wrap: nowrap;
+            justify-content: flex-end;
             gap: 6px;
-            color: #858585;
-            font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            margin-left: auto;
+            padding-left: 0;
+            color: #626262;
+            font-size: 10px;
+            font-style: italic;
+            font-weight: 300;
         }
-        .chat-branch-title strong {
-            color: #cfcfcf;
-            font: 600 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        .chat-branch-request-meta span {
+            white-space: nowrap;
         }
-        .chat-branch-question {
-            margin-top: 7px;
-            color: #bdbdbd;
-            white-space: pre-wrap;
+        .chat-branch-request-meta span + span::before {
+            content: '· ';
+            color: #626262;
+        }
+        .chat-branch-say {
+            margin-top: 5px;
+            padding-left: 20px;
+            color: #a8a8a8;
+            font-size: 11px;
+            font-weight: 300;
+            min-width: 0;
             overflow-wrap: anywhere;
-            line-height: 1.45;
+        }
+        .chat-branch-speaker {
+            color: #aaa;
+            font-size: 11px;
+            font-weight: 300;
+        }
+        .chat-branch-bottom {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 16px;
+            margin-top: 5px;
+            padding-left: 20px;
+            white-space: nowrap;
         }
         .chat-branch-decision {
-            margin-top: 6px;
-            color: #d7d7d7;
-            font-weight: 600;
-        }
-        .chat-branch-decision .chat-muted {
-            font-weight: 400;
-            margin-left: 6px;
-        }
-        .chat-branch-event .chat-details {
-            margin-top: 7px;
-            padding-top: 6px;
-            border-top-color: rgba(255,255,255,0.05);
+            display: flex;
+            align-items: baseline;
+            gap: 8px;
+            flex: 0 0 auto;
         }
         .chat-branch-error {
-            margin-top: 6px;
-            color: #d79a9a;
+            margin-top: 3px;
+            padding-left: 20px;
+            color: #a8a8a8;
+            font-size: 11px;
+            font-weight: 300;
+        }
+        .chat-branch-error::before {
+            content: 'error: ';
+            color: #747474;
+            text-transform: lowercase;
+        }
+        .chat-branch-payloads {
+            margin-top: 5px;
+            padding-left: 0;
+            padding-top: 0;
+            border-top: 0;
+        }
+        .chat-branch-payloads > summary {
+            display: block;
+            cursor: pointer;
+            list-style: none;
+        }
+        .chat-branch-payloads > summary::-webkit-details-marker {
+            display: none;
+        }
+        .chat-branch-payload-list {
+            min-width: 0;
+            margin-top: 5px;
+            padding-left: 20px;
+        }
+        .chat-branch-payload-entry {
+            margin-top: 5px;
+            font-size: 11px;
+        }
+        .chat-branch-payload-entry-title {
+            color: #777;
+            font-size: 11px;
+            font-style: italic;
+            font-weight: 300;
+        }
+        .chat-branch-payload-entry .chat-json {
+            font-size: 11px;
+            font-style: normal;
+            font-weight: 300;
+            max-height: 260px;
+        }
+        @media (max-width: 820px) {
+            .chat-branch-bottom {
+                gap: 8px;
+                overflow-x: auto;
+            }
+            .chat-branch-request-meta {
+                margin-left: 0;
+            }
         }
 
 
@@ -2161,10 +2377,15 @@
         const agentSettings = {};
         const agentLastMessage = {};
         const agentChatEvents = {};
+        const agentChatEventKeys = {};
+        const agentUiRenderCache = {};
+        const chatDetailPayloads = new Map();
+        const pendingChatPanelRenders = {};
         const chatHistoryLoadState = {};
         const inventoryOpen = {};
         const chatOpen = {};
         let currentAgents = [];
+        let chatPanelRenderFrame = null;
         const MAX_CHAT_EVENTS = 5000;
 
         // Item texture helpers (use PrismarineJS minecraft-assets CDN with graceful fallbacks)
@@ -2210,6 +2431,16 @@
         }
         function prettyItemName(name) {
             return String(name || '').replace(/_/g, ' ');
+        }
+
+        function setTextIfChanged(element, text) {
+            if (!element) return;
+            if (element.textContent !== text) element.textContent = text;
+        }
+
+        function getAgentUiRenderCache(name) {
+            if (!agentUiRenderCache[name]) agentUiRenderCache[name] = {};
+            return agentUiRenderCache[name];
         }
 
         function iconHTMLForItem(itemName, title, agentName) {
@@ -2382,7 +2613,7 @@
 
         socket.on('agent-trace', (agentName, event) => {
             appendChatEvents(agentName, [event]);
-            renderChatPanel(agentName);
+            scheduleChatPanelRender(agentName);
         });
 
         // Subscribe to aggregated state updates (re-sent on each connect)
@@ -2393,9 +2624,10 @@
                 const healthEl = document.getElementById(`health-${name}`);
                 if (st && !st.error) {
                     const gp = st.gameplay || {};
+                    const renderCache = getAgentUiRenderCache(name);
                     if (healthEl && typeof gp.health === 'number') {
                         const hMax = typeof gp.healthMax === 'number' ? gp.healthMax : 20;
-                        healthEl.textContent = `health: ${gp.health}/${hMax}`;
+                        setTextIfChanged(healthEl, `health: ${gp.health}/${hMax}`);
                     }
                     const posEl = document.getElementById(`pos-${name}`);
                     const hunEl = document.getElementById(`hunger-${name}`);
@@ -2407,48 +2639,53 @@
                     const actionEl = document.getElementById(`action-${name}`);
                     if (posEl && gp.position) {
                         const p = gp.position;
-                        posEl.textContent = `x ${p.x}, y ${p.y}, z ${p.z}`;
+                        setTextIfChanged(posEl, `x ${p.x}, y ${p.y}, z ${p.z}`);
                     }
                     if (hunEl && typeof gp.hunger === 'number') {
                         const fMax = typeof gp.hungerMax === 'number' ? gp.hungerMax : 20;
-                        hunEl.textContent = `hunger: ${gp.hunger}/${fMax}`;
+                        setTextIfChanged(hunEl, `hunger: ${gp.hunger}/${fMax}`);
                     }
-                    if (bioEl && gp.biome) bioEl.textContent = `biome: ${gp.biome}`;
-                    if (modeEl && gp.gamemode) modeEl.textContent = `gamemode: ${gp.gamemode}`;
+                    if (bioEl && gp.biome) setTextIfChanged(bioEl, `biome: ${gp.biome}`);
+                    if (modeEl && gp.gamemode) setTextIfChanged(modeEl, `gamemode: ${gp.gamemode}`);
                     if (itemsEl && st.inventory) {
                         const used = st.inventory.stacksUsed ?? 0;
                         const total = st.inventory.totalSlots ?? 0;
-                        itemsEl.textContent = `inventory slots: ${used}/${total}`;
+                        setTextIfChanged(itemsEl, `inventory slots: ${used}/${total}`);
                     }
                     if (equippedEl && st.inventory?.equipment) {
                         const e = st.inventory.equipment;
-                        equippedEl.textContent = `equipped: ${e.mainHand || 'none'}`;
+                        setTextIfChanged(equippedEl, `equipped: ${e.mainHand || 'none'}`);
                     }
                     const armorEl = document.getElementById(`armor-${name}`);
                     if (armorEl && st.inventory?.equipment) {
                         const e = st.inventory.equipment;
-                        const parts = [];
-                        parts.push(e.helmet ? iconHTMLForItem(e.helmet, `head: ${prettyItemName(e.helmet)}`, name) : emptySlotHTML('head'));
-                        parts.push(e.chestplate ? iconHTMLForItem(e.chestplate, `chest: ${prettyItemName(e.chestplate)}`, name) : emptySlotHTML('chest'));
-                        parts.push(e.leggings ? iconHTMLForItem(e.leggings, `legs: ${prettyItemName(e.leggings)}`, name) : emptySlotHTML('legs'));
-                        parts.push(e.boots ? iconHTMLForItem(e.boots, `feet: ${prettyItemName(e.boots)}`, name) : emptySlotHTML('feet'));
-                        // Main hand for quick glance
-                        parts.push(e.mainHand ? iconHTMLForItem(e.mainHand, `main hand: ${prettyItemName(e.mainHand)}`, name) : emptySlotHTML('main hand'));
-                        armorEl.innerHTML = `<div class="armor-grid">${parts.join('')}</div>`;
+                        const armorKey = [e.helmet, e.chestplate, e.leggings, e.boots, e.mainHand].map(value => value || '').join('|');
+                        if (renderCache.armorKey !== armorKey) {
+                            const parts = [];
+                            parts.push(e.helmet ? iconHTMLForItem(e.helmet, `head: ${prettyItemName(e.helmet)}`, name) : emptySlotHTML('head'));
+                            parts.push(e.chestplate ? iconHTMLForItem(e.chestplate, `chest: ${prettyItemName(e.chestplate)}`, name) : emptySlotHTML('chest'));
+                            parts.push(e.leggings ? iconHTMLForItem(e.leggings, `legs: ${prettyItemName(e.leggings)}`, name) : emptySlotHTML('legs'));
+                            parts.push(e.boots ? iconHTMLForItem(e.boots, `feet: ${prettyItemName(e.boots)}`, name) : emptySlotHTML('feet'));
+                            // Main hand for quick glance
+                            parts.push(e.mainHand ? iconHTMLForItem(e.mainHand, `main hand: ${prettyItemName(e.mainHand)}`, name) : emptySlotHTML('main hand'));
+                            armorEl.innerHTML = `<div class="armor-grid">${parts.join('')}</div>`;
+                            renderCache.armorKey = armorKey;
+                        }
                     }
                     if (actionEl && st.action) {
-                        actionEl.textContent = `${st.action.current || 'Idle'}`;
+                        setTextIfChanged(actionEl, `${st.action.current || 'Idle'}`);
                     }
                     if (invGrid && st.inventory?.counts) {
                         const counts = st.inventory.counts;
-                        const entries = Object.entries(counts);
+                        const entries = Object.entries(counts).sort((a, b) => a[0].localeCompare(b[0]));
+                        const inventoryKey = entries.map(([k, v]) => `${k}:${v}`).join('|');
+                        if (renderCache.inventoryKey === inventoryKey) return;
+                        renderCache.inventoryKey = inventoryKey;
                         if (entries.length) {
                             invGrid.classList.remove('empty');
                             invGrid.innerHTML = entries
-                                .sort((a, b) => a[0].localeCompare(b[0]))
                                 .map(([k, v]) => {
                                     const title = prettyItemName(k);
-                                    const safeAttr = k.replace(/'/g, "\\'");
                                     const iconCandidates = buildIconUrlCandidates(k, name);
                                     const icon = iconCandidates[0];
                                     return `
@@ -2484,7 +2721,7 @@
         function appendChatEvents(name, events, { prepend = false } = {}) {
             if (!Array.isArray(events) || events.length === 0) return;
             if (!agentChatEvents[name]) agentChatEvents[name] = [];
-            const existingKeys = new Set(agentChatEvents[name].map(getChatEventKey));
+            const existingKeys = getAgentChatEventKeys(name);
             const uniqueEvents = events.filter(event => {
                 const key = getChatEventKey(event);
                 if (existingKeys.has(key)) return false;
@@ -2494,11 +2731,23 @@
             if (!uniqueEvents.length) return;
             if (prepend) agentChatEvents[name].unshift(...uniqueEvents);
             else agentChatEvents[name].push(...uniqueEvents);
-            if (agentChatEvents[name].length > MAX_CHAT_EVENTS) {
-                const overflow = agentChatEvents[name].length - MAX_CHAT_EVENTS;
-                if (prepend) agentChatEvents[name].splice(MAX_CHAT_EVENTS);
-                else agentChatEvents[name].splice(0, overflow);
+            trimChatEvents(name);
+        }
+
+        function getAgentChatEventKeys(name) {
+            if (!agentChatEventKeys[name]) {
+                agentChatEventKeys[name] = new Set((agentChatEvents[name] || []).map(getChatEventKey));
             }
+            return agentChatEventKeys[name];
+        }
+
+        function trimChatEvents(name) {
+            const events = agentChatEvents[name] || [];
+            if (events.length <= MAX_CHAT_EVENTS) return;
+            const overflow = events.length - MAX_CHAT_EVENTS;
+            const removed = events.splice(0, overflow);
+            const keys = getAgentChatEventKeys(name);
+            removed.forEach(event => keys.delete(getChatEventKey(event)));
         }
 
         function getChatEventKey(event) {
@@ -2756,6 +3005,24 @@
             }
         };
 
+        function scheduleChatPanelRender(name, options = {}) {
+            if (!name) return;
+            const previous = pendingChatPanelRenders[name] || {};
+            pendingChatPanelRenders[name] = {
+                forceScroll: Boolean(previous.forceScroll || options.forceScroll)
+            };
+            if (chatPanelRenderFrame !== null) return;
+            const scheduleFrame = window.requestAnimationFrame || (callback => window.setTimeout(callback, 16));
+            chatPanelRenderFrame = scheduleFrame(flushChatPanelRenders);
+        }
+
+        function flushChatPanelRenders() {
+            chatPanelRenderFrame = null;
+            const queued = { ...pendingChatPanelRenders };
+            Object.keys(pendingChatPanelRenders).forEach(name => delete pendingChatPanelRenders[name]);
+            Object.entries(queued).forEach(([name, options]) => renderChatPanel(name, options));
+        }
+
         function renderChatPanel(name, options = {}) {
             const panel = document.getElementById(`chatPanel-${name}`);
             if (!panel || chatOpen[name] !== true) return;
@@ -2769,6 +3036,7 @@
             const openDetailIds = getOpenChatDetailIds(panel);
             panel.innerHTML = renderChatThread(buildChatThread(events));
             restoreOpenChatDetails(panel, openDetailIds);
+            enableChatLazyDetails(panel);
             enableChatDetailBodyToggle(panel);
             enableChatCopyButtons(panel);
             if (shouldAutoScroll) panel.scrollTop = panel.scrollHeight;
@@ -2806,6 +3074,28 @@
             });
         }
 
+        function enableChatLazyDetails(panel) {
+            hydrateOpenChatJsonContainers(panel);
+            panel.querySelectorAll('details').forEach(details => {
+                details.addEventListener('toggle', () => {
+                    if (!details.open) return;
+                    hydrateChatJsonContainers(details);
+                    enableChatCopyButtons(details);
+                });
+            });
+        }
+
+        function hydrateOpenChatJsonContainers(root) {
+            root.querySelectorAll('details[open]').forEach(details => hydrateChatJsonContainers(details));
+        }
+
+        function hydrateChatJsonContainers(root) {
+            root.querySelectorAll('.chat-json-wrap[data-chat-json-id]').forEach(container => {
+                if (!chatDetailPayloads.has(container.dataset.chatJsonId)) return;
+                const json = JSON.stringify(chatDetailPayloads.get(container.dataset.chatJsonId), null, 2);
+                container.outerHTML = renderChatJsonPayloadHTML(json);
+            });
+        }
 
         function enableChatDetailBodyToggle(panel) {
             panel.querySelectorAll('details.chat-tool-output-detail[data-chat-detail-id]').forEach(details => {
@@ -2824,6 +3114,8 @@
 
         function enableChatCopyButtons(panel) {
             panel.querySelectorAll('.chat-copy-btn').forEach(button => {
+                if (button.dataset.copyBound === 'true') return;
+                button.dataset.copyBound = 'true';
                 button.addEventListener('click', async event => {
                     event.preventDefault();
                     event.stopPropagation();
@@ -2946,11 +3238,15 @@
             if (!hasRunContent && turn.historyMessages.length) {
                 return `<div class="agent-run-flat restored-run">${renderRestoredHistoryMessages(turn.historyMessages, index)}</div>`;
             }
+            const inlineHistory = renderInlineHistoryMessages(turn);
+            const inlineHistoryBeforeAssistant = turn.toolRuns.length ? '' : inlineHistory;
+            const inlineHistoryAfterAssistant = turn.toolRuns.length ? inlineHistory : '';
             return `
                 <div class="agent-run-flat">
                     ${renderUserInputMessage(turn, index)}
-                    ${renderInlineHistoryMessages(turn)}
+                    ${inlineHistoryBeforeAssistant}
                     ${renderAssistantWorkMessage(turn, index)}
+                    ${inlineHistoryAfterAssistant}
                     ${turn.errors.map(renderInlineError).join('')}
                     ${renderCompactEvent(turn.compacted)}
                 </div>`;
@@ -2971,21 +3267,78 @@
             const scope = request?.cache_scope || request?.cacheScope || response?.cache_scope || response?.cacheScope || request?.tag || response?.tag || 'branch';
             const timestamp = response?.timestamp || request?.timestamp;
             const question = getBranchQuestionText(request);
-            const decision = getBranchDecisionText(response);
-            const tokenUsage = renderTokenUsage(response?.token_usage);
+            const branchMessage = parseBranchQuestion(question);
+            const branchMessageText = normalizeBranchInlineMessage(branchMessage.message);
+            const decision = getBranchDecisionInfo(response, errors);
+            const requestMeta = renderBranchRequestMeta(model, response?.token_usage, timestamp);
             const errorText = errors.map(error => error.error?.message || stringifyChatText(error.error)).filter(Boolean).join('\n');
             return `
                 <div class="chat-branch-event" data-branch-scope="${escapeHTML(scope)}">
-                    <div class="chat-branch-card">
-                        <div class="chat-branch-title"><strong>Branch decision</strong><span>${escapeHTML(scope)}</span><span>Run ${index + 1}</span><span>${escapeHTML(model)}</span><span>${escapeHTML(formatChatTime(timestamp))}</span>${tokenUsage}</div>
-                        ${question ? `<div class="chat-branch-question">${escapeHTML(question)}</div>` : '<div class="chat-branch-question chat-muted">No branch question recorded yet.</div>'}
-                        ${decision ? `<div class="chat-branch-decision">decision: ${escapeHTML(decision)}</div>` : '<div class="chat-branch-decision"><span class="chat-muted">waiting for branch response…</span></div>'}
-                        ${errorText ? `<div class="chat-branch-error">${escapeHTML(limitText(errorText, 300))}</div>` : ''}
-                        ${renderDetails('Branch request payload', request)}
-                        ${renderDetails('Branch response payload', response)}
-                        ${errors.map(error => renderDetails('Branch error payload', error)).join('')}
-                    </div>
+                    <div class="chat-branch-say"><span class="chat-branch-speaker">${escapeHTML(branchMessage.sender || 'unknown')} say:</span> ${branchMessageText ? escapeHTML(branchMessageText) : '<span class="chat-muted">No branch question recorded yet.</span>'}</div>
+                    ${errorText ? `<div class="chat-branch-error">${escapeHTML(limitText(errorText, 300))}</div>` : ''}
+                    ${renderBranchPayloadDetails(request, response, errors, `
+                        <div class="chat-branch-bottom">
+                            <div class="chat-branch-decision">
+                                <span class="chat-branch-route">result</span>
+                                <span class="chat-branch-status chat-branch-status--${escapeHTML(decision.state)}">${escapeHTML(decision.label)}</span>
+                                ${decision.detail ? `<span class="chat-branch-result-detail">${escapeHTML(decision.detail)}</span>` : ''}
+                            </div>
+                            ${requestMeta}
+                        </div>
+                    `)}
                 </div>`;
+        }
+
+        function renderBranchRequestMeta(model, usage, timestamp) {
+            return `
+                <div class="chat-branch-request-meta">
+                    <span>model ${escapeHTML(model || 'model')}</span>
+                    <span>input uncached ${formatTokenCount(usage?.input_uncached)}</span>
+                    <span>input cached ${formatTokenCount(usage?.input_cached)}</span>
+                    <span>output ${formatTokenCount(usage?.output)}</span>
+                    <span>${escapeHTML(formatChatTime(timestamp))}</span>
+                </div>`;
+        }
+
+        function renderBranchPayloadDetails(request, response, errors = [], summary = '') {
+            const details = [
+                renderBranchPayloadBlock('Branch request payload', request),
+                renderBranchPayloadBlock('Branch response payload', response),
+                ...errors.map(error => renderBranchPayloadBlock('Branch error payload', error))
+            ].filter(Boolean).join('');
+            if (!details) return summary;
+            const detailId = getChatDetailId('Branch payloads', response || request || errors[0]);
+            return `
+                <details class="chat-details chat-branch-payloads" data-chat-detail-id="${escapeHTML(detailId)}">
+                    <summary aria-label="branch payload details">${summary}</summary>
+                    <div class="chat-branch-payload-list">${details}</div>
+                </details>`;
+        }
+
+        function renderBranchPayloadBlock(label, value) {
+            if (!value) return '';
+            const payloadId = registerChatJsonPayload(label, value);
+            return `
+                <div class="chat-branch-payload-entry">
+                    <div class="chat-branch-payload-entry-title">${escapeHTML(label)}</div>
+                    ${renderLazyChatJsonContainer(payloadId)}
+                </div>`;
+        }
+
+        function getBranchDecisionInfo(response, errors = []) {
+            if (Array.isArray(errors) && errors.length > 0) return { state: 'error', label: 'error', detail: '' };
+            if (!response) return { state: 'pending', label: 'pending', detail: '' };
+            const toolCalls = getBranchResponseToolCalls(response);
+            if (toolCalls.length) {
+                const names = toolCalls.map(getToolName).filter(Boolean).join(', ') || 'tool';
+                return { state: 'invalid', label: 'invalid', detail: `unexpected tool call: ${names}` };
+            }
+            const decision = getBranchDecisionText(response);
+            const normalized = String(decision || '').trim().toLowerCase();
+            if (normalized.startsWith('respond')) return { state: 'respond', label: 'respond', detail: '' };
+            if (normalized.startsWith('ignore')) return { state: 'ignore', label: 'ignore', detail: '' };
+            if (!normalized) return { state: 'pending', label: 'pending', detail: '' };
+            return { state: 'invalid', label: 'invalid', detail: limitText(decision, 120) };
         }
 
         function getBranchQuestionText(request) {
@@ -2994,9 +3347,31 @@
             return lastUser ? formatChatMessagePreview(lastUser) : '';
         }
 
+        function parseBranchQuestion(text) {
+            const normalized = String(text || '').trim();
+            if (!normalized) return { sender: '', message: '' };
+            const match = normalized.match(/^([^:\n]+):\s*(?:\(FROM OTHER BOT\)\s*)?(?:\n)?([\s\S]*)$/);
+            if (!match) return { sender: 'unknown', message: normalized.replace(/\(FROM OTHER BOT\)/g, '').trim() };
+            return {
+                sender: match[1].trim(),
+                message: match[2].replace(/^\(FROM OTHER BOT\)\s*/i, '').trim()
+            };
+        }
+
+        function normalizeBranchInlineMessage(text) {
+            return String(text || '').replace(/\s*\n\s*/g, ' ').replace(/\s+/g, ' ').trim();
+        }
+
         function getBranchDecisionText(response) {
             const text = extractResponseText(response?.response) || stringifyChatText(response?.response);
             return limitText(String(text || '').trim(), 300);
+        }
+
+        function getBranchResponseToolCalls(response) {
+            const value = response?.response;
+            if (Array.isArray(value?.tool_calls)) return value.tool_calls;
+            if (Array.isArray(value?.native_tool_calls)) return value.native_tool_calls;
+            return [];
         }
 
         function renderCompactEvent(event) {
@@ -3338,13 +3713,21 @@
         }
 
         function renderInlineError(event) {
+            const message = limitText(event.error?.message || stringifyChatText(event.error), 1200);
             return `
-                <div class="agent-message assistant-message">
+                <div class="agent-message assistant-message error-message">
                     <div class="agent-avatar">!</div>
                     <div class="agent-bubble error">
-                        <div class="agent-bubble-label">Error</div>
-                        <div class="agent-text">${escapeHTML(limitText(event.error?.message || stringifyChatText(event.error), 1200))}</div>
-                        ${renderDetails('Error payload', event)}
+                        <div class="agent-error-line">
+                            <span class="agent-error-dot" aria-hidden="true">●</span>
+                            <span class="agent-error-label">Error</span>
+                            <span class="agent-error-status">failed</span>
+                        </div>
+                        <div class="agent-error-body">
+                            <span class="agent-error-glyph" aria-hidden="true">⎿</span>
+                            <span class="agent-error-text">${escapeHTML(message)}</span>
+                        </div>
+                        <div class="agent-error-detail">${renderDetails('Error payload', event)}</div>
                     </div>
                 </div>`;
         }
@@ -3361,15 +3744,26 @@
         function renderDetails(label, value) {
             if (!value) return '';
             const detailId = getChatDetailId(label, value);
-            const json = JSON.stringify(value, null, 2);
+            const payloadId = registerChatJsonPayload(label, value, detailId);
             return `
                 <details class="chat-details" data-chat-detail-id="${escapeHTML(detailId)}">
                     <summary>${escapeHTML(label)}</summary>
-                    <div class="chat-json-wrap">
-                        <button type="button" class="chat-copy-btn" title="Copy JSON" aria-label="Copy JSON">⧉</button>
-                        <pre class="chat-json">${escapeHTML(json)}</pre>
-                    </div>
+                    ${renderLazyChatJsonContainer(payloadId)}
                 </details>`;
+        }
+
+        function registerChatJsonPayload(label, value, preferredId = '') {
+            const payloadId = preferredId || getChatDetailId(label, value);
+            chatDetailPayloads.set(payloadId, value);
+            return payloadId;
+        }
+
+        function renderLazyChatJsonContainer(payloadId) {
+            return `<div class="chat-json-wrap chat-json-lazy" data-chat-json-id="${escapeHTML(payloadId)}"><span class="chat-muted">Open to render payload.</span></div>`;
+        }
+
+        function renderChatJsonPayloadHTML(json) {
+            return `<div class="chat-json-wrap"><button type="button" class="chat-copy-btn" title="Copy JSON" aria-label="Copy JSON">⧉</button><pre class="chat-json">${escapeHTML(json)}</pre></div>`;
         }
 
         function getChatDetailId(label, value) {
@@ -3556,6 +3950,7 @@
 
             // If agentsDiv is empty, do a full render
             if (!agentsDiv.children.length) {
+                agents.forEach(agent => delete agentUiRenderCache[agent.name]);
                 agentsDiv.innerHTML = agents.map(agent => renderAgentCard(agent)).join('');
                 // Update all viewers after initial render
                 setTimeout(() => {
@@ -3574,6 +3969,7 @@
             // Update only changed agents
             changedAgents.forEach(agent => {
                 const el = document.getElementById(`agent-${agent.name}`);
+                delete agentUiRenderCache[agent.name];
                 if (el) {
                     // Update existing card
                     el.outerHTML = renderAgentCard(agent);
@@ -3593,6 +3989,9 @@
                     delete inventoryOpen[name];
                     delete chatHistoryLoadState[name];
                     delete agentChatEvents[name];
+                    delete agentChatEventKeys[name];
+                    delete agentUiRenderCache[name];
+                    delete pendingChatPanelRenders[name];
                     delete chatOpen[name];
                 }
             });
@@ -3622,6 +4021,7 @@
 
             // If agentsDiv is empty, do a full render
             if (!agentsDiv.children.length) {
+                agents.forEach(agent => delete agentUiRenderCache[agent.name]);
                 agentsDiv.innerHTML = agents.map(agent => renderAgentCard(agent)).join('');
                 // Update all viewers after initial render
                 setTimeout(() => {
@@ -3633,6 +4033,7 @@
             // Update only changed agents
             changedAgents.forEach(agent => {
                 const el = document.getElementById(`agent-${agent.name}`);
+                delete agentUiRenderCache[agent.name];
                 if (el) {
                     // Update existing card
                     el.outerHTML = renderAgentCard(agent);
@@ -3652,6 +4053,9 @@
                     delete inventoryOpen[name];
                     delete chatHistoryLoadState[name];
                     delete agentChatEvents[name];
+                    delete agentChatEventKeys[name];
+                    delete agentUiRenderCache[name];
+                    delete pendingChatPanelRenders[name];
                     delete chatOpen[name];
                 }
             });

@@ -403,7 +403,11 @@ export class Prompter {
         this.agent.history.traceLLMRequest('botResponder', this.chat_model, prompt, messages, null, traceMetadata);
         let res = await this.chat_model.sendRequest([], prompt, '***', null, { cacheScope: options.cacheScope || 'botResponder' });
         this.agent.history.traceLLMResponse('botResponder', this.chat_model, res, traceMetadata);
-        return res.trim().toLowerCase() === 'respond';
+        const decision = normalizeBotResponderDecision(res);
+        if (decision !== 'respond' && decision !== 'ignore') {
+            console.warn(`Invalid botResponder decision for ${this.agent.name}: ${decision}`);
+        }
+        return decision === 'respond';
     }
 
     async promptVision(messages, imageBuffer) {
@@ -532,6 +536,14 @@ function extractCodeTaskContent(messages) {
 function stableModelSessionIdentity(parts) {
     const text = JSON.stringify(parts || {});
     return `mindcraft-${createHash('sha256').update(text).digest('hex').slice(0, 24)}`;
+}
+
+export function normalizeBotResponderDecision(response) {
+    if (isNativeToolResponse(response)) return 'invalid_tool_call';
+    const normalized = String(response ?? '').trim().toLowerCase();
+    if (normalized.startsWith('respond')) return 'respond';
+    if (normalized.startsWith('ignore')) return 'ignore';
+    return normalized ? 'invalid' : 'invalid_empty';
 }
 
 function isAbortError(error) {

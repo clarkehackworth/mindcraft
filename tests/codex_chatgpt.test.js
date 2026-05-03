@@ -741,6 +741,66 @@ test('Codex adapter keeps forked WebSocket branches on the shared prompt cache k
     }
 });
 
+test('Codex WebSocket transport serializes concurrent requests to avoid response cross-talk', async () => {
+    const { keysPath, cleanup } = writeTempKeys();
+    const wss = new WebSocketServer({ port: 0 });
+    const payloads = [];
+    const handshakes = [];
+    wss.on('connection', (ws, request) => {
+        handshakes.push(request.headers);
+        ws.on('message', data => {
+            const payload = JSON.parse(data.toString('utf8'));
+            payloads.push(payload);
+            const text = payload.input?.[0]?.content?.[0]?.text || 'unknown';
+            const delay = text === 'slow' ? 40 : 0;
+            setTimeout(() => {
+                ws.send(JSON.stringify({
+                    type: 'response.output_text.delta',
+                    delta: `${text} ok`
+                }));
+                ws.send(JSON.stringify({
+                    type: 'response.completed',
+                    response: {
+                        id: `resp_${text}`,
+                        usage: {
+                            input_tokens: 10,
+                            input_tokens_details: { cached_tokens: 0 },
+                            output_tokens: 2
+                        }
+                    }
+                }));
+            }, delay);
+        });
+    });
+    await new Promise(resolve => wss.once('listening', resolve));
+
+    try {
+        const { port } = wss.address();
+        const model = new CodexChatGPT('gpt-5.5', `http://127.0.0.1:${port}/backend-api/codex`, {
+            keysPath,
+            sessionId: 'session-test',
+            useResponsesWebSocket: true,
+            responsesWebSocketIdleTimeoutMs: 5000
+        });
+
+        const [slow, fast] = await Promise.all([
+            model.sendRequest([{ role: 'user', content: 'slow' }], 'Decide.', '***', null, { cacheScope: 'conversation' }),
+            model.sendRequest([{ role: 'user', content: 'fast' }], 'Decide.', '***', null, { cacheScope: 'botResponder' })
+        ]);
+
+        assert.equal(slow, 'slow ok');
+        assert.equal(fast, 'fast ok');
+        assert.equal(handshakes.length, 1);
+        assert.equal(payloads.length, 2);
+        assert.equal(payloads[0].input[0].content[0].text, 'slow');
+        assert.equal(payloads[1].input[0].content[0].text, 'fast');
+        model.closeResponsesWebSocket();
+    } finally {
+        await new Promise(resolve => wss.close(resolve));
+        cleanup();
+    }
+});
+
 test('Codex adapter does not reuse previous_response_id when non-input fields change', async () => {
     const { keysPath, cleanup } = writeTempKeys();
     const originalFetch = globalThis.fetch;
