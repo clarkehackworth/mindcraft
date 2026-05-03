@@ -2,7 +2,7 @@
     "name": "replicate",
     "model": {
         "provider": "replicate",
-        "model": "google/gemini-2.5-flash"
+        "model": "google/gemini-flash-latest"
     },
     "embedding": {
         "provider": "replicate",
