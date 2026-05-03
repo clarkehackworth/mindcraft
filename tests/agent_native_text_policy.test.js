@@ -488,6 +488,16 @@ test('chat UI and trace projection render model thinking separately', () => {
     assert.equal(html.includes('renderThinking(item.event?.thinking)'), false);
 });
 
+test('chat trace projection hides ephemeral branch decisions from the main timeline', () => {
+    const projector = readFileSync('src/mindcraft/public/chat_trace_projector.js', 'utf8');
+    const prompterSource = readFileSync('src/models/prompter.js', 'utf8');
+
+    assert.ok(projector.includes('if (event.ephemeral) return;'));
+    assert.ok(prompterSource.includes('ephemeral: true'));
+    assert.ok(prompterSource.includes('branch: true'));
+    assert.ok(prompterSource.includes("cache_scope: options.cacheScope || 'botResponder'"));
+});
+
 test('chat trace projection can show reasoning effort in the model label', () => {
     const projector = readFileSync('src/mindcraft/public/chat_trace_projector.js', 'utf8');
 
@@ -663,7 +673,7 @@ test('conversation and coding requests use separate prompt cache scopes', () => 
     assert.ok(prompterSource.includes("cacheScope: 'conversation'"));
     assert.ok(prompterSource.includes("cacheScope: 'coding'"));
     assert.ok(prompterSource.includes("cacheScope: 'compactSummary'"));
-    assert.ok(prompterSource.includes("cacheScope: 'botResponder'"));
+    assert.ok(prompterSource.includes("cacheScope: options.cacheScope || 'botResponder'"));
     assert.ok(prompterSource.includes("cacheScope: 'vision'"));
     assert.ok(prompterSource.includes("cacheScope: 'goalSetting'"));
 });

@@ -368,15 +368,16 @@ export class Prompter {
         return this.promptCompactSummary(to_summarize);
     }
 
-    async promptShouldRespondToBot(new_message) {
+    async promptShouldRespondToBot(new_message, options = {}) {
         await this.checkCooldown();
         let prompt = this.profile.bot_responder;
         let messages = this.agent.history.getHistory();
         messages.push({role: 'user', content: new_message});
         prompt = await this.replaceStrings(prompt, null, messages);
-        this.agent.history.traceLLMRequest('botResponder', this.chat_model, prompt, messages);
-        let res = await this.chat_model.sendRequest([], prompt, '***', null, { cacheScope: 'botResponder' });
-        this.agent.history.traceLLMResponse('botResponder', this.chat_model, res);
+        const traceMetadata = { ephemeral: true, branch: true, cache_scope: options.cacheScope || 'botResponder' };
+        this.agent.history.traceLLMRequest('botResponder', this.chat_model, prompt, messages, null, traceMetadata);
+        let res = await this.chat_model.sendRequest([], prompt, '***', null, { cacheScope: options.cacheScope || 'botResponder' });
+        this.agent.history.traceLLMResponse('botResponder', this.chat_model, res, traceMetadata);
         return res.trim().toLowerCase() === 'respond';
     }
 

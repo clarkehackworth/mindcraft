@@ -24,6 +24,7 @@ class ChatTraceProjector {
 
     addEvent(event) {
         if (!event || typeof event !== 'object') return;
+        if (event.ephemeral) return;
         switch (event.type) {
             case 'instruction_context':
                 this.addInstructionContext(event);

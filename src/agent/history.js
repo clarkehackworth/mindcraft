@@ -257,24 +257,26 @@ export class History {
         });
     }
 
-    traceLLMRequest(tag, model, systemPrompt, messages, tools = null) {
+    traceLLMRequest(tag, model, systemPrompt, messages, tools = null, metadata = {}) {
         this.traceEvent('llm_request', {
             tag,
             model: describeModel(model),
             system_prompt: systemPrompt,
             messages,
             tools: Array.isArray(tools) ? tools : null,
-            tool_count: Array.isArray(tools) ? tools.length : 0
+            tool_count: Array.isArray(tools) ? tools.length : 0,
+            ...makeJsonSafe(metadata || {})
         });
     }
 
-    traceLLMResponse(tag, model, response) {
+    traceLLMResponse(tag, model, response, metadata = {}) {
         this.traceEvent('llm_response', {
             tag,
             model: describeModel(model),
             response,
             thinking: extractThinkingForTrace(response, model),
-            token_usage: model?.lastTokenUsage || null
+            token_usage: model?.lastTokenUsage || null,
+            ...makeJsonSafe(metadata || {})
         });
     }
 

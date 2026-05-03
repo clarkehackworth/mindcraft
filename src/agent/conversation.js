@@ -194,6 +194,7 @@ class ConversationManager {
 
         this._clearMonitorTimeouts();
         convo.queue(received);
+        convo.inMessageGeneration++;
         
         // responding to conversation takes priority over self prompting
         if (agent.self_prompter.isActive()){
@@ -280,8 +281,10 @@ const talkOverActions = ['stay', 'followPlayer', 'mode:']; // all mode actions
 const fastDelay = 200;
 const longDelay = 5000;
 async function _scheduleProcessInMessage(sender, received, convo) {
-    if (convo.inMessageTimer)
+    if (convo.inMessageTimer) {
         clearTimeout(convo.inMessageTimer);
+        convo.inMessageGeneration++;
+    }
     const otherAgentBusy = isOtherBotActionNotice(received.message);
 
     const scheduleResponse = (delay) => {
@@ -294,18 +297,33 @@ async function _scheduleProcessInMessage(sender, received, convo) {
     const canTalkOver = talkOverActions.some(a => currentAction.includes(a));
     const agentBusy = !agent.isIdle() || (agent.active_message_handlers || 0) > 0;
 
-    if (agentBusy && !canTalkOver) {
-        // Do not ask the LLM whether to respond here. That botResponder request
-        // bypassed the main message queue, showed raw '*used ...*' payloads as
-        // user turns, and could run beside the active ReAct request. Keep the
-        // bot message in the conversation queue and let agent.handleMessage()
-        // serialize it through the normal ReAct queue when this timer fires.
-        scheduleResponse(otherAgentBusy ? longDelay : fastDelay);
+    if (agentBusy && otherAgentBusy && !canTalkOver) {
+        convo.in_queue = [];
+        convo.inMessageTimer = null;
     }
     else if (otherAgentBusy) {
         // The other bot is reporting an action; give it a moment so consecutive
         // action notices can be consumed together with stable boundaries.
         scheduleResponse(longDelay);
+    }
+    else if (agentBusy && !canTalkOver) {
+        const decisionGeneration = convo.inMessageGeneration;
+        const pending = compileQueuedBotMessages(convo.in_queue);
+        const decisionMessage = pending?.message || received.message || '';
+        const shouldRespond = await agent.prompter.promptShouldRespondToBot(
+            `${sender}: ${_tagMessage(decisionMessage)}`,
+            { cacheScope: 'botResponder' }
+        );
+        if (decisionGeneration !== convo.inMessageGeneration)
+            return;
+        console.log(`${agent.name} decided to ${shouldRespond?'respond':'ignore'} ${sender}`);
+        if (shouldRespond) {
+            scheduleResponse(fastDelay);
+        }
+        else {
+            convo.in_queue = [];
+            convo.inMessageTimer = null;
+        }
     }
     else {
         scheduleResponse(fastDelay);

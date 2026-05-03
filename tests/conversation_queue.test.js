@@ -4,7 +4,7 @@ import convoManager, { compileQueuedBotMessages } from '../src/agent/conversatio
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-function makeAgent() {
+function makeAgent({ shouldRespondToBot = true } = {}) {
     const calls = [];
     const history = [];
     const promptShouldRespondCalls = [];
@@ -27,7 +27,7 @@ function makeAgent() {
         prompter: {
             promptShouldRespondToBot: async (message) => {
                 promptShouldRespondCalls.push(message);
-                return true;
+                return shouldRespondToBot;
             },
         },
         calls,
@@ -121,7 +121,7 @@ test('empty queued bot message flush does not call handleMessage', async () => {
     assert.equal(convo.inMessageTimer, null);
 });
 
-test('busy bot messages stay queued instead of making sidecar botResponder requests', async () => {
+test('busy bot action notices can be ignored without entering main ReAct history', async () => {
     const agent = resetConversationManager();
     agent.isIdle = () => false;
     agent.active_message_handlers = 1;
@@ -129,12 +129,13 @@ test('busy bot messages stay queued instead of making sidecar botResponder reque
 
     await convoManager.receiveFromBot('buddy', { message: '*used collectBlocks*', start: true, end: false });
 
-    assert.equal(convoManager.responseScheduledFor('buddy'), true);
+    assert.equal(convoManager.responseScheduledFor('buddy'), false);
     assert.deepEqual(agent.promptShouldRespondCalls, []);
     assert.deepEqual(agent.calls, []);
+    assert.deepEqual(convoManager._getConvo('buddy').in_queue, []);
 });
 
-test('busy normal bot messages are serialized through handleMessage with source marker', async () => {
+test('busy normal bot messages branch-decide before serialized ReAct delivery', async () => {
     const agent = resetConversationManager();
     agent.isIdle = () => false;
     agent.active_message_handlers = 1;
@@ -143,6 +144,21 @@ test('busy normal bot messages are serialized through handleMessage with source 
     await convoManager.receiveFromBot('buddy', { message: 'hello while busy', start: true, end: false });
     await delay(260);
 
-    assert.deepEqual(agent.promptShouldRespondCalls, []);
+    assert.deepEqual(agent.promptShouldRespondCalls, ['buddy: (FROM OTHER BOT)\nhello while busy']);
     assert.deepEqual(agent.calls, [{ source: 'buddy', message: '(FROM OTHER BOT)\nhello while busy' }]);
+});
+
+test('busy normal bot messages can be ignored without stale queued replay', async () => {
+    const agent = resetConversationManager(makeAgent({ shouldRespondToBot: false }));
+    agent.isIdle = () => false;
+    agent.active_message_handlers = 1;
+    agent.actions.currentActionLabel = 'action:collectBlocks';
+
+    await convoManager.receiveFromBot('buddy', { message: 'status ping', start: true, end: false });
+    await delay(260);
+
+    assert.deepEqual(agent.promptShouldRespondCalls, ['buddy: (FROM OTHER BOT)\nstatus ping']);
+    assert.deepEqual(agent.calls, []);
+    assert.equal(convoManager.responseScheduledFor('buddy'), false);
+    assert.deepEqual(convoManager._getConvo('buddy').in_queue, []);
 });
