@@ -66,12 +66,21 @@ export class CodexChatGPT {
         delete this.params.open_browser;
         delete this.params.forcedChatgptWorkspaceId;
         delete this.params.forced_chatgpt_workspace_id;
+        this.sessionIdWasExplicit = Boolean(this.params.sessionId || this.params.session_id);
         this.sessionId = this.params.sessionId || this.params.session_id || randomUUID();
         delete this.params.sessionId;
         delete this.params.session_id;
         this.originator = this.params.originator || process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE || DEFAULT_ORIGINATOR;
         delete this.params.originator;
         this.turnStateByKey = new Map();
+        this.responseContinuityByKey = new Map();
+        this.lastRequestCacheTrace = null;
+    }
+
+    setSessionIdentity(identity) {
+        if (this.sessionIdWasExplicit) return;
+        const value = String(identity || '').trim();
+        if (value) this.sessionId = value;
     }
 
     async sendRequest(turns, systemMessage, stop_seq='***', tools=null, options = {}) {
@@ -109,6 +118,7 @@ export class CodexChatGPT {
             this.rememberTurnState(options, response);
 
             const parsed = await parseCodexResponsesSse(await response.text());
+            this.rememberResponseContinuity(options, body, parsed);
             console.log('Received.');
             setLastTokenUsage(this, parsed.usage);
             this.lastThinking = parsed.thinking || '';
@@ -165,7 +175,29 @@ export class CodexChatGPT {
                 body[key] = value;
             }
         }
+        this.applyPreviousResponseContinuity(options, body);
         return body;
+    }
+
+    getCacheTraceMetadata(options = {}) {
+        const scopedSessionId = buildScopedPromptCacheKey(this.sessionId, options?.cacheScope);
+        return {
+            cache_scope: options?.cacheScope || null,
+            turn_state_key: options?.turnStateKey || null,
+            transport_cache: {
+                protocol: 'openai-codex-responses',
+                prompt_cache_key: scopedSessionId,
+                session_id: scopedSessionId,
+                turn_state_present: Boolean(this.getTurnState(options)),
+                previous_response_id_available: Boolean(this.responseContinuityByKey.get(scopedSessionId)?.responseId)
+            }
+        };
+    }
+
+    consumeLastRequestCacheTrace() {
+        const value = this.lastRequestCacheTrace;
+        this.lastRequestCacheTrace = null;
+        return value || null;
     }
 
     async fetchResponses(endpoint, body, auth, options = {}) {
@@ -223,6 +255,86 @@ export class CodexChatGPT {
         // prefix is stable. Scope it only by prompt-cache scope so conversation,
         // coding, vision, etc. do not leak into one another.
         return buildScopedPromptCacheKey(this.sessionId, options?.cacheScope);
+    }
+
+    getResponseContinuityKey(options = {}) {
+        return buildScopedPromptCacheKey(this.sessionId, options?.cacheScope);
+    }
+
+    applyPreviousResponseContinuity(options = {}, body) {
+        const key = this.getResponseContinuityKey(options);
+        const previous = this.responseContinuityByKey.get(key);
+        const baseTrace = {
+            protocol: 'openai-codex-responses',
+            prompt_cache_key: body.prompt_cache_key,
+            session_id: buildScopedPromptCacheKey(this.sessionId, options?.cacheScope),
+            turn_state_present: Boolean(this.getTurnState(options)),
+            previous_response_id: null,
+            incremental_input_items: null,
+            full_input_items: Array.isArray(body.input) ? body.input.length : 0,
+            incremental_reuse: false,
+            incremental_reuse_reason: 'no_previous_response'
+        };
+
+        if (!previous?.responseId) {
+            this.lastRequestCacheTrace = baseTrace;
+            return;
+        }
+
+        const requestSignature = codexRequestSignature(body);
+        if (requestSignature !== previous.requestSignature) {
+            this.lastRequestCacheTrace = {
+                ...baseTrace,
+                incremental_reuse_reason: 'non_input_fields_changed'
+            };
+            return;
+        }
+
+        const delta = getIncrementalResponsesInput(body.input, previous.baselineInput);
+        if (!delta) {
+            this.lastRequestCacheTrace = {
+                ...baseTrace,
+                incremental_reuse_reason: 'input_not_previous_prefix'
+            };
+            return;
+        }
+
+        body.previous_response_id = previous.responseId;
+        body.input = delta;
+        this.lastRequestCacheTrace = {
+            ...baseTrace,
+            previous_response_id: previous.responseId,
+            incremental_input_items: delta.length,
+            incremental_reuse: true,
+            incremental_reuse_reason: 'prefix_reused'
+        };
+    }
+
+    rememberResponseContinuity(options = {}, body, parsed = {}) {
+        const responseId = parsed.responseId;
+        if (!responseId) return;
+        const key = this.getResponseContinuityKey(options);
+        const sentInput = body.previous_response_id
+            ? [
+                ...(this.responseContinuityByKey.get(key)?.baselineInput || []),
+                ...(body.input || [])
+            ]
+            : (body.input || []);
+        const outputItems = parsed.outputItems?.length
+            ? parsed.outputItems
+            : synthesizeCodexOutputItems(parsed);
+        this.responseContinuityByKey.set(key, {
+            responseId,
+            requestSignature: codexRequestSignature(body),
+            baselineInput: normalizeResponsesItemsForContinuity([
+                ...sentInput,
+                ...outputItems
+            ])
+        });
+        if (this.responseContinuityByKey.size > 64) {
+            const oldestKey = this.responseContinuityByKey.keys().next().value;
+            this.responseContinuityByKey.delete(oldestKey);
+        }
     }
 
     async embed() {
@@ -419,6 +531,93 @@ export function buildScopedPromptCacheKey(baseKey, cacheScope) {
     return `${base}:${scope}`;
 }
 
+function codexRequestSignature(body = {}) {
+    const copy = { ...(body || {}) };
+    delete copy.input;
+    delete copy.previous_response_id;
+    return stableJson(copy);
+}
+
+function getIncrementalResponsesInput(input = [], previousBaseline = []) {
+    const normalizedInput = normalizeResponsesItemsForContinuity(input);
+    const normalizedBaseline = normalizeResponsesItemsForContinuity(previousBaseline);
+    if (normalizedBaseline.length > normalizedInput.length) return null;
+    for (let i = 0; i < normalizedBaseline.length; i++) {
+        if (stableJson(normalizedInput[i]) !== stableJson(normalizedBaseline[i])) {
+            return null;
+        }
+    }
+    return input.slice(normalizedBaseline.length);
+}
+
+function normalizeResponsesItemsForContinuity(items = []) {
+    return (items || []).map(normalizeResponsesItemForContinuity);
+}
+
+function normalizeResponsesItemForContinuity(item) {
+    if (!item || typeof item !== 'object') return item;
+    const clone = structuredCloneSafe(item);
+    stripVolatileResponsesFields(clone);
+    return clone;
+}
+
+function stripVolatileResponsesFields(value) {
+    if (!value || typeof value !== 'object') return;
+    if (Array.isArray(value)) {
+        for (const item of value) stripVolatileResponsesFields(item);
+        return;
+    }
+    delete value.id;
+    delete value.status;
+    delete value.object;
+    for (const item of Object.values(value)) {
+        stripVolatileResponsesFields(item);
+    }
+}
+
+function synthesizeCodexOutputItems(parsed = {}) {
+    if (parsed.toolCalls?.length) {
+        return parsed.toolCalls.map(call => ({
+            type: 'function_call',
+            call_id: call.id,
+            name: call.function?.name || call.name,
+            arguments: call.function?.arguments || call.arguments || '{}'
+        })).filter(item => item.call_id && item.name);
+    }
+    if (parsed.text) {
+        return [{
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: parsed.text }]
+        }];
+    }
+    return [];
+}
+
+function structuredCloneSafe(value) {
+    if (typeof structuredClone === 'function') {
+        try {
+            return structuredClone(value);
+        } catch {
+            // Fall through to JSON clone.
+        }
+    }
+    return JSON.parse(JSON.stringify(value));
+}
+
+function stableJson(value) {
+    return JSON.stringify(sortJsonKeys(value));
+}
+
+function sortJsonKeys(value) {
+    if (Array.isArray(value)) return value.map(sortJsonKeys);
+    if (!value || typeof value !== 'object') return value;
+    return Object.keys(value).sort().reduce((out, key) => {
+        out[key] = sortJsonKeys(value[key]);
+        return out;
+    }, {});
+}
+
 export function toCodexResponseItem(message) {
     const role = message.role === 'assistant' ? 'assistant' : 'user';
     return {
@@ -437,6 +636,8 @@ export async function parseCodexResponsesSse(sseText) {
     const messageTexts = [];
     const thinkingDeltas = [];
     const reasoningItems = [];
+    const outputItems = [];
+    let responseId = null;
     let usage = null;
     const events = sseText.split(/\n\n+/);
     for (const eventBlock of events) {
@@ -460,6 +661,9 @@ export async function parseCodexResponsesSse(sseText) {
             thinkingDeltas.push(event.delta);
         }
         const item = event.item;
+        if (event.type === 'response.output_item.done' && item) {
+            outputItems.push(item);
+        }
         if (event.type === 'response.output_item.done' && item?.type === 'function_call') {
             toolCalls.push({
                 id: item.call_id,
@@ -481,6 +685,12 @@ export async function parseCodexResponsesSse(sseText) {
         } else if (event.usage) {
             usage = event.usage;
         }
+        if (event.response?.id) {
+            responseId = event.response.id;
+        }
+        if (event.response_id) {
+            responseId = event.response_id;
+        }
         if (event.type === 'response.failed') {
             const message = event.response?.error?.message || 'Codex Responses stream failed';
             throw new Error(message);
@@ -490,7 +700,7 @@ export async function parseCodexResponsesSse(sseText) {
     const thinking = thinkingDeltas.length > 0
         ? normalizeThinkingText(thinkingDeltas.join(''))
         : normalizeThinkingText(reasoningItems);
-    return { text, toolCalls, usage, thinking };
+    return { text, toolCalls, usage, thinking, responseId, outputItems };
 }
 
 async function requestDeviceCode(baseUrl, clientId) {

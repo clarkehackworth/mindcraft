@@ -119,6 +119,11 @@ test('chat history trace records prompts, messages, tool calls and tool results 
         assert.deepEqual(request.messages, messages);
         assert.equal(request.tool_count, 1);
         assert.equal(request.model.api, 'fake-protocol');
+        assert.equal(request.request_fingerprint.message_count, 1);
+        assert.equal(request.request_fingerprint.tool_count, 1);
+        assert.ok(request.request_fingerprint.system_prompt_hash);
+        assert.ok(request.request_fingerprint.messages_hash);
+        assert.ok(request.request_fingerprint.tools_hash);
 
         assert.ok(events.some(event => event.type === 'llm_response'));
         const response = events.find(event => event.type === 'llm_response');

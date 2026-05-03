@@ -10,6 +10,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { selectAPI, selectEmbeddingAPI, createModel } from './_model_map.js';
+import { createHash } from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -79,10 +80,12 @@ export class Prompter {
 
         let chat_model_profile = selectAPI(this.profile.model);
         this.chat_model = createModel(chat_model_profile);
+        this.applyModelSessionIdentity(this.chat_model, chat_model_profile, 'conversation');
 
         if (hasModelSelection(this.profile.code_model)) {
             let code_model_profile = selectAPI(this.profile.code_model);
             this.code_model = createModel(code_model_profile);
+            this.applyModelSessionIdentity(this.code_model, code_model_profile, 'coding');
         }
         else {
             this.code_model = this.chat_model;
@@ -91,6 +94,7 @@ export class Prompter {
         if (hasModelSelection(this.profile.vision_model)) {
             let vision_model_profile = selectAPI(this.profile.vision_model);
             this.vision_model = createModel(vision_model_profile);
+            this.applyModelSessionIdentity(this.vision_model, vision_model_profile, 'vision');
         }
         else {
             this.vision_model = this.chat_model;
@@ -124,6 +128,18 @@ export class Prompter {
 
     getName() {
         return this.profile.name;
+    }
+
+    applyModelSessionIdentity(model, modelProfile, purpose) {
+        if (typeof model?.setSessionIdentity !== 'function') return;
+        model.setSessionIdentity(stableModelSessionIdentity({
+            cwd: process.cwd(),
+            agent: this.profile.name,
+            purpose,
+            provider: modelProfile?.provider || model?.provider || null,
+            api: modelProfile?.api || model?.constructor?.prefix || null,
+            model: modelProfile?.model || model?.model_name || null
+        }));
     }
 
     getInitModes() {
@@ -237,14 +253,23 @@ export class Prompter {
 
             try {
                 const tools = this.isNativeToolMode() ? getCommandToolDefinitions(this.agent) : null;
-                this.agent.history.traceLLMRequest('conversation', this.chat_model, prompt, requestMessages, tools);
-                generation = await this.chat_model.sendRequest(requestMessages, prompt, '***', tools, {
+                const requestOptions = {
                     cacheScope: 'conversation',
                     turnStateKey: options.turnStateKey,
                     signal: options.signal
-                });
+                };
+                const requestTraceMetadata = this.chat_model.getCacheTraceMetadata?.(requestOptions) || {
+                    cache_scope: requestOptions.cacheScope,
+                    turn_state_key: requestOptions.turnStateKey
+                };
+                this.agent.history.traceLLMRequest('conversation', this.chat_model, prompt, requestMessages, tools, requestTraceMetadata);
+                generation = await this.chat_model.sendRequest(requestMessages, prompt, '***', tools, requestOptions);
                 this.captureConversationResponseMetadata(this.chat_model, generation);
-                this.agent.history.traceLLMResponse('conversation', this.chat_model, generation);
+                const lastRequestCacheTrace = this.chat_model.consumeLastRequestCacheTrace?.();
+                const responseTraceMetadata = lastRequestCacheTrace
+                    ? { transport_cache: lastRequestCacheTrace }
+                    : requestTraceMetadata;
+                this.agent.history.traceLLMResponse('conversation', this.chat_model, generation, responseTraceMetadata);
                 if (isNativeToolResponse(generation)) {
                     await this._saveLog(prompt, requestMessages, JSON.stringify(generation), 'conversation');
                     return generation;
@@ -502,6 +527,11 @@ function extractCodeTaskContent(messages) {
         .replace(/^Code generation task:\s*/i, '')
         .replace(/\n\nWrite the implementation as a JavaScript code block\.\s*$/i, '')
         .trim();
+}
+
+function stableModelSessionIdentity(parts) {
+    const text = JSON.stringify(parts || {});
+    return `mindcraft-${createHash('sha256').update(text).digest('hex').slice(0, 24)}`;
 }
 
 function isAbortError(error) {

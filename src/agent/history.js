@@ -1,5 +1,6 @@
 import { writeFileSync, readFileSync, mkdirSync, existsSync, appendFileSync } from 'fs';
 import path from 'path';
+import { createHash } from 'crypto';
 import { NPCData } from './npc/data.js';
 import settings from './settings.js';
 import { createNativeToolCallTurn, createNativeToolResultTurn, hasNativeToolCalls, isNativeToolResultTurn, normalizeThinkingText } from '../models/native_tools.js';
@@ -265,6 +266,7 @@ export class History {
             messages,
             tools: Array.isArray(tools) ? tools : null,
             tool_count: Array.isArray(tools) ? tools.length : 0,
+            request_fingerprint: buildRequestFingerprint(systemPrompt, messages, tools),
             ...makeJsonSafe(metadata || {})
         });
     }
@@ -474,6 +476,23 @@ function extractThinkingForTrace(response, model) {
         model?.lastThinking ??
         ''
     );
+}
+
+function buildRequestFingerprint(systemPrompt, messages, tools) {
+    const list = Array.isArray(messages) ? messages : [];
+    return {
+        system_prompt_hash: hashTraceValue(systemPrompt || ''),
+        messages_hash: hashTraceValue(list),
+        tools_hash: hashTraceValue(Array.isArray(tools) ? tools : []),
+        first_message_hash: list.length > 0 ? hashTraceValue(list[0]) : null,
+        last_message_hash: list.length > 0 ? hashTraceValue(list[list.length - 1]) : null,
+        message_count: list.length,
+        tool_count: Array.isArray(tools) ? tools.length : 0
+    };
+}
+
+function hashTraceValue(value) {
+    return createHash('sha256').update(safeStringify(value)).digest('hex').slice(0, 16);
 }
 
 function safeStringify(value) {

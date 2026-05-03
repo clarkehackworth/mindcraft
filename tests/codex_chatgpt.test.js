@@ -69,6 +69,9 @@ test('Codex SSE parser extracts Responses function_call events', async () => {
     assert.equal(parsed.toolCalls[0].function.arguments, '{"status":"ok"}');
     assert.equal(parsed.usage.input_tokens, 100);
     assert.equal(parsed.usage.input_tokens_details.cached_tokens, 60);
+    assert.equal(parsed.responseId, 'resp_1');
+    assert.equal(parsed.outputItems.length, 1);
+    assert.equal(parsed.outputItems[0].type, 'function_call');
 });
 
 test('Codex SSE parser prefers text deltas over final message to avoid duplicate text', async () => {
@@ -343,6 +346,125 @@ test('Codex adapter sends native-login Responses request and normalizes tool cal
         assert.equal(requests[0].body.tools[0].name, 'report_status');
         assert.equal(Object.prototype.hasOwnProperty.call(requests[0].body, 'tool_choice'), false);
         assert.equal(requests[0].body.stream, true);
+    } finally {
+        globalThis.fetch = originalFetch;
+        cleanup();
+    }
+});
+
+
+
+test('Codex adapter reuses previous_response_id for prefix-extension turns', async () => {
+    const { keysPath, cleanup } = writeTempKeys();
+    const originalFetch = globalThis.fetch;
+    const requests = [];
+    const responses = [
+        [
+            'event: response.output_item.done',
+            'data: {"type":"response.output_item.done","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}}',
+            '',
+            'event: response.completed',
+            'data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":0},"output_tokens":3}}}',
+            ''
+        ].join('\n'),
+        [
+            'event: response.output_item.done',
+            'data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_2","name":"report_status","arguments":"{\\"status\\":\\"done\\"}"}}',
+            '',
+            'event: response.completed',
+            'data: {"type":"response.completed","response":{"id":"resp_2","usage":{"input_tokens":140,"input_tokens_details":{"cached_tokens":120},"output_tokens":5}}}',
+            ''
+        ].join('\n')
+    ];
+    globalThis.fetch = async (url, init) => {
+        requests.push({ url, init, body: JSON.parse(init.body) });
+        return new Response(responses.shift(), {
+            status: 200,
+            headers: { 'content-type': 'text/event-stream' }
+        });
+    };
+
+    try {
+        const model = new CodexChatGPT('gpt-5.5', 'https://example.test/backend-api/codex', { keysPath, sessionId: 'session-test' });
+        const first = await model.sendRequest(
+            [{ role: 'user', content: 'first' }],
+            'Use tools.',
+            '***',
+            [tool],
+            { cacheScope: 'conversation' }
+        );
+        assert.equal(first, 'ok');
+
+        const second = await model.sendRequest(
+            [
+                { role: 'user', content: 'first' },
+                { role: 'assistant', content: 'ok' },
+                { role: 'user', content: 'second' }
+            ],
+            'Use tools.',
+            '***',
+            [tool],
+            { cacheScope: 'conversation' }
+        );
+        assert.equal(isNativeToolResponse(second), true);
+
+        assert.equal(requests[0].body.previous_response_id, undefined);
+        assert.equal(requests[0].body.input.length, 1);
+        assert.equal(requests[1].body.previous_response_id, 'resp_1');
+        assert.equal(requests[1].body.input.length, 1);
+        assert.equal(requests[1].body.input[0].role, 'user');
+        assert.equal(requests[1].body.input[0].content[0].text, 'second');
+        assert.equal(requests[1].body.prompt_cache_key, 'session-test:conversation');
+        assert.equal(requests[1].init.headers.session_id, 'session-test:conversation');
+        assert.deepEqual(model.consumeLastRequestCacheTrace(), {
+            protocol: 'openai-codex-responses',
+            prompt_cache_key: 'session-test:conversation',
+            session_id: 'session-test:conversation',
+            turn_state_present: false,
+            previous_response_id: 'resp_1',
+            incremental_input_items: 1,
+            full_input_items: 3,
+            incremental_reuse: true,
+            incremental_reuse_reason: 'prefix_reused'
+        });
+    } finally {
+        globalThis.fetch = originalFetch;
+        cleanup();
+    }
+});
+
+test('Codex adapter does not reuse previous_response_id when non-input fields change', async () => {
+    const { keysPath, cleanup } = writeTempKeys();
+    const originalFetch = globalThis.fetch;
+    const requests = [];
+    globalThis.fetch = async (url, init) => {
+        requests.push({ url, init, body: JSON.parse(init.body) });
+        const responseId = `resp_${requests.length}`;
+        return new Response([
+            'event: response.output_item.done',
+            'data: {"type":"response.output_item.done","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}}',
+            '',
+            'event: response.completed',
+            `data: {"type":"response.completed","response":{"id":"${responseId}"}}`,
+            ''
+        ].join('\n'), {
+            status: 200,
+            headers: { 'content-type': 'text/event-stream' }
+        });
+    };
+
+    try {
+        const model = new CodexChatGPT('gpt-5.5', 'https://example.test/backend-api/codex', { keysPath, sessionId: 'session-test' });
+        await model.sendRequest([{ role: 'user', content: 'first' }], 'Use tools.', '***', [tool], { cacheScope: 'conversation' });
+        await model.sendRequest([
+            { role: 'user', content: 'first' },
+            { role: 'assistant', content: 'ok' },
+            { role: 'user', content: 'second' }
+        ], 'Changed instructions.', '***', [tool], { cacheScope: 'conversation' });
+
+        assert.equal(requests[1].body.previous_response_id, undefined);
+        assert.equal(requests[1].body.input.length, 3);
+        assert.equal(model.consumeLastRequestCacheTrace().incremental_reuse_reason, 'non_input_fields_changed');
     } finally {
         globalThis.fetch = originalFetch;
         cleanup();
