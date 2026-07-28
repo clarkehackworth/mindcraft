@@ -427,5 +427,10 @@ export function getBiomeName(bot) {
      * let biome = world.getBiomeName(bot);
      **/
     const biomeId = bot.world.getBiome(bot.entity.position);
-    return mc.getAllBiomes()[biomeId].name;
+    // Prefer the registry the server sent us over minecraft-data's static
+    // table: mineflayer populates bot.registry from the login packet's
+    // dimension codec, so it knows about modded biomes that minecraft-data
+    // has never heard of. Fall back to static data, then to the raw id.
+    const biome = bot.registry?.biomes?.[biomeId] ?? mc.getAllBiomes()[biomeId];
+    return biome?.name ?? `biome_${biomeId}`;
 }
