@@ -106,7 +106,14 @@ export function initBot(username) {
         if (event === 'error' && args[0]) {
             const err = args[0];
             const errStr = err instanceof Error ? err.message : String(err);
-            if (errStr.includes('PartialReadError')) {
+            // 'PartialReadError' is the error's name, not part of its message
+            // -- node-minecraft-protocol rewrites the message to "Read error
+            // for <field> : ..." (or "Parse error for ..." once client.js has
+            // annotated it), so matching the message alone never fires.
+            if (errStr.includes('PartialReadError')
+                || err?.name === 'PartialReadError'
+                || errStr.includes('Read error for')
+                || errStr.includes('Parse error for')) {
                 console.warn('[mcdata] Suppressed PartialReadError:', errStr.substring(0, 120));
                 return true; // Swallow the error
             }
