@@ -67,6 +67,17 @@ export function initBot(username) {
 
     const bot = createBot(options);
 
+    // Modded servers send packet ids and payloads that are not in the vanilla
+    // protocol schema, so they can never be parsed and protodef logs a read
+    // error for each one. Dropping them is the correct handling: framing is
+    // length-prefixed, so an unparseable body cannot desync the stream, and
+    // node-minecraft-protocol re-pipes the deserializer after every error.
+    // client.hideErrors is read only by setSerializer() and
+    // createDecompressor(), so mineflayer's own warnings and error logging are
+    // unaffected. It does also silence decompression complaints, which is the
+    // one diagnostic given up here.
+    if (bot._client) bot._client.hideErrors = true;
+
     // Throttle position packets to avoid kicks on Paper/Spigot servers
     // Paper enforces stricter packet rate limits than vanilla, causing ECONNRESET
     // when mineflayer sends position updates faster than 50ms apart
