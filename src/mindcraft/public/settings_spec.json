@@ -136,5 +136,11 @@
         "type": "number",
         "description": "Number of seconds allowed for the bot to spawn before throwing an error. Increase when spawning takes a while.",
         "default": 30
+    },
+    "packet_error_logging": {
+        "type": "string",
+        "description": "How to report packets the protocol library cannot parse. Modded servers send packets with no vanilla schema, which can never be parsed; they are dropped safely regardless, so this only controls noise. 'summary' logs the first then a periodic count. Note that 'summary' and 'off' also silence decompression warnings, which would indicate real stream corruption.",
+        "default": "full",
+        "options": ["full", "summary", "off"]
     }
 }

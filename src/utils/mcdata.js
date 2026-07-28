@@ -12,6 +12,9 @@ let mc_version = settings.minecraft_version;
 let mcdata = null;
 let Item = null;
 
+// How often "summary" packet_error_logging emits a rollup count.
+const PACKET_ERROR_ROLLUP_MINS = 5;
+
 /**
  * @typedef {string} ItemName
  * @typedef {string} BlockName
@@ -97,10 +100,31 @@ export function initBot(username) {
         return originalWrite(name, data);
     };
 
-    // Suppress PartialReadError for non-critical packets
-    // Paper servers sometimes send packets that node-minecraft-protocol
-    // can't fully parse (scoreboard, resource_pack, custom_payload, etc.)
-    // These errors crash the bot but the packets aren't needed for gameplay
+    // Packets the protocol library cannot parse.
+    //
+    // Paper sends a few (scoreboard, resource_pack, custom_payload); modded
+    // servers send many, because mods add packet ids and payloads that have no
+    // vanilla schema and so can never be parsed no matter what we do.
+    //
+    // Dropping them is the correct handling rather than a workaround: framing
+    // is length-prefixed, so an unparseable body cannot desync the stream, and
+    // node-minecraft-protocol re-pipes the deserializer after every error. They
+    // are only fatal because the error propagates. What is worth configuring is
+    // how loudly we report them.
+    //
+    // Caveat worth knowing: client.hideErrors is read by both setSerializer()
+    // and createDecompressor(), so "summary" and "off" also silence
+    // decompression warnings, which would signal genuine stream corruption
+    // rather than a mod. That is the diagnostic traded for the quiet.
+    const packet_error_logging = settings.packet_error_logging ?? 'full';
+    if (packet_error_logging !== 'full') {
+        // Stops protodef logging each error itself. The error is still emitted,
+        // so the handler below still sees and counts it.
+        bot._client.hideErrors = true;
+    }
+
+    let suppressed_packet_errors = 0;
+    let logged_first_packet_error = false;
     const originalEmit = bot._client.emit.bind(bot._client);
     bot._client.emit = function(event, ...args) {
         if (event === 'error' && args[0]) {
@@ -114,12 +138,33 @@ export function initBot(username) {
                 || err?.name === 'PartialReadError'
                 || errStr.includes('Read error for')
                 || errStr.includes('Parse error for')) {
-                console.warn('[mcdata] Suppressed PartialReadError:', errStr.substring(0, 120));
-                return true; // Swallow the error
+                suppressed_packet_errors++;
+                if (packet_error_logging === 'summary' && !logged_first_packet_error) {
+                    logged_first_packet_error = true;
+                    console.warn('[mcdata] Unparseable packet, most likely a modded packet with no vanilla schema:', errStr.substring(0, 160));
+                    console.warn(`[mcdata] Further packet errors will be summarized every ${PACKET_ERROR_ROLLUP_MINS}m. Set packet_error_logging to "full" for detail.`);
+                }
+                // Swallowed either way: an unparseable packet is not actionable,
+                // and letting it through kills the agent process.
+                // In "full" mode protodef has already logged the detail, so
+                // logging again here would only duplicate it.
+                return true;
             }
         }
         return originalEmit(event, ...args);
     };
+
+    if (packet_error_logging === 'summary') {
+        const rollup = setInterval(() => {
+            if (suppressed_packet_errors > 0) {
+                console.warn(`[mcdata] suppressed ${suppressed_packet_errors} unparseable packet(s) in the last ${PACKET_ERROR_ROLLUP_MINS}m`);
+                suppressed_packet_errors = 0;
+            }
+        }, PACKET_ERROR_ROLLUP_MINS * 60 * 1000);
+        // Don't hold the event loop open on an otherwise idle process.
+        rollup.unref?.();
+        bot.once('end', () => clearInterval(rollup));
+    }
 
     bot.loadPlugin(pathfinder);
     bot.loadPlugin(pvp);
