@@ -156,7 +156,10 @@ export class Agent {
         
         const respondFunc = async (username, message) => {
             if (message === "") return;
-            if (username === this.name) return;
+            // Ignore our own chat. this.name is the agent's name, which is not
+            // necessarily the name we are logged in as -- with Microsoft auth
+            // mineflayer uses the account's username -- so check both.
+            if (username === this.name || username === this.bot?.username) return;
             if (settings.only_chat_with.length > 0 && !settings.only_chat_with.includes(username)) return;
             try {
                 if (ignore_messages.some((m) => message.startsWith(m))) return;
