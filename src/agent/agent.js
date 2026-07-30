@@ -248,9 +248,13 @@ export class Agent {
 
     shutUp() {
         this.shut_up = true;
-        if (this.self_prompter.isActive()) {
-            this.self_prompter.stop(false);
-        }
+        // ponytail: silence is only silence now. This used to stop the
+        // self-prompter as well, which made !stfu a way for the model to answer
+        // a prompt it did not feel like answering and then sit inert until a
+        // human noticed -- twice in one afternoon it replied to the startup
+        // "say hello" with !stfu and did nothing for the next quarter hour.
+        // Actually stopping work is still available as !endGoal, and any
+        // incoming message clears shut_up.
         convoManager.endAllConversations();
     }
 

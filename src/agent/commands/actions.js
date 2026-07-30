@@ -66,7 +66,7 @@ export const actionsList = [
     },
     {
         name: '!stfu',
-        description: 'Stop all chatting and self prompting, but continue current action.',
+        description: 'Stop chatting, but keep working on the current action and goal. Use !endGoal to actually stop working.',
         perform: async function (agent) {
             agent.openChat('Shutting up.');
             agent.shutUp();
