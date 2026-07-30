@@ -1,0 +1,18 @@
+diff --git a/node_modules/prismarine-chunk/src/pc/common/PaletteChunkSection.js b/node_modules/prismarine-chunk/src/pc/common/PaletteChunkSection.js
+index 1111111..2222222 100644
+--- a/node_modules/prismarine-chunk/src/pc/common/PaletteChunkSection.js
++++ b/node_modules/prismarine-chunk/src/pc/common/PaletteChunkSection.js
+@@ -99,7 +99,12 @@ class ChunkSection extends CommonChunkSection {
+   static read (smartBuffer, maxBitsPerBlock = constants.GLOBAL_BITS_PER_BLOCK, noSizePrefix) {
+     const solidBlockCount = smartBuffer.readInt16BE()
+     const bitsPerBlock = smartBuffer.readUInt8()
+-    if (bitsPerBlock > 16) throw new Error(`Bits per block is too big: ${bitsPerBlock}`)
++    // 16 is the vanilla ceiling, not a format limit: the direct palette width is
++    // ceil(log2(block states)), which is 15 for vanilla but 20 on a big modpack
++    // (Prominence 2 reaches state id 618022). ChunkColumn already sizes itself
++    // from the registry, so the only thing rejecting the chunk was this bound.
++    // 32 is the real limit -- BitArray packs values into 32 bit words.
++    if (bitsPerBlock > 32) throw new Error(`Bits per block is too big: ${bitsPerBlock}`)
+     // Case 1: Single Value Container (all blocks in the section are the same)
+     if (bitsPerBlock === 0) {
+       const section = new ChunkSection({
