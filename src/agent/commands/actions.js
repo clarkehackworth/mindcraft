@@ -73,13 +73,12 @@ export const actionsList = [
             return;
         }
     },
-    {
-        name: '!restart',
-        description: 'Restart the agent process.',
-        perform: async function (agent) {
-            agent.cleanKill();
-        }
-    },
+    // ponytail: no !restart. It gave the model a way to answer "I'm stuck" with
+    // a process restart instead of a different action, and since memory
+    // persists across restarts the habit fed itself -- the summary carried
+    // "retry disconnect" forward and a NoPath while chopping a log escalated
+    // into a full relaunch. The supervisor already restarts on real failures,
+    // so nothing needs this. Reachable again by reverting this hunk.
     {
         name: '!clearChat',
         description: 'Clear the chat history.',
