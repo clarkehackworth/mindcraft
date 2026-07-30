@@ -249,6 +249,12 @@ export function initBot(username) {
     bot.loadPlugin(collectblock);
     bot.loadPlugin(autoEat);
     bot.loadPlugin(armorManager); // auto equip armor
+
+    trackServerTps(bot);
+    tameMovementsForLag(bot);
+    // Anchor for exploration_radius: where the bot came into the world, not the
+    // world spawn, since that is the ground it is meant to work.
+    bot.once('spawn', () => { bot.spawn_point = bot.entity.position.clone(); });
     bot.once('resourcePack', () => {
         bot.acceptResourcePack();
     });
@@ -290,6 +296,98 @@ export const UNKNOWN_BLOCK_ID = 65535;
  * redwood"). The real fix is generating a minecraft-data dataset from the
  * modded server so modded blocks get their actual names.
  */
+// View distance is the biggest lever the bot has over how much work it costs the
+// server: every chunk in its window has to be kept loaded, and walking into
+// terrain that was never generated makes the server generate it mid-tick. A bot
+// that roams is therefore a chunk-generation engine, and on a heavy modpack that
+// alone is enough to stall the server it is trying to walk across.
+//
+// Server ticks are the honest feedback signal for that, so the window follows
+// them. bot.time.age counts world ticks and update_time carries it every 20, so
+// comparing its advance against the wall clock gives TPS without asking the
+// server anything. Radii are in chunks; even the smallest is 96 blocks, well
+// past what pathfinding searches, so shrinking costs the bot little.
+const TPS_TIERS = [
+    { min_tps: 18, view: 'far' },     // 12 chunks -- healthy server, roam freely
+    { min_tps: 15, view: 'normal' },  // 10
+    { min_tps: 11, view: 'short' },   // 8
+    { min_tps: 0, view: 'tiny' },     // 6 -- struggling, stop making it worse
+];
+const TPS_SMOOTHING = 0.3;      // EMA weight for each new sample
+const TPS_SETTLE_MS = 60000;    // min time between changes, so it cannot flap
+
+/**
+ * Pick a view distance for a tick rate, refusing to change too often.
+ * Returns the new view distance, or null to leave it alone. Stateful across
+ * calls -- one picker per bot.
+ */
+export function createViewDistancePicker() {
+    let current = null, last_change = 0;
+    return function pick(tps, now) {
+        const view = TPS_TIERS.find(t => tps >= t.min_tps).view;
+        if (view === current || now - last_change < TPS_SETTLE_MS) return null;
+        current = view;
+        last_change = now;
+        return view;
+    };
+}
+
+/**
+ * Fold one measurement into a smoothed tick rate, ignoring impossible samples.
+ * A resume after a pause reports thousands of ticks in a second; that is not a
+ * fast server, it is a gap, and reading it as health would undo the shrinking
+ * exactly when the server is worst.
+ */
+export function smoothTps(previous, ticks, elapsed_ms) {
+    if (!(elapsed_ms > 0)) return previous;
+    const sample = ticks / (elapsed_ms / 1000);
+    if (!(sample > 0) || sample > 20.5) return previous;
+    return previous * (1 - TPS_SMOOTHING) + sample * TPS_SMOOTHING;
+}
+
+function trackServerTps(bot) {
+    bot.server_tps = 20;
+    if (settings.view_distance !== 'auto') {
+        // Pinned by config: still measure, but leave the window alone.
+        if (settings.view_distance) bot.once('login', () => bot.setSettings({ viewDistance: settings.view_distance }));
+    }
+    let last_age = null, last_at = 0;
+    const pick = createViewDistancePicker();
+    bot._client.on('update_time', () => {
+        const age = bot.time?.age, now = Date.now();
+        if (age == null) return;
+        if (last_age !== null)
+            bot.server_tps = smoothTps(bot.server_tps, age - last_age, now - last_at);
+        last_age = age; last_at = now;
+
+        if (settings.view_distance !== 'auto') return;
+        const view = pick(bot.server_tps, now);
+        if (!view) return;
+        console.log(`[mcdata] server at ${bot.server_tps.toFixed(1)} tps, view distance -> ${view}`);
+        try { bot.setSettings({ viewDistance: view }); } catch (err) { console.warn(`[mcdata] could not set view distance: ${err.message}`); }
+    });
+}
+
+// Sprinting and parkour both assume the server keeps up: they commit to a jump
+// or a run of momentum and only find out afterwards whether the server agreed.
+// Across a stall the bot lands somewhere the server never saw it go, which reads
+// as rubber-banding at best and a failed path at worst. Neither is worth much on
+// a server that freezes for two seconds at a time.
+//
+// ponytail: hooked on setMovements rather than fixed at each call site, because
+// skills.js builds `new pf.Movements(bot)` in a dozen places and would only
+// grow more. Drop the hook if those ever share one constructor.
+function tameMovementsForLag(bot) {
+    const originalSetMovements = bot.pathfinder.setMovements.bind(bot.pathfinder);
+    bot.pathfinder.setMovements = function (movements) {
+        if (movements && bot.server_tps < 18) {
+            movements.allowParkour = false;
+            movements.allowSprinting = false;
+        }
+        return originalSetMovements(movements);
+    };
+}
+
 export function patchUnknownBlocks(registry) {
     if (!registry?.blocksByStateId) return;
     const template = {

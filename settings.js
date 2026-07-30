@@ -69,6 +69,18 @@ const settings = {
     // "summary" logs the first, then a periodic count. NOTE: "summary" and "off" also silence
     // decompression warnings, which would indicate real stream corruption rather than a mod.
 
+    "view_distance": "auto",
+    // how much world the bot asks the server to keep loaded around it. "auto" scales
+    // it to the server's measured tick rate, shrinking when the server struggles --
+    // a roaming bot forces chunk generation and is often the cause of that struggle.
+    // pin it with "far", "normal", "short", "tiny", or a chunk count.
+
+    "exploration_radius": 0,
+    // how far from its spawn point the bot will travel, in blocks. 0 is unlimited.
+    // travelling into never-generated terrain is what costs the server most, so on
+    // a modpack that stutters, keeping the bot inside explored ground helps it more
+    // than it limits it.
+
     "mod_data": "./mod_data",
     // block/item/entity registries dumped from a modded server, so the bot can see
     // modded blocks instead of nameless undiggable air. a directory of .json packs,

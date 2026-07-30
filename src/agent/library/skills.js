@@ -11,6 +11,19 @@ export function log(bot, message) {
     bot.output += message + '\n';
 }
 
+/**
+ * Whether a destination is inside the bot's leash.
+ * Horizontal distance only -- capping y would stop it mining or climbing.
+ * ponytail: enforced in goToPosition, the funnel every travel skill and every
+ * generated codeblock goes through. A skill that drives bot.pathfinder itself
+ * still escapes; move this into the pathfinder goal if that becomes a problem.
+ */
+export function withinExplorationRadius(bot, x, z) {
+    const radius = settings.exploration_radius;
+    if (!radius || radius <= 0 || !bot.spawn_point) return true;
+    return Math.hypot(x - bot.spawn_point.x, z - bot.spawn_point.z) <= radius;
+}
+
 async function autoLight(bot) {
     if (world.shouldPlaceTorch(bot)) {
         try {
@@ -1188,11 +1201,19 @@ export async function goToPosition(bot, x, y, z, min_distance=2) {
      * @param {number} distance, the distance to keep from the position. Defaults to 2.
      * @returns {Promise<boolean>} true if the position was reached, false otherwise.
      * @example
-     * let position = world.world.getNearestBlock(bot, "oak_log", 64).position;
-     * await skills.goToPosition(bot, position.x, position.y, position.x + 20);
+     * let position = world.getNearestBlock(bot, "oak_log", 64).position;
+     * await skills.goToPosition(bot, position.x, position.y, position.z);
      **/
     if (x == null || y == null || z == null) {
         log(bot, `Missing coordinates, given x:${x} y:${y} z:${z}`);
+        return false;
+    }
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+        log(bot, `Invalid coordinates, given x:${x} y:${y} z:${z}. Block coordinates live on block.position, not on the block itself.`);
+        return false;
+    }
+    if (!withinExplorationRadius(bot, x, z)) {
+        log(bot, `${Math.round(Math.hypot(x - bot.spawn_point.x, z - bot.spawn_point.z))} blocks from spawn is outside the ${settings.exploration_radius} block exploration radius. Work closer to home.`);
         return false;
     }
     if (bot.modes.isOn('cheat')) {
