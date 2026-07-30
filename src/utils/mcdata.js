@@ -250,14 +250,13 @@ export function initBot(username) {
     bot.loadPlugin(autoEat);
     bot.loadPlugin(armorManager); // auto equip armor
 
-    trackServerTps(bot);
     bot.once('spawn', () => {
         // Anchor for exploration_radius: where the bot came into the world, not
         // the world spawn, since that is the ground it is meant to work.
         bot.spawn_point = bot.entity.position.clone();
         // loadPlugin defers injection, so bot.pathfinder does not exist until
         // the bot is in the world -- hooking it any earlier throws.
-        tameMovementsForLag(bot);
+        tameMovements(bot);
     });
     bot.once('resourcePack', () => {
         bot.acceptResourcePack();
@@ -300,185 +299,24 @@ export const UNKNOWN_BLOCK_ID = 65535;
  * redwood"). The real fix is generating a minecraft-data dataset from the
  * modded server so modded blocks get their actual names.
  */
-// View distance is the biggest lever the bot has over how much work it costs the
-// server: every chunk in its window has to be kept loaded, and walking into
-// terrain that was never generated makes the server generate it mid-tick. A bot
-// that roams is therefore a chunk-generation engine, and on a heavy modpack that
-// alone is enough to stall the server it is trying to walk across.
-//
-// Server ticks are the honest feedback signal for that, so the window follows
-// them. bot.time.age counts world ticks and update_time carries it every 20, so
-// the wall clock and the tick clock can be compared without asking the server
-// anything. Radii are in chunks; even the smallest is 96 blocks, well past what
-// pathfinding searches, so shrinking costs the bot little.
-//
-// What is measured is stalls, not average tps. This server does not run slow, it
-// freezes: healthy ticks either side of a two second pause every minute or two.
-// Averaged over any useful window that is ~19.5 tps, which reads as healthy and
-// leaves the window wide open, and an average short enough to notice the pause
-// sits right on the threshold and oscillates across it. Counting the pauses
-// measures the thing that actually breaks pathing.
-// A second is too tight: update_time already arrives about once a second, so
-// anything that blocks this process for that long -- an LLM call resolving, a
-// GC pause -- delays the packet and looks exactly like a server freeze. The
-// threshold is above that noise, and event loop delay is measured separately
-// and subtracted, so the client cannot blame the server for its own stutter.
-const STALL_LOST_MS = 1500;      // tick time lost in one interval to count as a stall
-const STALL_WINDOW_MS = 300000;  // rolling window the rate is measured over
-const STALL_MIN_OBSERVED_MS = 60000; // don't extrapolate a rate from a few seconds
-const STALL_TIERS = [
-    { max_per_min: 0.1, view: 'far' },       // 12 chunks -- quiet, roam freely
-    { max_per_min: 0.5, view: 'normal' },    // 10
-    { max_per_min: 1.5, view: 'short' },     // 8
-    { max_per_min: Infinity, view: 'tiny' }, // 6 -- stuttering, stop making it worse
-];
-// Asymmetric on purpose: shrink as soon as the server complains, but earn the
-// way back. Growing again is what caused the last round of flapping.
-const SHRINK_SETTLE_MS = 60000;
-const GROW_SETTLE_MS = 300000;
-const TPS_SMOOTHING = 0.3;       // EMA weight, for the log line only
-
-/**
- * Count server stalls over a rolling window.
- * A stall is an interval where the wall clock ran well ahead of the tick clock,
- * which is what a server freeze looks like from the client.
- */
-export function createStallTracker() {
-    const stalls = [];
-    let started_at = null;
-    return {
-        /**
-         * Feed one update_time interval. loop_delay_ms is how long this process
-         * was itself blocked during it, which is not the server's fault.
-         * Returns the tick time lost to the server, in ms.
-         */
-        sample(ticks, elapsed_ms, now, loop_delay_ms = 0) {
-            if (started_at === null) started_at = now;
-            if (!(elapsed_ms > 0)) return 0;
-            const lost = elapsed_ms - ticks * 50 - Math.max(0, loop_delay_ms);
-            if (lost >= STALL_LOST_MS) stalls.push(now);
-            return Math.max(0, lost);
-        },
-        /** Stalls per minute over the window so far. */
-        ratePerMin(now) {
-            while (stalls.length && now - stalls[0] > STALL_WINDOW_MS) stalls.shift();
-            if (started_at === null) return 0;
-            const observed = Math.max(Math.min(now - started_at, STALL_WINDOW_MS), STALL_MIN_OBSERVED_MS);
-            return stalls.length / (observed / 60000);
-        },
-    };
-}
-
-/**
- * Watch how late a fixed interval fires, which is how long this process was
- * blocked. Without this the bot's own pauses -- an LLM response arriving, a GC
- * -- are indistinguishable from the server freezing, and it would shrink its
- * view distance in response to its own stutter.
- */
-export function createLoopLagTracker(period_ms = 200) {
-    let worst = 0, last = Date.now();
-    const timer = setInterval(() => {
-        const now = Date.now();
-        worst = Math.max(worst, now - last - period_ms);
-        last = now;
-    }, period_ms);
-    timer.unref?.();
-    return {
-        /** Worst delay since the last call, then resets. */
-        takeMax() { const w = worst; worst = 0; return w; },
-        stop() { clearInterval(timer); },
-    };
-}
-
-/**
- * Pick a view distance for a stall rate. Returns the new view distance, or null
- * to leave it alone. Stateful across calls -- one picker per bot.
- */
-export function createViewDistancePicker() {
-    let current = null, last_change = 0, wants = null, wants_since = 0;
-    const commit = (idx, now) => {
-        current = idx; last_change = now; wants = null; wants_since = 0;
-        return STALL_TIERS[idx].view;
-    };
-    return function pick(stalls_per_min, now) {
-        const idx = STALL_TIERS.findIndex(t => stalls_per_min <= t.max_per_min);
-        if (current === null) return commit(idx, now);
-        if (idx === current) { wants = null; wants_since = 0; return null; }
-        if (idx > current) {
-            // Shrinking: the server is complaining, react without much delay.
-            return now - last_change < SHRINK_SETTLE_MS ? null : commit(idx, now);
-        }
-        // Growing: only after the quieter rate has held for a while.
-        if (wants !== idx) { wants = idx; wants_since = now; return null; }
-        return now - wants_since < GROW_SETTLE_MS ? null : commit(idx, now);
-    };
-}
-
-/**
- * Fold one measurement into a smoothed tick rate, ignoring impossible samples.
- * A resume after a pause reports thousands of ticks in a second; that is not a
- * fast server, it is a gap, and reading it as health would undo the shrinking
- * exactly when the server is worst.
- */
-export function smoothTps(previous, ticks, elapsed_ms) {
-    if (!(elapsed_ms > 0)) return previous;
-    const sample = ticks / (elapsed_ms / 1000);
-    if (!(sample > 0) || sample > 20.5) return previous;
-    return previous * (1 - TPS_SMOOTHING) + sample * TPS_SMOOTHING;
-}
-
-function trackServerTps(bot) {
-    bot.server_tps = 20;
-    if (settings.view_distance !== 'auto') {
-        // Pinned by config: still measure, but leave the window alone.
-        if (settings.view_distance) bot.once('login', () => bot.setSettings({ viewDistance: settings.view_distance }));
-    }
-    let last_age = null, last_at = 0;
-    const pick = createViewDistancePicker();
-    const stalls = createStallTracker();
-    const loop_lag = createLoopLagTracker();
-    bot.once('end', () => loop_lag.stop());
-    bot.server_stalls_per_min = 0;
-    bot._client.on('update_time', () => {
-        const age = bot.time?.age, now = Date.now();
-        const blocked = loop_lag.takeMax();
-        if (age == null) return;
-        if (last_age !== null) {
-            const ticks = age - last_age;
-            bot.server_tps = smoothTps(bot.server_tps, ticks, now - last_at);
-            stalls.sample(ticks, now - last_at, now, blocked);
-        }
-        last_age = age; last_at = now;
-        bot.server_stalls_per_min = stalls.ratePerMin(now);
-
-        if (settings.view_distance !== 'auto') return;
-        const view = pick(bot.server_stalls_per_min, now);
-        if (!view) return;
-        console.log(`[mcdata] server stalling ${bot.server_stalls_per_min.toFixed(2)}/min (~${bot.server_tps.toFixed(1)} tps), view distance -> ${view}`);
-        try { bot.setSettings({ viewDistance: view }); } catch (err) { console.warn(`[mcdata] could not set view distance: ${err.message}`); }
-    });
-}
-
 // Sprinting and parkour both assume the server keeps up: they commit to a jump
 // or a run of momentum and only find out afterwards whether the server agreed.
-// Across a stall the bot lands somewhere the server never saw it go, which reads
-// as rubber-banding at best and a failed path at worst. Neither is worth much on
-// a server that freezes for two seconds at a time.
+// If the server stalls mid-move the bot lands somewhere it never saw it go,
+// which reads as rubber-banding at best and a failed path at worst. Neither
+// buys a bot much, so they stay off rather than being switched on a measured
+// tick rate -- see the git history for why measuring it was not worth it.
 //
 // ponytail: hooked on setMovements rather than fixed at each call site, because
 // skills.js builds `new pf.Movements(bot)` in a dozen places and would only
 // grow more. Drop the hook if those ever share one constructor.
-export function tameMovementsForLag(bot) {
+export function tameMovements(bot) {
     if (!bot.pathfinder?.setMovements) {
         console.warn('[mcdata] pathfinder missing at spawn, movement taming disabled');
         return;
     }
     const originalSetMovements = bot.pathfinder.setMovements.bind(bot.pathfinder);
     bot.pathfinder.setMovements = function (movements) {
-        // Keyed on stalls, not average tps, for the same reason the view
-        // distance is: a server that freezes for two seconds still averages
-        // ~19.5 tps, and a jump that lands across the freeze is the failure.
-        if (movements && bot.server_stalls_per_min > STALL_TIERS[0].max_per_min) {
+        if (movements) {
             movements.allowParkour = false;
             movements.allowSprinting = false;
         }

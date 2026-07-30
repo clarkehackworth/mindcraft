@@ -69,11 +69,13 @@ const settings = {
     // "summary" logs the first, then a periodic count. NOTE: "summary" and "off" also silence
     // decompression warnings, which would indicate real stream corruption rather than a mod.
 
-    "view_distance": "auto",
-    // how much world the bot asks the server to keep loaded around it. "auto" scales
-    // it to the server's measured tick rate, shrinking when the server struggles --
-    // a roaming bot forces chunk generation and is often the cause of that struggle.
-    // pin it with "far", "normal", "short", "tiny", or a chunk count.
+    "view_distance": "normal",
+    // how much world the bot asks the server to keep loaded around it: "far",
+    // "normal", "short", "tiny", or a chunk count. even "tiny" is 96 blocks, well
+    // past what pathfinding searches, so a smaller window costs the bot little.
+    // measured on a stuttering modded server this made no difference either way --
+    // run-to-run variance on one setting was larger than the gap between settings --
+    // so it is a plain knob rather than something clever.
 
     "exploration_radius": 0,
     // how far from its spawn point the bot will travel, in blocks. 0 is unlimited.
