@@ -69,6 +69,11 @@ const settings = {
     // "summary" logs the first, then a periodic count. NOTE: "summary" and "off" also silence
     // decompression warnings, which would indicate real stream corruption rather than a mod.
 
+    "mod_data": "./mod_data",
+    // block/item/entity registries dumped from a modded server, so the bot can see
+    // modded blocks instead of nameless undiggable air. a directory of .json packs,
+    // a single file, or a list of either. generate one with tools/mod-data-dumper.
+
     "log_all_prompts": false, // log ALL prompts to file
 };
 

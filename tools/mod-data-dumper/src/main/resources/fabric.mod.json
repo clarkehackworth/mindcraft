@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "mindcraft_dumper",
+  "version": "1.0.0",
+  "name": "Mindcraft Mod Data Dumper",
+  "description": "Dumps the server's block/item/entity registries as a mindcraft mod data pack.",
+  "environment": "*",
+  "entrypoints": {
+    "main": ["dev.mindcraft.dumper.DumperMod"]
+  },
+  "depends": {
+    "fabricloader": ">=0.14.0",
+    "fabric-api": "*",
+    "minecraft": "~1.20"
+  }
+}

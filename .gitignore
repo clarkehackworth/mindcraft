@@ -28,3 +28,8 @@ tasks/construction_tasks/train/**
 server_data*
 **/.DS_Store
 src/mindcraft-py/__pycache__/
+
+# mod data packs are large, server-specific dumps
+mod_data/*.json
+tools/mod-data-dumper/build/
+tools/mod-data-dumper/.gradle/
