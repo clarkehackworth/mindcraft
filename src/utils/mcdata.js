@@ -308,31 +308,79 @@ export const UNKNOWN_BLOCK_ID = 65535;
 //
 // Server ticks are the honest feedback signal for that, so the window follows
 // them. bot.time.age counts world ticks and update_time carries it every 20, so
-// comparing its advance against the wall clock gives TPS without asking the
-// server anything. Radii are in chunks; even the smallest is 96 blocks, well
-// past what pathfinding searches, so shrinking costs the bot little.
-const TPS_TIERS = [
-    { min_tps: 18, view: 'far' },     // 12 chunks -- healthy server, roam freely
-    { min_tps: 15, view: 'normal' },  // 10
-    { min_tps: 11, view: 'short' },   // 8
-    { min_tps: 0, view: 'tiny' },     // 6 -- struggling, stop making it worse
+// the wall clock and the tick clock can be compared without asking the server
+// anything. Radii are in chunks; even the smallest is 96 blocks, well past what
+// pathfinding searches, so shrinking costs the bot little.
+//
+// What is measured is stalls, not average tps. This server does not run slow, it
+// freezes: healthy ticks either side of a two second pause every minute or two.
+// Averaged over any useful window that is ~19.5 tps, which reads as healthy and
+// leaves the window wide open, and an average short enough to notice the pause
+// sits right on the threshold and oscillates across it. Counting the pauses
+// measures the thing that actually breaks pathing.
+const STALL_LOST_MS = 1000;      // tick time lost in one interval to count as a stall
+const STALL_WINDOW_MS = 300000;  // rolling window the rate is measured over
+const STALL_MIN_OBSERVED_MS = 60000; // don't extrapolate a rate from a few seconds
+const STALL_TIERS = [
+    { max_per_min: 0.1, view: 'far' },       // 12 chunks -- quiet, roam freely
+    { max_per_min: 0.5, view: 'normal' },    // 10
+    { max_per_min: 1.5, view: 'short' },     // 8
+    { max_per_min: Infinity, view: 'tiny' }, // 6 -- stuttering, stop making it worse
 ];
-const TPS_SMOOTHING = 0.3;      // EMA weight for each new sample
-const TPS_SETTLE_MS = 60000;    // min time between changes, so it cannot flap
+// Asymmetric on purpose: shrink as soon as the server complains, but earn the
+// way back. Growing again is what caused the last round of flapping.
+const SHRINK_SETTLE_MS = 60000;
+const GROW_SETTLE_MS = 300000;
+const TPS_SMOOTHING = 0.3;       // EMA weight, for the log line only
 
 /**
- * Pick a view distance for a tick rate, refusing to change too often.
- * Returns the new view distance, or null to leave it alone. Stateful across
- * calls -- one picker per bot.
+ * Count server stalls over a rolling window.
+ * A stall is an interval where the wall clock ran well ahead of the tick clock,
+ * which is what a server freeze looks like from the client.
+ */
+export function createStallTracker() {
+    const stalls = [];
+    let started_at = null;
+    return {
+        /** Feed one update_time interval. Returns the tick time lost, in ms. */
+        sample(ticks, elapsed_ms, now) {
+            if (started_at === null) started_at = now;
+            if (!(elapsed_ms > 0)) return 0;
+            const lost = elapsed_ms - ticks * 50;
+            if (lost >= STALL_LOST_MS) stalls.push(now);
+            return lost;
+        },
+        /** Stalls per minute over the window so far. */
+        ratePerMin(now) {
+            while (stalls.length && now - stalls[0] > STALL_WINDOW_MS) stalls.shift();
+            if (started_at === null) return 0;
+            const observed = Math.max(Math.min(now - started_at, STALL_WINDOW_MS), STALL_MIN_OBSERVED_MS);
+            return stalls.length / (observed / 60000);
+        },
+    };
+}
+
+/**
+ * Pick a view distance for a stall rate. Returns the new view distance, or null
+ * to leave it alone. Stateful across calls -- one picker per bot.
  */
 export function createViewDistancePicker() {
-    let current = null, last_change = 0;
-    return function pick(tps, now) {
-        const view = TPS_TIERS.find(t => tps >= t.min_tps).view;
-        if (view === current || now - last_change < TPS_SETTLE_MS) return null;
-        current = view;
-        last_change = now;
-        return view;
+    let current = null, last_change = 0, wants = null, wants_since = 0;
+    const commit = (idx, now) => {
+        current = idx; last_change = now; wants = null; wants_since = 0;
+        return STALL_TIERS[idx].view;
+    };
+    return function pick(stalls_per_min, now) {
+        const idx = STALL_TIERS.findIndex(t => stalls_per_min <= t.max_per_min);
+        if (current === null) return commit(idx, now);
+        if (idx === current) { wants = null; wants_since = 0; return null; }
+        if (idx > current) {
+            // Shrinking: the server is complaining, react without much delay.
+            return now - last_change < SHRINK_SETTLE_MS ? null : commit(idx, now);
+        }
+        // Growing: only after the quieter rate has held for a while.
+        if (wants !== idx) { wants = idx; wants_since = now; return null; }
+        return now - wants_since < GROW_SETTLE_MS ? null : commit(idx, now);
     };
 }
 
@@ -357,17 +405,23 @@ function trackServerTps(bot) {
     }
     let last_age = null, last_at = 0;
     const pick = createViewDistancePicker();
+    const stalls = createStallTracker();
+    bot.server_stalls_per_min = 0;
     bot._client.on('update_time', () => {
         const age = bot.time?.age, now = Date.now();
         if (age == null) return;
-        if (last_age !== null)
-            bot.server_tps = smoothTps(bot.server_tps, age - last_age, now - last_at);
+        if (last_age !== null) {
+            const ticks = age - last_age;
+            bot.server_tps = smoothTps(bot.server_tps, ticks, now - last_at);
+            stalls.sample(ticks, now - last_at, now);
+        }
         last_age = age; last_at = now;
+        bot.server_stalls_per_min = stalls.ratePerMin(now);
 
         if (settings.view_distance !== 'auto') return;
-        const view = pick(bot.server_tps, now);
+        const view = pick(bot.server_stalls_per_min, now);
         if (!view) return;
-        console.log(`[mcdata] server at ${bot.server_tps.toFixed(1)} tps, view distance -> ${view}`);
+        console.log(`[mcdata] server stalling ${bot.server_stalls_per_min.toFixed(2)}/min (~${bot.server_tps.toFixed(1)} tps), view distance -> ${view}`);
         try { bot.setSettings({ viewDistance: view }); } catch (err) { console.warn(`[mcdata] could not set view distance: ${err.message}`); }
     });
 }
@@ -388,7 +442,10 @@ export function tameMovementsForLag(bot) {
     }
     const originalSetMovements = bot.pathfinder.setMovements.bind(bot.pathfinder);
     bot.pathfinder.setMovements = function (movements) {
-        if (movements && bot.server_tps < 18) {
+        // Keyed on stalls, not average tps, for the same reason the view
+        // distance is: a server that freezes for two seconds still averages
+        // ~19.5 tps, and a jump that lands across the freeze is the failure.
+        if (movements && bot.server_stalls_per_min > STALL_TIERS[0].max_per_min) {
             movements.allowParkour = false;
             movements.allowSprinting = false;
         }
