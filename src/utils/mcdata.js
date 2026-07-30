@@ -1,5 +1,5 @@
-import minecraftData from 'minecraft-data';
 import settings from '../agent/settings.js';
+import { loadModDataPacks, applyModDataPacks } from './mod_data.js';
 import { createBot } from 'mineflayer';
 import prismarine_items from 'prismarine-item';
 import { pathfinder } from 'mineflayer-pathfinder';
@@ -14,6 +14,40 @@ let Item = null;
 
 // How often "summary" packet_error_logging emits a rollup count.
 const PACKET_ERROR_ROLLUP_MINS = 5;
+
+// Mods that re-skin a vanilla station register their own MenuType, which lands
+// past the vanilla protocol ids prismarine-windows knows. It then has no layout
+// for the window and returns null, which mineflayer dereferences -- killing the
+// agent process. The layouts are identical though, so the window is recovered
+// by its title: VisualWorkbench (in Prominence 2) sends the crafting table's
+// own "container.crafting" title, and craftRecipe works once it resolves.
+// Keyed by the title's translate key -> prismarine-windows layout key, which
+// createWindow accepts by name, so this needs no per-version id arithmetic.
+// Add an entry here if another re-skinned station shows up in the
+// "declining unsupported window type" warning.
+const WINDOW_TITLE_TO_TYPE = {
+    'container.crafting': 'minecraft:crafting',
+};
+
+/**
+ * Rewrite a modded menu type back to the vanilla layout its title identifies.
+ * Mutates the packet in place; leaves it alone when the title is unrecognized.
+ */
+function remapModdedWindow(bot, packet) {
+    let title = packet.windowTitle;
+    if (typeof title === 'string') {
+        // 1.20.1 sends the title as a JSON chat component string; older
+        // versions and some mods send a plain string that won't parse.
+        try { title = JSON.parse(title); } catch { /* not JSON */ }
+    }
+    const type = WINDOW_TITLE_TO_TYPE[title?.translate];
+    if (!type || packet.inventoryType === type) return;
+    if (!bot._remapped_window_types?.has(type)) {
+        (bot._remapped_window_types ??= new Set()).add(type);
+        console.warn(`[mcdata] window type ${packet.inventoryType} ("${title.translate}") is a modded re-skin, treating it as ${type}`);
+    }
+    packet.inventoryType = type;
+}
 
 /**
  * @typedef {string} ItemName
@@ -76,9 +110,35 @@ export function initBot(username) {
     let lastPositionUpdate = 0;
     let pendingPositionPacket = null;
     const POSITION_THROTTLE_MS = 50;
+    // A move packet with NaN in any field is an instant kick: the server checks
+    // for non-finite values before anything else and drops the connection with
+    // "Invalid move player packet received"
+    // (multiplayer.disconnect.invalid_player_movement). It is not the
+    // moved-too-quickly check, which only warns.
+    //
+    // The usual source is generated code doing bot.lookAt(new Vec3(block.x,
+    // block.y, block.z)) -- a prismarine Block keeps its coords in .position, so
+    // block.x is undefined, the Vec3 is all-NaN, and lookAt's atan2 hands NaN to
+    // bot.entity.yaw. Every later packet then carries the NaN too, so this
+    // repairs bot.entity rather than only the packet: dropping alone would leave
+    // the bot silently frozen until the server timed it out.
+    const lastGoodMove = {};
+    const MOVE_FIELDS = ['x', 'y', 'z', 'yaw', 'pitch'];
     const originalWrite = bot._client.write.bind(bot._client);
     bot._client.write = function(name, data) {
         if (name === 'position' || name === 'position_look' || name === 'look') {
+            for (const f of MOVE_FIELDS) {
+                if (data?.[f] === undefined) continue;
+                if (Number.isFinite(data[f])) {
+                    lastGoodMove[f] = data[f];
+                    continue;
+                }
+                if (lastGoodMove[f] === undefined) return; // nothing sane to fall back to yet
+                console.warn(`[mcdata] move packet field ${f} was ${data[f]}, restoring ${lastGoodMove[f]} (bad Vec3 in generated code?)`);
+                data[f] = lastGoodMove[f];
+                if (f === 'x' || f === 'y' || f === 'z') bot.entity.position[f] = lastGoodMove[f];
+                else bot.entity[f] = lastGoodMove[f];
+            }
             const now = Date.now();
             if (now - lastPositionUpdate < POSITION_THROTTLE_MS) {
                 // Queue this packet so the last position update is never lost
@@ -151,6 +211,24 @@ export function initBot(username) {
                 return true;
             }
         }
+        if (event === 'open_window' && args[0]) {
+            remapModdedWindow(bot, args[0]);
+            // A modded menu type has no vanilla window layout, and the 1.20.1
+            // open_window packet carries no slot count, so prismarine-windows
+            // returns null and mineflayer dereferences it -- killing the agent
+            // process. If the remap above didn't recognize it, decline the
+            // window rather than die: tell the server it's closed, carry on.
+            try {
+                return originalEmit(event, ...args);
+            } catch (err) {
+                console.warn(`[mcdata] declining unsupported window type ${args[0].inventoryType} (title ${JSON.stringify(args[0].windowTitle)}): ${err.message}`);
+                bot.currentWindow = null;
+                try {
+                    bot._client.write('close_window', { windowId: args[0].windowId });
+                } catch { /* socket already gone */ }
+                return true;
+            }
+        }
         return originalEmit(event, ...args);
     };
 
@@ -177,11 +255,75 @@ export function initBot(username) {
 
     bot.once('login', () => {
         mc_version = bot.version;
-        mcdata = minecraftData(mc_version);
-        Item = prismarine_items(mc_version);
+        applyModDataPacks(bot.registry, loadModDataPacks(settings.mod_data));
+        patchUnknownBlocks(bot.registry);
+        // bot.registry is minecraft-data for this version plus whatever the mod
+        // data packs added, so everything asking mcdata about blocks and items
+        // (nearby block listings, collect targets, crafting lookups) sees the
+        // modded registry instead of a vanilla-only one.
+        mcdata = bot.registry;
+        Item = prismarine_items(bot.registry);
     });
 
     return bot;
+}
+
+// Block id every unknown (modded) block state is reported as. Well above the
+// vanilla range so it can never collide with a real block id.
+export const UNKNOWN_BLOCK_ID = 65535;
+
+/**
+ * Make modded blocks solid and diggable instead of invisible.
+ *
+ * Modded servers append their blocks to the end of the block state palette, so
+ * every modded block arrives with a state id minecraft-data has never heard of.
+ * prismarine-block's fallback for an unknown state id is name '', boundingBox
+ * 'empty', diggable false -- so the bot sees modded logs and leaves as air it
+ * cannot break: pathfinder routes straight through a canopy, the bot collides
+ * with a block it believes isn't there, and there is no dig move to get out.
+ *
+ * Reporting unknown states as a plain solid diggable block is much closer to
+ * the truth and lets pathfinder either walk around them or mine through.
+ *
+ * ponytail: one generic block stands in for every modded block, so the bot can
+ * move through modded terrain but still can't name or target it (no "chop that
+ * redwood"). The real fix is generating a minecraft-data dataset from the
+ * modded server so modded blocks get their actual names.
+ */
+export function patchUnknownBlocks(registry) {
+    if (!registry?.blocksByStateId) return;
+    const template = {
+        id: UNKNOWN_BLOCK_ID,
+        name: 'unknown',
+        displayName: 'Unknown Block',
+        hardness: 2,
+        resistance: 2,
+        stackSize: 64,
+        diggable: true,
+        material: 'default',
+        transparent: false,
+        emitLight: 0,
+        filterLight: 15,
+        boundingBox: 'block',
+        states: [],
+        shapes: [[0, 0, 0, 1, 1, 1]],
+        drops: [],
+    };
+    registry.blocks[UNKNOWN_BLOCK_ID] = template;
+    registry.blocksByName['unknown'] = template;
+
+    const unknown_states = {};
+    registry.blocksByStateId = new Proxy(registry.blocksByStateId, {
+        get(target, prop) {
+            const known = target[prop];
+            if (known !== undefined || typeof prop !== 'string') return known;
+            const state_id = Number(prop);
+            if (!Number.isInteger(state_id) || state_id < 0) return undefined;
+            // minStateId/maxStateId are what prismarine-block subtracts to get
+            // metadata; pinning them to the state id keeps metadata at 0.
+            return unknown_states[state_id] ??= { ...template, minStateId: state_id, maxStateId: state_id };
+        }
+    });
 }
 
 export function isHuntable(mob) {
@@ -252,6 +394,9 @@ export function getAllItems(ignore) {
     let items = []
     for (const itemId in mcdata.items) {
         const item = mcdata.items[itemId];
+        // A modpack adds tens of thousands of items; the ones with no recipe are
+        // dead weight for callers scanning every item (what can I craft?).
+        if (item.mod && !mcdata.recipes?.[item.id]) continue;
         if (!ignore.includes(item.name)) {
             items.push(item);
         }
