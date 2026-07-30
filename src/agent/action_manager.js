@@ -1,3 +1,6 @@
+// How long an action gets to notice the interrupt before it is abandoned.
+const STOP_GRACE_MS = 10000;
+
 export class ActionManager {
     constructor(agent) {
         this.agent = agent;
@@ -9,6 +12,10 @@ export class ActionManager {
         this.resume_name = '';
         this.last_action_time = 0;
         this.recent_action_counter = 0;
+        // Bumped for every action. An action that was interrupted and later
+        // returns anyway sees a newer generation and skips its own cleanup,
+        // so it cannot clobber the state of whatever replaced it.
+        this.generation = 0;
     }
 
     async resumeAction(actionFn, timeout) {
@@ -25,16 +32,27 @@ export class ActionManager {
 
     async stop() {
         if (!this.executing) return;
-        const timeout = setTimeout(() => {
-            this.agent.cleanKill('Code execution refused stop after 10 seconds. Killing process.');
-        }, 10000);
-        while (this.executing) {
+        // ponytail: cooperative interrupt only. Generated code runs in this
+        // process, so there is no way to actually cancel it -- we set
+        // interrupt_code, stop pathfinder/digging/pvp, and hope the action
+        // checks the flag. It may never. This used to kill the whole process
+        // when it didn't, which turned "a mob hit us mid-path" into a full
+        // relaunch. Now we wait a bounded grace period and abandon it instead;
+        // the generation counter keeps an abandoned action from corrupting the
+        // one that replaces it. Ceiling: an abandoned action is still running
+        // and can still touch the bot. Move insecure code to a worker thread
+        // if one is ever seen doing damage after being abandoned.
+        const deadline = Date.now() + STOP_GRACE_MS;
+        while (this.executing && Date.now() < deadline) {
             this.agent.requestInterrupt();
             console.log('waiting for code to finish executing...');
             await new Promise(resolve => setTimeout(resolve, 300));
         }
-        clearTimeout(timeout);
-    } 
+        if (this.executing) {
+            console.warn(`action "${this.currentActionLabel}" ignored the interrupt for ${STOP_GRACE_MS / 1000}s, abandoning it`);
+            this.executing = false;
+        }
+    }
 
     cancelResume() {
         this.resume_func = null;
@@ -60,6 +78,7 @@ export class ActionManager {
 
     async _executeAction(actionLabel, actionFn, timeout = 10) {
         let TIMEOUT;
+        let gen; // set once this action owns the manager; the catch needs it too
         try {
             if (this.last_action_time > 0) {
                 let time_diff = Date.now() - this.last_action_time;
@@ -92,17 +111,26 @@ export class ActionManager {
             // clear bot logs and reset interrupt code
             this.agent.clearBotLogs();
 
+            gen = ++this.generation;
             this.executing = true;
+            this.timedout = false;
             this.currentActionLabel = actionLabel;
             this.currentActionFn = actionFn;
 
             // timeout in minutes
             if (timeout > 0) {
-                TIMEOUT = this._startTimeout(timeout);
+                TIMEOUT = this._startTimeout(timeout, gen);
             }
 
             // start the action
             await actionFn();
+
+            // An abandoned action landing here would otherwise clear the
+            // executing flag and bot logs belonging to its replacement.
+            if (gen !== this.generation) {
+                clearTimeout(TIMEOUT);
+                return { success: false, message: '', interrupted: true, timedout: false };
+            }
 
             // mark action as finished + cleanup
             this.executing = false;
@@ -124,14 +152,20 @@ export class ActionManager {
             // return action status report
             return { success: true, message: output, interrupted, timedout };
         } catch (err) {
+            console.error("Code execution triggered catch:", err);
+            // Log the full stack trace
+            console.error(err.stack);
+            // An abandoned action throwing late must not tear down its
+            // replacement -- report the failure, touch nothing else.
+            if (gen !== undefined && gen !== this.generation) {
+                clearTimeout(TIMEOUT);
+                return { success: false, message: '', interrupted: true, timedout: false };
+            }
             this.executing = false;
             this.currentActionLabel = '';
             this.currentActionFn = null;
             clearTimeout(TIMEOUT);
             this.cancelResume();
-            console.error("Code execution triggered catch:", err);
-            // Log the full stack trace
-            console.error(err.stack);
             await this.stop();
             err = err.toString();
 
@@ -165,8 +199,11 @@ export class ActionManager {
         return output;
     }
 
-    _startTimeout(TIMEOUT_MINS = 10) {
+    _startTimeout(TIMEOUT_MINS = 10, gen) {
         return setTimeout(async () => {
+            // An abandoned action never clears its timeout, so without this the
+            // stale timer fires later and stops whatever is running by then.
+            if (gen !== undefined && gen !== this.generation) return;
             console.warn(`Code execution timed out after ${TIMEOUT_MINS} minutes. Attempting force stop.`);
             this.timedout = true;
             this.agent.history.add('system', `Code execution timed out after ${TIMEOUT_MINS} minutes. Attempting force stop.`);
