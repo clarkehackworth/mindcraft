@@ -251,10 +251,14 @@ export function initBot(username) {
     bot.loadPlugin(armorManager); // auto equip armor
 
     trackServerTps(bot);
-    tameMovementsForLag(bot);
-    // Anchor for exploration_radius: where the bot came into the world, not the
-    // world spawn, since that is the ground it is meant to work.
-    bot.once('spawn', () => { bot.spawn_point = bot.entity.position.clone(); });
+    bot.once('spawn', () => {
+        // Anchor for exploration_radius: where the bot came into the world, not
+        // the world spawn, since that is the ground it is meant to work.
+        bot.spawn_point = bot.entity.position.clone();
+        // loadPlugin defers injection, so bot.pathfinder does not exist until
+        // the bot is in the world -- hooking it any earlier throws.
+        tameMovementsForLag(bot);
+    });
     bot.once('resourcePack', () => {
         bot.acceptResourcePack();
     });
@@ -377,7 +381,11 @@ function trackServerTps(bot) {
 // ponytail: hooked on setMovements rather than fixed at each call site, because
 // skills.js builds `new pf.Movements(bot)` in a dozen places and would only
 // grow more. Drop the hook if those ever share one constructor.
-function tameMovementsForLag(bot) {
+export function tameMovementsForLag(bot) {
+    if (!bot.pathfinder?.setMovements) {
+        console.warn('[mcdata] pathfinder missing at spawn, movement taming disabled');
+        return;
+    }
     const originalSetMovements = bot.pathfinder.setMovements.bind(bot.pathfinder);
     bot.pathfinder.setMovements = function (movements) {
         if (movements && bot.server_tps < 18) {

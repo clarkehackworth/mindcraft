@@ -2,7 +2,7 @@
 // Covers lag adaptation: view distance tracking the server's tick rate without
 // flapping, and the exploration leash.
 import assert from 'assert';
-import { createViewDistancePicker, smoothTps } from './mcdata.js';
+import { createViewDistancePicker, smoothTps, tameMovementsForLag } from './mcdata.js';
 import { withinExplorationRadius } from '../agent/library/skills.js';
 import settings from '../../settings.js';
 
@@ -56,6 +56,32 @@ const steady = createViewDistancePicker();
 let t = 0, steady_changes = 0;
 for (let i = 0; i < 600; i++) { t += 1000; if (steady(20, t)) steady_changes++; }
 assert.equal(steady_changes, 1, 'a steady server should settle after one change');
+
+// --- movement taming --------------------------------------------------------
+// loadPlugin defers injection, so bot.pathfinder is undefined until the bot is
+// in the world. Hooking it too early used to throw and kill agent startup.
+tameMovementsForLag({});                       // no pathfinder at all
+tameMovementsForLag({ pathfinder: {} });       // present but not injected yet
+
+// once injected, it wraps setMovements and tames only when the server is slow
+const seen = [];
+const slow = { server_tps: 9, pathfinder: { setMovements: m => seen.push(m) } };
+tameMovementsForLag(slow);
+let mv = { allowParkour: true, allowSprinting: true };
+slow.pathfinder.setMovements(mv);
+assert.equal(mv.allowParkour, false, 'parkour must be off on a slow server');
+assert.equal(mv.allowSprinting, false, 'sprinting must be off on a slow server');
+assert.equal(seen.length, 1, 'the original setMovements must still be called');
+
+const fast = { server_tps: 20, pathfinder: { setMovements: () => {} } };
+tameMovementsForLag(fast);
+mv = { allowParkour: true, allowSprinting: true };
+fast.pathfinder.setMovements(mv);
+assert.equal(mv.allowParkour, true, 'a healthy server should keep parkour');
+assert.equal(mv.allowSprinting, true, 'a healthy server should keep sprinting');
+
+// a null movements object must not throw
+fast.pathfinder.setMovements(null);
 
 // --- exploration leash ------------------------------------------------------
 const bot = { spawn_point: { x: 100, z: -50 } };
