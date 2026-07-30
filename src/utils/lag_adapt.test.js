@@ -2,7 +2,7 @@
 // Covers lag adaptation: view distance following the server's stall rate without
 // flapping, movement taming, and the exploration leash.
 import assert from 'assert';
-import { createViewDistancePicker, createStallTracker, smoothTps, tameMovementsForLag } from './mcdata.js';
+import { createViewDistancePicker, createStallTracker, createLoopLagTracker, smoothTps, tameMovementsForLag } from './mcdata.js';
 import { withinExplorationRadius } from '../agent/library/skills.js';
 import settings from '../../settings.js';
 
@@ -30,6 +30,20 @@ assert.equal(st.sample(20, 1000, 1000), 0, 'a healthy interval loses no tick tim
 assert.equal(st.sample(20, 3000, 4000), 2000, 'a 3s interval of 20 ticks lost 2s');
 assert.equal(st.sample(20, 0, 4000), 0, 'a zero interval must not be counted');
 
+// The bot blocking its own event loop -- an LLM response landing, a GC -- delays
+// the packet and is indistinguishable from a server freeze unless subtracted.
+// Getting this wrong makes the bot shrink its view distance over its own pauses.
+st = createStallTracker();
+assert.equal(st.sample(20, 3000, 1000, 2000), 0, 'delay caused by this process is not a server stall');
+assert.equal(st.ratePerMin(61000), 0, 'and must not be counted');
+st = createStallTracker();
+st.sample(20, 4000, 1000, 500);
+assert.ok(st.ratePerMin(61000) > 0, 'a real freeze still counts when the loop was only briefly blocked');
+// just under the threshold does not count
+st = createStallTracker();
+st.sample(20, 2400, 1000);
+assert.equal(st.ratePerMin(61000), 0, '1.4s lost is under the 1.5s threshold');
+
 // rate is per minute over the observed window, never extrapolated from seconds
 st = createStallTracker();
 st.sample(20, 1000, 1000);                       // starts the clock
@@ -43,6 +57,18 @@ assert.equal(st.ratePerMin(3600000), 0, 'stalls older than the window must drop 
 st = createStallTracker();
 st.sample(20, 1000, 1000);
 assert.equal(st.ratePerMin(2000), 0, 'no stalls means no rate, even seconds in');
+
+// --- event loop lag ---------------------------------------------------------
+// Blocking the loop synchronously must show up as delay; the tracker is what
+// tells the stall counter to discount it.
+const lag = createLoopLagTracker(50);
+const block_until = Date.now() + 400;
+while (Date.now() < block_until) { /* deliberately block */ }
+await new Promise(r => setTimeout(r, 120));
+const observed = lag.takeMax();
+assert.ok(observed > 100, `blocking 400ms should register as loop delay, got ${observed}`);
+assert.equal(lag.takeMax(), 0, 'taking the max resets it');
+lag.stop();
 
 // --- tier selection ---------------------------------------------------------
 function settleOn(rate) {

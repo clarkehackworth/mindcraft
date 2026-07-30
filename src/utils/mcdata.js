@@ -318,7 +318,12 @@ export const UNKNOWN_BLOCK_ID = 65535;
 // leaves the window wide open, and an average short enough to notice the pause
 // sits right on the threshold and oscillates across it. Counting the pauses
 // measures the thing that actually breaks pathing.
-const STALL_LOST_MS = 1000;      // tick time lost in one interval to count as a stall
+// A second is too tight: update_time already arrives about once a second, so
+// anything that blocks this process for that long -- an LLM call resolving, a
+// GC pause -- delays the packet and looks exactly like a server freeze. The
+// threshold is above that noise, and event loop delay is measured separately
+// and subtracted, so the client cannot blame the server for its own stutter.
+const STALL_LOST_MS = 1500;      // tick time lost in one interval to count as a stall
 const STALL_WINDOW_MS = 300000;  // rolling window the rate is measured over
 const STALL_MIN_OBSERVED_MS = 60000; // don't extrapolate a rate from a few seconds
 const STALL_TIERS = [
@@ -342,13 +347,17 @@ export function createStallTracker() {
     const stalls = [];
     let started_at = null;
     return {
-        /** Feed one update_time interval. Returns the tick time lost, in ms. */
-        sample(ticks, elapsed_ms, now) {
+        /**
+         * Feed one update_time interval. loop_delay_ms is how long this process
+         * was itself blocked during it, which is not the server's fault.
+         * Returns the tick time lost to the server, in ms.
+         */
+        sample(ticks, elapsed_ms, now, loop_delay_ms = 0) {
             if (started_at === null) started_at = now;
             if (!(elapsed_ms > 0)) return 0;
-            const lost = elapsed_ms - ticks * 50;
+            const lost = elapsed_ms - ticks * 50 - Math.max(0, loop_delay_ms);
             if (lost >= STALL_LOST_MS) stalls.push(now);
-            return lost;
+            return Math.max(0, lost);
         },
         /** Stalls per minute over the window so far. */
         ratePerMin(now) {
@@ -357,6 +366,27 @@ export function createStallTracker() {
             const observed = Math.max(Math.min(now - started_at, STALL_WINDOW_MS), STALL_MIN_OBSERVED_MS);
             return stalls.length / (observed / 60000);
         },
+    };
+}
+
+/**
+ * Watch how late a fixed interval fires, which is how long this process was
+ * blocked. Without this the bot's own pauses -- an LLM response arriving, a GC
+ * -- are indistinguishable from the server freezing, and it would shrink its
+ * view distance in response to its own stutter.
+ */
+export function createLoopLagTracker(period_ms = 200) {
+    let worst = 0, last = Date.now();
+    const timer = setInterval(() => {
+        const now = Date.now();
+        worst = Math.max(worst, now - last - period_ms);
+        last = now;
+    }, period_ms);
+    timer.unref?.();
+    return {
+        /** Worst delay since the last call, then resets. */
+        takeMax() { const w = worst; worst = 0; return w; },
+        stop() { clearInterval(timer); },
     };
 }
 
@@ -406,14 +436,17 @@ function trackServerTps(bot) {
     let last_age = null, last_at = 0;
     const pick = createViewDistancePicker();
     const stalls = createStallTracker();
+    const loop_lag = createLoopLagTracker();
+    bot.once('end', () => loop_lag.stop());
     bot.server_stalls_per_min = 0;
     bot._client.on('update_time', () => {
         const age = bot.time?.age, now = Date.now();
+        const blocked = loop_lag.takeMax();
         if (age == null) return;
         if (last_age !== null) {
             const ticks = age - last_age;
             bot.server_tps = smoothTps(bot.server_tps, ticks, now - last_at);
-            stalls.sample(ticks, now - last_at, now);
+            stalls.sample(ticks, now - last_at, now, blocked);
         }
         last_age = age; last_at = now;
         bot.server_stalls_per_min = stalls.ratePerMin(now);
