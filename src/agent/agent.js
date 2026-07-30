@@ -476,7 +476,14 @@ export class Agent {
             }
         });
         this.bot.on('messagestr', async (message, _, jsonMsg) => {
-            if (jsonMsg.translate && jsonMsg.translate.startsWith('death') && message.startsWith(this.name)) {
+            // The death message names the account, which is not necessarily the
+            // agent's name: under Microsoft auth mineflayer logs in as the
+            // account's username. Missing this means the bot is never told it
+            // died and last_death_position is never saved, so it cannot find its
+            // own grave.
+            const died = message.startsWith(this.name) ||
+                (this.bot?.username && message.startsWith(this.bot.username));
+            if (jsonMsg.translate && jsonMsg.translate.startsWith('death') && died) {
                 console.log('Agent died: ', message);
                 let death_pos = this.bot.entity.position;
                 this.memory_bank.rememberPlace('last_death_position', death_pos.x, death_pos.y, death_pos.z);
