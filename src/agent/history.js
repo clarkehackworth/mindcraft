@@ -109,8 +109,14 @@ export class History {
             console.log('Loaded memory:', this.memory);
             return data;
         } catch (error) {
-            console.error('Failed to load history:', error);
-            throw error;
+            // A truncated or corrupt memory file (a wipe, or a crash mid-write)
+            // used to rethrow here, which kills the agent on every start --
+            // a crash loop that can only be broken by hand. Starting fresh is
+            // strictly better: the file is about to be overwritten anyway.
+            console.error('Failed to load memory, starting fresh:', error.message);
+            this.memory = '';
+            this.turns = [];
+            return null;
         }
     }
 
