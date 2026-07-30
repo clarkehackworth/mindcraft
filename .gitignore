@@ -33,3 +33,6 @@ src/mindcraft-py/__pycache__/
 mod_data/*.json
 tools/mod-data-dumper/build/
 tools/mod-data-dumper/.gradle/
+
+# serena mcp workspace cache
+.serena/
