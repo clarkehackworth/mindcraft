@@ -5,6 +5,12 @@ const settings = {
     "auth": "offline", // or "microsoft"
 
     // the mindserver manages all agents and hosts the UI
+    "mindserver_host": "localhost", // address to bind the UI to. "0.0.0.0" for all interfaces,
+    // or a specific address like "192.168.1.10" to expose it on one network only.
+    // anything other than localhost requires mindserver_auth_token to be set.
+    "mindserver_auth_token": null, // shared secret required to connect to the mindserver.
+    // the UI grants full control of every agent, so this is mandatory when
+    // mindserver_host is not loopback. open the UI as http://host:port/?token=YOUR_TOKEN
     "mindserver_port": 8080,
     "auto_open_ui": true, // opens UI in browser on startup
     

@@ -44,11 +44,46 @@ export function logoutAgent(agentName) {
     }
 }
 
+// Loopback addresses need no auth token, since only this machine can reach them.
+function isLoopbackHost(host) {
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+}
+
 // Initialize the server
-export function createMindServer(host_public = false, port = 8080) {
+// host may be a hostname/address string. `true`/`false` are still accepted for
+// the old host_public boolean and mapped onto the equivalent address.
+export function createMindServer(host = 'localhost', port = 8080, auth_token = null) {
+    if (host === true) host = '0.0.0.0';
+    else if (host === false) host = 'localhost';
+
+    // Binding beyond loopback exposes full agent control -- creating agents,
+    // sending messages, and with allow_insecure_coding, running code. Refuse
+    // rather than quietly publish that.
+    if (!isLoopbackHost(host) && !auth_token) {
+        throw new Error(
+            `mindserver_host is "${host}", which is reachable from other machines, ` +
+            'but mindserver_auth_token is not set. The mindserver UI grants full ' +
+            'control over every agent, so it must not be exposed without a token. ' +
+            'Set mindserver_auth_token in settings.js, or set mindserver_host back ' +
+            'to "localhost".'
+        );
+    }
+
     const app = express();
     server = http.createServer(app);
     io = new Server(server);
+
+    // Authenticate socket connections. This is the whole control surface: agent
+    // creation, messaging, shutdown and all state flow over it. The static UI
+    // files stay public, as they are only client code and carry no data.
+    if (auth_token) {
+        io.use((socket, next) => {
+            const provided = socket.handshake.auth?.token;
+            if (provided === auth_token) return next();
+            console.warn(`Rejected unauthenticated mindserver connection from ${socket.handshake.address}`);
+            next(new Error('unauthorized'));
+        });
+    }
 
     // Serve static files
     const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -276,12 +311,11 @@ export function createMindServer(host_public = false, port = 8080) {
         });
     });
 
-    if (host_public) {
-        console.log('Public hosting not supported yet. Using localhost.');
-    }
-    const host = 'localhost';
     server.listen(port, host, () => {
         console.log(`MindServer running on port ${port} on host ${host}`);
+        if (!isLoopbackHost(host)) {
+            console.warn(`MindServer is reachable from other machines on ${host}:${port}. Connections require the auth token.`);
+        }
     });
 
     return server;

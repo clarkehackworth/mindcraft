@@ -22,7 +22,11 @@ class MindServerProxy {
         if (this.connected) return;
         
         this.name = name;
-        this.socket = io(`http://localhost:${port}`);
+        // Inherited from the parent mindcraft process when the mindserver
+        // requires a token; undefined when it does not.
+        this.socket = io(`http://localhost:${port}`, {
+            auth: { token: process.env.MINDSERVER_AUTH_TOKEN ?? null }
+        });
 
         await new Promise((resolve, reject) => {
             this.socket.on('connect', resolve);
@@ -61,8 +65,18 @@ class MindServerProxy {
             this.agent.cleanKill();
         });
 		
-        this.socket.on('send-message', (data) => {
+        this.socket.on('send-message', async (data) => {
             try {
+                // The UI can send a message before the agent has spawned and
+                // installed respondFunc. Dropping the user's first message with
+                // a TypeError is worse than waiting a few seconds for it.
+                for (let i = 0; i < 20 && !this.agent?.respondFunc; i++) {
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                }
+                if (!this.agent?.respondFunc) {
+                    console.warn('agent is not ready to receive messages yet, dropping:', data.message);
+                    return;
+                }
                 this.agent.respondFunc(data.from, data.message);
             } catch (error) {
                 console.error('Error: ', JSON.stringify(error, Object.getOwnPropertyNames(error)));

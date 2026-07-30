@@ -440,7 +440,31 @@
     </div>
 
     <script>
-        const socket = io({ path: window.location.pathname + 'socket.io' })
+        // When the mindserver requires an auth token, take it from ?token= in
+        // the URL and remember it for this tab, so a reload does not need the
+        // query string again. Servers bound to loopback have no token and this
+        // is simply unused.
+        const urlToken = new URLSearchParams(window.location.search).get('token');
+        if (urlToken) {
+            sessionStorage.setItem('mindserver_token', urlToken);
+            // Drop the token from the address bar so it stays out of history,
+            // bookmarks and any link shared from this page.
+            const cleanUrl = window.location.pathname + window.location.hash;
+            window.history.replaceState({}, '', cleanUrl);
+        }
+        const authToken = sessionStorage.getItem('mindserver_token');
+
+        const socket = io({ path: window.location.pathname + 'socket.io', auth: { token: authToken } })
+
+        socket.on('connect_error', (err) => {
+            if (err.message === 'unauthorized') {
+                sessionStorage.removeItem('mindserver_token');
+                document.body.innerHTML = '<div style="padding:2em;font-family:sans-serif">' +
+                    '<h2>Not authorized</h2><p>This mindserver requires an auth token. ' +
+                    'Open it as <code>' + window.location.origin + '/?token=YOUR_TOKEN</code>, ' +
+                    'using the <code>mindserver_auth_token</code> from settings.js.</p></div>';
+            }
+        });
         const agentsDiv = document.getElementById('agents');
         let settingsSpec = {};
         let profileData = null;

@@ -71,7 +71,7 @@ if (process.env.SETTINGS_JSON) {
 }
 
 
-Mindcraft.init(false, settings.mindserver_port, settings.auto_open_ui);
+Mindcraft.init(settings.mindserver_host, settings.mindserver_port, settings.auto_open_ui, settings.mindserver_auth_token);
 
 for (let profile of settings.profiles) {
     const profile_json = JSON.parse(readFileSync(profile, 'utf8'));

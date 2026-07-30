@@ -9,19 +9,31 @@ let agent_processes = {};
 let agent_count = 0;
 let mindserver_port = 8080;
 
-export async function init(host_public=false, port=8080, auto_open_ui=true) {
+export async function init(host='localhost', port=8080, auto_open_ui=true, auth_token=null) {
     if (connected) {
         console.error('Already initiliazed!');
         return;
     }
-    mindserver = createMindServer(host_public, port);
+    // Agent processes are spawned as children and connect back over socket.io,
+    // so they need the token too. They cannot read it from settings: their own
+    // settings arrive over that same connection. Pass it in the environment,
+    // which spawn() inherits by default and which, unlike argv, is not visible
+    // in `ps` to other users.
+    if (auth_token) {
+        process.env.MINDSERVER_AUTH_TOKEN = auth_token;
+    }
+    mindserver = createMindServer(host, port, auth_token);
     mindserver_port = port;
     connected = true;
     if (auto_open_ui) {
         setTimeout(() => {
             // check if browser listener is already open
             if (numStateListeners() === 0) {
-                open('http://localhost:'+port);
+                // Always loopback, whatever the server is bound to: this opens a
+                // browser on the machine mindcraft is running on. Carry the token
+                // so the UI authenticates without the user pasting it.
+                const query = auth_token ? '?token='+encodeURIComponent(auth_token) : '';
+                open('http://localhost:'+port+query);
             }
         }, 3000);
     }
