@@ -12,7 +12,7 @@ let mc_version = settings.minecraft_version;
 let mcdata = null;
 
 // Normally set from bot.registry on login; tests inject a bare registry here.
-export function useRegistry(registry) { mcdata = registry; }
+export function useRegistry(registry) { mcdata = registry; minable_items = null; }
 let Item = null;
 
 // How often "summary" packet_error_logging emits a rollup count.
@@ -278,6 +278,7 @@ export function initBot(username) {
         // (nearby block listings, collect targets, crafting lookups) sees the
         // modded registry instead of a vanilla-only one.
         mcdata = bot.registry;
+        minable_items = null; // rebuild from the modded drop tables, not vanilla's
         Item = prismarine_items(bot.registry);
     });
 
@@ -588,7 +589,7 @@ export function getAllBiomes() {
     return mcdata.biomes;
 }
 
-export function getItemCraftingRecipes(itemName, inventory = null) {
+export function getItemCraftingRecipes(itemName, inventory = null, lookahead = true) {
     let itemId = getItemId(itemName);
     if (!mcdata.recipes[itemId]) {
         return null;
@@ -628,8 +629,16 @@ export function getItemCraftingRecipes(itemName, inventory = null) {
     // oak_log -- a tree that does not grow in his biome. He spent a day of
     // real time trying to obtain oak.
     const commonItems = ['oak_planks', 'oak_log', 'coal', 'cobblestone'];
+    // One level of lookahead, because holding a log is as good as holding the
+    // planks. Without it, an inventory of pine_log scores every plank recipe at
+    // zero and the tiebreak hands the job back to oak -- and only the top few
+    // candidates are ever costed, so pine never gets considered at all.
+    const held = (name, count) => Math.min(inventory?.[name] ?? 0, count);
+    const nearlyHeld = (name) => !lookahead ? 0 :
+        (getItemCraftingRecipes(name, inventory, false) ?? []).slice(0, 4)
+            .some(([sub]) => Object.keys(sub).some(k => (inventory?.[k] ?? 0) > 0)) ? 1 : 0;
     const haveScore = ([ingredients]) => Object.entries(ingredients)
-        .reduce((n, [name, count]) => n + Math.min(inventory?.[name] ?? 0, count), 0);
+        .reduce((n, [name, count]) => n + (held(name, count) || nearlyHeld(name)), 0);
     const commonScore = ([ingredients]) => Object.keys(ingredients)
         .filter(key => commonItems.includes(key)).reduce((acc, key) => acc + ingredients[key], 0);
     recipes.sort((a, b) => (haveScore(b) - haveScore(a)) || (commonScore(b) - commonScore(a)));
@@ -868,12 +877,40 @@ function planCost(item, count, inventory, leftovers, depth) {
 const MAX_RECIPE_CANDIDATES = 4;
 const MAX_PLAN_DEPTH = 6;
 
+// Items you can go and mine, as opposed to items you must assemble. The test is
+// "does some OTHER block drop this": stone drops cobblestone, coal_ore drops
+// coal, iron_ore drops raw_iron. A furnace, a beacon, a chest and a plank drop
+// only from themselves, which is the registry's way of saying the only way to
+// have one is to make one.
+// An earlier attempt asked merely "is this item a block", and furnace, chest,
+// piston and beacon all are -- the planner started answering "go find a
+// furnace" instead of "craft one from 8 cobblestone".
+let minable_items = null;
+export function isMinable(item) {
+    if (!mcdata?.blocks) return false;
+    if (minable_items === null) {
+        minable_items = new Set();
+        for (const block of Object.values(mcdata.blocks)) {
+            for (const drop of block.drops ?? []) {
+                const id = drop?.drop?.id ?? drop?.drop ?? drop;
+                const name = getItemName(id);
+                if (name && name !== block.name) minable_items.add(name);
+            }
+        }
+    }
+    return minable_items.has(item);
+}
+
 function chooseRecipe(item, stillNeeded, inventory, leftovers, depth) {
     const recipes = getItemCraftingRecipes(item, inventory);
     if (!recipes || recipes.length === 0) return null;
     if (depth >= MAX_PLAN_DEPTH) return recipes[0];
 
-    let best = recipes[0], bestCost = Infinity;
+    // Prominence 2 has a 12 pebble -> 3 cobblestone recipe, so the plan for a
+    // stone_pickaxe read "you are missing 12 pebble" instead of "mine 3
+    // cobblestone", and Andy went looking for pebbles.
+    let best = recipes[0], bestCost = isMinable(item) ? stillNeeded : Infinity;
+    if (bestCost < Infinity) best = null;
     for (const recipe of recipes.slice(0, MAX_RECIPE_CANDIDATES)) {
         const [ingredients, result] = recipe;
         const batches = Math.ceil(stillNeeded / result.craftedCount);

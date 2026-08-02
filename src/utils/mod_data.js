@@ -81,8 +81,10 @@ export function applyModDataPacks(registry, packs) {
         }
         added_recipes += addRecipes(registry, pack.recipes);
     }
+    const expanded = packs.length ? expandPlankRecipes(registry) : 0;
     if (packs.length) {
-        console.log(`loaded ${packs.length} mod data pack(s): ${added_blocks} blocks, ${added_items} items, ${added_recipes} recipes`);
+        console.log(`loaded ${packs.length} mod data pack(s): ${added_blocks} blocks, ${added_items} items, ${added_recipes} recipes` +
+            (expanded ? `, +${expanded} plank variants` : ''));
         if (moved_vanilla) {
             console.log(`corrected block state ids for ${moved_vanilla} vanilla blocks`);
         }
@@ -102,6 +104,80 @@ function addRecipes(registry, recipes) {
         count += variants.length;
     }
     return count;
+}
+
+/**
+ * Put back the plank variants the pack's recipe dump collapsed.
+ *
+ * Minecraft's wooden recipes take the #minecraft:planks TAG, and every mod that
+ * adds a wood registers its planks into it. The dump has no tags -- it lists
+ * each tag recipe once with a single representative item, always
+ * minecraft:oak_planks. So on Prominence 2 the registry claims a wooden_pickaxe
+ * needs oak specifically, and since mineflayer's recipesFor() reads the same
+ * table, Andy could neither plan nor craft one while standing in a frozen pine
+ * taiga holding 20 pine_planks. There is no oak in that biome; he spent days on
+ * it and wrote "pine unusable" into his own memory.
+ *
+ * A plank is any <ns>:<wood>_planks whose <ns>:<wood>_log or <ns>:<wood>_wood
+ * also exists. That check is what keeps the decorative lookalikes out: the
+ * chipped mod alone adds ~40 items like chipped:versailles_spruce_planks, which
+ * are NOT in the tag and would produce recipes the server rejects.
+ *
+ * ponytail: planks only, because planks are the ones that blocked the bot. The
+ * same collapse affects every tag recipe (wool, stone, logs). Generalize by
+ * dumping the server's tag table into the pack -- that is the real fix, and it
+ * belongs in whatever generates the pack, not here.
+ */
+export function expandPlankRecipes(registry) {
+    if (!registry.recipes || !registry.itemsByName) return 0;
+    const planks = new Set();
+    for (const name of Object.keys(registry.itemsByName)) {
+        const wood = /^(?:(.*):)?(.+)_planks$/.exec(name);
+        if (!wood) continue;
+        const [, ns, kind] = wood;
+        const prefix = ns ? `${ns}:` : '';
+        if (registry.itemsByName[`${prefix}${kind}_log`] || registry.itemsByName[`${prefix}${kind}_wood`])
+            planks.add(registry.itemsByName[name].id);
+    }
+    if (planks.size < 2) return 0;
+
+    // Ingredients are ids, nested one level in inShape, and sometimes objects
+    // ({id, count}) rather than bare numbers.
+    const idOf = cell => (cell && typeof cell === 'object' && !Array.isArray(cell)) ? cell.id : cell;
+    const flattenIds = (shape) => shape.flatMap(cell =>
+        Array.isArray(cell) ? flattenIds(cell) : [idOf(cell)]);
+    const substitute = (shape, from, to) => shape.map(cell => {
+        if (Array.isArray(cell)) return substitute(cell, from, to);
+        if (cell && typeof cell === 'object') return idOf(cell) === from ? { ...cell, id: to } : cell;
+        return cell === from ? to : cell;
+    });
+    let added = 0;
+    for (const [result_id, variants] of Object.entries(registry.recipes)) {
+        // A recipe that PRODUCES planks stays put -- expanding it would claim a
+        // pine log crafts oak planks.
+        if (planks.has(Number(result_id))) continue;
+        const grown = [];
+        for (const variant of variants) {
+            const shape = variant.inShape ?? variant.ingredients;
+            if (!shape) continue;
+            const ids = new Set(flattenIds(shape));
+            const used = [...planks].filter(id => ids.has(id));
+            // One plank type per recipe, or substitution is ambiguous.
+            if (used.length !== 1) continue;
+            for (const plank of planks) {
+                if (plank === used[0]) continue;
+                const clone = { ...variant };
+                if (variant.inShape) clone.inShape = substitute(variant.inShape, used[0], plank);
+                else clone.ingredients = substitute(variant.ingredients, used[0], plank);
+                grown.push(clone);
+            }
+        }
+        if (grown.length) {
+            registry.recipes[result_id] = [...variants, ...grown];
+            added += grown.length;
+        }
+    }
+    return added;
 }
 
 /**

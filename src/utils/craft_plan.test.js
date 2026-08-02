@@ -6,7 +6,7 @@
 // steps became objects.
 import assert from 'assert';
 import registryLoader from 'prismarine-registry';
-import { useRegistry, getCraftingPlan, getDetailedCraftingPlan } from './mcdata.js';
+import { useRegistry, getCraftingPlan, getDetailedCraftingPlan, isMinable } from './mcdata.js';
 
 useRegistry(registryLoader('1.20.1'));
 
@@ -46,6 +46,15 @@ assert.ok(Object.keys(empty.required).some(i => i.includes('log')), 'an empty in
 
 const stone = getCraftingPlan('stone_pickaxe', 1, { spruce_log: 3 });
 assert.equal(stone.required.cobblestone, 3, `cobblestone is required directly: ${JSON.stringify(stone.required)}`);
+
+// What separates "go mine it" from "go make it" is whether some OTHER block
+// drops it: stone drops cobblestone, coal_ore drops coal. A furnace drops only
+// a furnace. Prominence 2 has a 12 pebble -> 3 cobblestone recipe, and without
+// this the plan for a stone_pickaxe read "you are missing 12 pebble".
+assert.ok(isMinable('cobblestone'), 'stone drops cobblestone, so cobblestone is mined');
+assert.ok(isMinable('coal'), 'coal_ore drops coal');
+for (const made of ['furnace', 'beacon', 'chest', 'oak_planks', 'crafting_table'])
+    assert.ok(!isMinable(made), `${made} drops only from itself, so it must be crafted`);
 
 // Craftables that are also blocks must still be CRAFTED. A first attempt at
 // preferring cheap mining over expensive crafting keyed off "is this item a
