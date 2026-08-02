@@ -9,6 +9,47 @@ import {ESLint} from "eslint";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+/**
+ * Real skill names closest to one the model made up.
+ *
+ * Matches on the bare function name rather than the whole `skills.x` path,
+ * since half the mistakes are the right function behind the wrong object
+ * (world.getCraftingPlan, skills.craft). Ranked by shared prefix and then by
+ * one name containing the other, which covers goTo->goToPosition and
+ * getBlockAt->getBlockAtPosition without dragging in an edit-distance library.
+ */
+export function nearestSkills(missing, knownSkills, limit = 3) {
+    const bare = (name) => name.split('.').pop().toLowerCase();
+    // camelCase to words, minus the filler verbs that relate nothing.
+    const FILLER = new Set(['get', 'to', 'at', 'the', 'a', 'for', 'is', 'my']);
+    const words = (name) => name.split('.').pop()
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/)
+        .filter(w => w.length >= 3 && !FILLER.has(w));
+    const target = bare(missing);
+    const scored = [];
+    for (const known of knownSkills) {
+        const candidate = bare(known);
+        let score = 0;
+        if (candidate === target) score = 1000;
+        else if (candidate.startsWith(target) || target.startsWith(candidate)) score = 500 + Math.min(candidate.length, target.length);
+        else if (candidate.includes(target) || target.includes(candidate)) score = 250;
+        else {
+            let shared = 0;
+            while (shared < candidate.length && shared < target.length && candidate[shared] === target[shared]) shared++;
+            if (shared >= 4) score = shared;
+            // Otherwise compare camelCase words, which is the only thing
+            // relating getCraftingPlan to craftRecipe: "crafting" and "craft"
+            // are the same idea and share no useful prefix with "get".
+            else {
+                const overlap = words(missing).filter(w => words(known).some(k => k.startsWith(w) || w.startsWith(k))).length;
+                if (overlap) score = 100 + overlap;
+            }
+        }
+        if (score) scored.push({ known, score });
+    }
+    return scored.sort((a, b) => b.score - a.score).slice(0, limit).map(s => s.known);
+}
+
 export class Coder {
     constructor(agent) {
         this.agent = agent;
@@ -126,8 +167,19 @@ export class Coder {
         const knownSkills = new Set(allDocs.map(doc => doc.split('\n')[0]));
         const missingSkills = skills.filter(skill => !knownSkills.has(skill));
         if (missingSkills.length > 0) {
+            // Naming the real function turns a blind retry into a targeted one.
+            // The model does not invent these at random -- it reaches for
+            // skills.goTo when goToPosition exists, world.getBlockAt for
+            // getBlockAtPosition, world.getCraftingPlan for a thing that lives
+            // somewhere else entirely. Left to guess, it burned all five
+            // attempts and gave up with "Code generation failed after 5
+            // attempts" four times in half an hour.
             result += 'These functions do not exist:\n';
-            result += missingSkills.join('\n');
+            result += missingSkills.map(missing => {
+                const suggestions = nearestSkills(missing, knownSkills);
+                return suggestions.length ? `${missing}  -- did you mean: ${suggestions.join(', ')}?` : missing;
+            }).join('\n');
+            result += '\nUse only the functions in the skill docs above; there are no others.';
             console.log(result)
             return result;
         }
