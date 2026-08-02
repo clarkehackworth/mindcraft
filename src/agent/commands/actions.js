@@ -1,6 +1,7 @@
 import * as skills from '../library/skills.js';
 import settings from '../settings.js';
 import convoManager from '../conversation.js';
+import { compilePolicy, describePolicy, savePolicy, deletePolicy, isUserPolicy, parseConditionExpr, evalCondition, conditionDocs, describeCondition } from '../behavior/policy.js';
 
 
 function runAsAction (actionFn, resume = false, timeout = -1) {
@@ -135,6 +136,14 @@ export const actionsList = [
                 range = 32;
             }
             await skills.goToNearestBlock(agent.bot, block_type, 4, range);
+        })
+    },
+    {
+        name: '!goToSurface',
+        description: 'Swim straight up out of water. Use this when you are underwater and running out of air.',
+        params: {},
+        perform: runAsAction(async (agent) => {
+            await skills.surface(agent.bot);
         })
     },
     {
@@ -337,9 +346,38 @@ export const actionsList = [
     {
         name: '!stay',
         description: 'Stay in the current location no matter what. Pauses all modes.',
-        params: {'type': { type: 'int', description: 'The number of seconds to stay. -1 for forever.', domain: [-1, Number.MAX_SAFE_INTEGER] }},
+        params: {'type': { type: 'int', description: 'The number of seconds to stay. -1 to stay until interrupted, or until morning if it is currently night.', domain: [-1, Number.MAX_SAFE_INTEGER] }},
         perform: runAsAction(async (agent, seconds) => {
+            // ponytail: parking forever is only safe when a human is around to
+            // end it. Self-prompting, the goal loop is the only thing that could,
+            // and it just re-decides to stay -- Andy sat at base through two full
+            // days this way. !stayUntil covers every real reason to wait.
+            if (seconds === -1 && agent.self_prompter.isActive()) {
+                skills.log(agent.bot, 'Refusing to stay indefinitely while self-prompting, because nothing would start you up again. ' +
+                    'Use !stayUntil with the condition you are actually waiting for, or !stay with a number of seconds.');
+                return;
+            }
             await skills.stay(agent.bot, seconds);
+        })
+    },
+    {
+        name: '!stayUntil',
+        description: 'Stay in the current location until a condition becomes true, then carry on. Pauses all modes. ' +
+            'Use this instead of !stay whenever you are waiting for something specific. Conditions:\n' + conditionDocs() +
+            '\nArgs are positional and optional. Prefix with "not", and join with "and" or "or". ' +
+            'e.g. !stayUntil("not is_night", -1) or !stayUntil("health_below 18 or hostile_nearby 8", 120)',
+        params: {
+            'condition': { type: 'string', description: 'The condition to wait for, e.g. "not is_night" or "has_item bread 5".' },
+            'timeout_seconds': { type: 'int', description: 'Give up and stop waiting after this many seconds. -1 to wait indefinitely.', domain: [-1, Number.MAX_SAFE_INTEGER] }
+        },
+        perform: runAsAction(async (agent, condition, timeout_seconds) => {
+            const { spec, error } = parseConditionExpr(condition);
+            if (error) {
+                skills.log(agent.bot, `Bad condition: ${error}`);
+                return;
+            }
+            await skills.stay(agent.bot, timeout_seconds,
+                () => evalCondition(spec, agent), describeCondition(spec));
         })
     },
     {
@@ -361,7 +399,7 @@ export const actionsList = [
     },
     {
         name: '!goal',
-        description: 'Set a goal prompt to endlessly work towards with continuous self-prompting.',
+        description: 'Set a goal prompt to endlessly work towards with continuous self-prompting. Expensive: every iteration is an LLM call. For recurring condition-gated behavior ("at night do X", "keep food stocked"), use !policy instead.',
         params: {
             'selfPrompt': { type: 'string', description: 'The goal prompt.' },
         },
@@ -370,7 +408,7 @@ export const actionsList = [
                 agent.self_prompter.setPromptPaused(prompt);
             }
             else {
-                agent.self_prompter.start(prompt);
+                await agent.self_prompter.start(prompt);
             }
         }
     },
@@ -380,6 +418,46 @@ export const actionsList = [
         perform: async function (agent) {
             agent.self_prompter.stop();
             return 'Self-prompting stopped.';
+        }
+    },
+    {
+        name: '!policy',
+        description: 'Set standing instructions for how to behave in specific circumstances (e.g. "flee from mobs, and eat when health is low"). Compiles them into automatic rules checked every tick, in priority order. REPLACES the entire previous policy, including safety rules, so only use it for instructions a person gave you about how to BEHAVE. Notes to yourself ("prefer larch planks", "oak is not in this biome", "zombies killed me here") are NOT policies -- they go in your memory, and putting them here deletes the rules keeping you alive. Use !goal for tasks to work towards.',
+        params: {
+            'instructions': { type: 'string', description: 'Natural language standing instructions describing what to do in which circumstances.' },
+        },
+        perform: async function (agent, instructions) {
+            if (agent.command_self_issued && isUserPolicy(agent.name))
+                return 'Your policy was set by a person, so you cannot replace it. ' +
+                    'If this is a fact to remember rather than a change in how you behave, keep it in your memory instead. ' +
+                    'If you genuinely need different standing behavior, ask them to change the policy.';
+            let policy;
+            const goal = agent.self_prompter.isActive() ? agent.self_prompter.prompt : null;
+            try {
+                policy = await compilePolicy(agent, instructions, goal);
+            } catch (err) {
+                return `Failed to compile policy: ${err.message}`;
+            }
+            agent.bot.modes.installPolicy(policy, instructions);
+            savePolicy(agent.name, policy, instructions, !agent.command_self_issued);
+            let res = `Policy installed:\n${describePolicy(policy)}`;
+            if (goal && policy.covers_goal) {
+                agent.self_prompter.stop();
+                res += '\nThe policy fully covers your goal, so self-prompting was stopped; the rules now run it automatically.';
+            }
+            return res;
+        }
+    },
+    {
+        name: '!clearPolicy',
+        description: 'Remove the current standing-instruction policy and restore default behavior. Only a person can clear a policy they set.',
+        perform: async function (agent) {
+            // Without this the refusal above is theatre: clear, then set.
+            if (agent.command_self_issued && isUserPolicy(agent.name))
+                return 'Your policy was set by a person, so you cannot clear it. Ask them if it needs to change.';
+            agent.bot.modes.clearPolicy();
+            deletePolicy(agent.name);
+            return 'Policy cleared, default behaviors restored.';
         }
     },
     {

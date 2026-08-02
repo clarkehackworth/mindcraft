@@ -439,9 +439,19 @@ function policyPath(agentName) {
     return `./bots/${agentName}/policy.json`;
 }
 
-export function savePolicy(agentName, policy, sourceText) {
+export function savePolicy(agentName, policy, sourceText, user_set = true) {
     mkdirSync(`./bots/${agentName}`, { recursive: true });
-    writeFileSync(policyPath(agentName), JSON.stringify({ source: sourceText, policy }, null, 2));
+    writeFileSync(policyPath(agentName), JSON.stringify({ source: sourceText, policy, user_set }, null, 2));
+}
+
+// Standing instructions from a person outrank the agent's own. It replaced its
+// survival policy with a note about preferred planks twice in one hour; the
+// second time it died 26 times in 6 minutes, respawning into zombies with no
+// rule left telling it to flee or shelter. Policies written before this field
+// existed were all set by a person, so a missing value means user-set.
+export function isUserPolicy(agentName) {
+    const saved = loadPolicy(agentName);
+    return !!saved && saved.user_set !== false;
 }
 
 export function loadPolicy(agentName) {

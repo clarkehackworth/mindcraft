@@ -209,7 +209,36 @@ function numParams(command) {
     return commandParams(command).length;
 }
 
-export async function executeCommand(agent, message) {
+// Nothing tells the agent it is repeating itself: a command that got
+// interrupted, or that did nothing, reads exactly like a fresh one, so it will
+// happily reissue it forever (seen live: !goToCoordinates to the same spot
+// every few seconds for minutes). Count identical calls and say so.
+const REPEAT_LIMIT = 3;
+
+// ponytail: a warning, not a block. Repetition is sometimes right -- retrying a
+// path that a mob interrupted, mining the same vein -- so the LLM decides.
+export function checkRepeat(agent, parsed) {
+    const signature = parsed.commandName + JSON.stringify(parsed.args ?? []);
+    if (agent.last_command_signature === signature)
+        agent.repeat_count = (agent.repeat_count ?? 1) + 1;
+    else {
+        agent.last_command_signature = signature;
+        agent.repeat_count = 1;
+    }
+    if (agent.repeat_count < REPEAT_LIMIT) return '';
+    return `(REPEATED COMMAND) You have run ${parsed.commandName} with the same arguments ${agent.repeat_count} times in a row ` +
+        'and you are still here. It is not working. Do something different -- a different command, different arguments, ' +
+        'or a different place -- and do not run it again.\n';
+}
+
+/**
+ * @param {boolean} self_issued - true when the command came out of the agent's
+ * own LLM response rather than a message from a person. Commands that overwrite
+ * standing instructions a human gave check this: Andy twice replaced his own
+ * survival policy with a note about which planks to prefer, and the second time
+ * he died 26 times in 6 minutes with no rule left telling him to flee or shelter.
+ */
+export async function executeCommand(agent, message, self_issued = false) {
     let parsed = parseCommandMessage(message);
     if (typeof parsed === 'string')
         return parsed; //The command was incorrectly formatted or an invalid input was given.
@@ -223,8 +252,11 @@ export async function executeCommand(agent, message) {
         if (numArgs !== numParams(command))
             return `Command ${command.name} was given ${numArgs} args, but requires ${numParams(command)} args.`;
         else {
+            const repeated = checkRepeat(agent, parsed);
+            agent.command_self_issued = self_issued;
             const result = await command.perform(agent, ...parsed.args);
-            return result;
+            if (!repeated) return result;
+            return typeof result === 'string' ? repeated + result : repeated;
         }
     }
 }

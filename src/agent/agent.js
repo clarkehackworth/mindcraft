@@ -109,7 +109,7 @@ export class Agent {
         this.bot.once('spawn', async () => {
             try {
                 clearTimeout(spawnTimeout);
-                addBrowserViewer(this.bot, count_id);
+                addBrowserViewer(this.bot, count_id, this.name);
                 console.log('Initializing vision intepreter...');
                 this.vision_interpreter = new VisionInterpreter(this, settings.allow_vision);
 
@@ -303,7 +303,10 @@ export class Agent {
         message = await handleEnglishTranslation(message);
         console.log('received message from', source, ':', message);
 
-        const checkInterrupt = () => this.self_prompter.shouldInterrupt(self_prompt) || this.shut_up || convoManager.responseScheduledFor(source);
+        // shut_up must not starve self-prompting: routeResponse already
+        // suppresses the chat output, and blocking the loop here made !stfu
+        // kill an active !goal after 3 silent no-command strikes.
+        const checkInterrupt = () => this.self_prompter.shouldInterrupt(self_prompt) || (!self_prompt && this.shut_up) || convoManager.responseScheduledFor(source);
         
         let behavior_log = this.bot.modes.flushBehaviorLog().trim();
         if (behavior_log.length > 0) {
@@ -319,8 +322,12 @@ export class Agent {
         await this.history.add(source, message);
         this.history.save();
 
-        if (!self_prompt && this.self_prompter.isActive()) // message is from user during self-prompting
+        if (!self_prompt && this.self_prompter.isActive()) { // message is from user during self-prompting
             max_responses = 1; // force only respond to this message, then let self-prompting take over
+            // Otherwise the next self-prompt re-asserts the old goal and the
+            // user's instruction gets buried under it.
+            await this.history.add('system', `The user's message may change what you should be doing. Your current goal is: '${this.self_prompter.prompt}'. If the user's instruction replaces or changes this goal, you MUST use !goal with the new objective (or !endGoal to stop, or !policy for standing rules) — otherwise you will automatically resume the old goal.`);
+        }
         for (let i=0; i<max_responses; i++) {
             if (checkInterrupt()) break;
             let history = this.history.getHistory();
@@ -366,7 +373,7 @@ export class Agent {
                         this.routeResponse(source, pre_message);
                 }
 
-                let execute_res = await executeCommand(this, res);
+                let execute_res = await executeCommand(this, res, true);
 
                 console.log('Agent executed:', command_name, 'and got:', execute_res);
                 used_command = true;
@@ -543,6 +550,7 @@ export class Agent {
     
 
     cleanKill(msg='Killing agent process...', code=1) {
+        console.log(`cleanKill (code ${code}): ${msg}\n${new Error().stack}`);
         this.history.add('system', msg);
         this.bot.chat(code > 1 ? 'Restarting.': 'Exiting.');
         this.history.save();
