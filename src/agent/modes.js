@@ -32,14 +32,38 @@ const modes_list = [
         update: async function (agent) {
             const bot = agent.bot;
             let block = bot.blockAt(bot.entity.position);
-            let blockAbove = bot.blockAt(bot.entity.position.offset(0, 1, 0));
+            // Eye level, not feet+1: mid-swim the feet sit low enough in a block
+            // for feet+1 to read air while the head is still buried.
+            let blockAbove = bot.blockAt(bot.entity.position.offset(0, bot.entity.eyeHeight ?? 1.62, 0));
             if (!block) block = {name: 'air'}; // hacky fix when blocks are not loaded
             if (!blockAbove) blockAbove = {name: 'air'};
-            if (blockAbove.name === 'water') {
-                // does not call execute so does not interrupt other actions
+            // Losing air is the whole definition of drowning, so ask the air
+            // bar and nothing else. Testing the head block for name === 'water'
+            // meant a head inside kelp or seagrass was "not water": this branch
+            // never ran once in Andy's entire log, including the run that
+            // killed him in a kelp forest.
+            const submerged = !skills.isBreathing(bot);
+            if (bot.oxygenLevel !== undefined && bot.oxygenLevel <= 12) {
+                // Actually drowning. Interrupt whatever it was doing -- the bot
+                // drowned pathfinding to a block it had found underwater, and
+                // the passive branch below never fired because a goal was set.
+                say(agent, 'I\'m drowning!');
+                execute(this, agent, async () => {
+                    await skills.surface(bot);
+                });
+            }
+            else if (submerged) {
+                // Head is wet but there is air to spare: nudge upward without
+                // interrupting whatever the bot is busy with.
                 if (!bot.pathfinder.goal) {
                     bot.setControlState('jump', true);
                 }
+                else {
+                    bot.setControlState('jump', false);
+                }
+            }
+            else if (bot.controlState?.jump && !bot.pathfinder.goal) {
+                bot.setControlState('jump', false); // out of the water, stop swimming
             }
             else if (this.fall_blocks.some(name => blockAbove.name.includes(name))) {
                 execute(this, agent, async () => {
@@ -122,11 +146,23 @@ const modes_list = [
             if (this.stuck_time > max_stuck_time) {
                 say(agent, 'I\'m stuck!');
                 this.stuck_time = 0;
+                const start_pos = bot.entity.position.clone();
                 execute(this, agent, async () => {
-                    const crashTimeout = setTimeout(() => { agent.cleanKill("Got stuck and couldn't get unstuck") }, 10000);
-                    await skills.moveAway(bot, 5);
-                    clearTimeout(crashTimeout);
-                    say(agent, 'I\'m free.');
+                    // ponytail: no process kill here anymore. A restart cannot move the
+                    // bot in the world, so killing on positional stuckness just crash-
+                    // looped forever. Bounded escape attempt, then hand it to the LLM.
+                    const giveUp = setTimeout(() => agent.requestInterrupt(), 10000);
+                    try { await skills.moveAway(bot, 5); } catch {}
+                    clearTimeout(giveUp);
+                    if (bot.entity.position.distanceTo(start_pos) >= this.distance) {
+                        say(agent, 'I\'m free.');
+                    } else {
+                        this.stuck_time = -60; // back off so the LLM gets time to act before we re-fire
+                        const p = bot.entity.position;
+                        const below = world.getBlockAtPosition(bot, 0, -1, 0)?.name;
+                        const legs = world.getBlockAtPosition(bot, 0, 0, 0)?.name;
+                        agent.handleMessage('system', `(STUCK) Pathfinding cannot move you: you have been within ${this.distance} blocks of (${Math.round(p.x)}, ${Math.round(p.y)}, ${Math.round(p.z)}) for a while and an automatic escape attempt failed. You are standing on ${below ?? 'unknown'} with ${legs ?? 'air'} at your feet. Look at your surroundings and free yourself, e.g. collect the blocks you are standing on or place blocks to build a path. Do not repeat the navigation command that got you stuck.`);
+                    }
                 });
             }
             this.last_time = Date.now();
@@ -303,9 +339,16 @@ const modes_list = [
     }
 ];
 
-async function execute(mode, agent, func, timeout=-1) {
+// ponytail: a mode/rule action with no timeout never armed the watchdog, so a
+// stuck pathfinder (e.g. surfacing from drowning against an obstruction) left
+// currentActionLabel stuck forever -- the status UI showed "drowning_escape"
+// long after oxygen was restored. 2 minutes is generous for a reflex action.
+async function execute(mode, agent, func, timeout=2) {
     if (agent.self_prompter.isActive())
-        agent.self_prompter.stopLoop();
+        // Only a mode that preempts everything gets to throw away a command the
+        // model already committed to. An idle-only mode runs *because* nothing
+        // else is happening, so it has no business cancelling the next action.
+        agent.self_prompter.stopLoop(mode.interrupts.includes('all'));
     let interrupted_action = agent.actions.currentActionLabel;
     mode.active = true;
     let code_return = await agent.actions.runAction(`mode:${mode.name}`, async () => {
@@ -314,11 +357,21 @@ async function execute(mode, agent, func, timeout=-1) {
     mode.active = false;
     console.log(`Mode ${mode.name} finished executing, code_return: ${code_return.message}`);
 
-    let should_reprompt = 
+    let should_reprompt =
         interrupted_action && // it interrupted a previous action
+        !mode.autonomous && // a policy rule already IS the decision; see below
         !agent.actions.resume_func && // there is no resume function
         !agent.self_prompter.isActive() && // self prompting is not on
         !code_return.interrupted; // this mode action was not interrupted by something else
+
+    // The reprompt exists so the model learns why the action it chose got
+    // killed. A policy rule needs no such explanation: it fired because the
+    // world matched its condition, and it handled the situation itself. Worse,
+    // reprompting hands control back to the model at exactly the wrong moment
+    // -- Andy's night rule parked at base until dawn, and the reprompt on its
+    // completion had the model start collecting pine logs, which kept the agent
+    // non-idle so the idle-gated daytime rules could never fire. A policy that
+    // genuinely wants the model uses the prompt_self action.
 
     if (should_reprompt) {
         // auto prompt to respond to the interruption
@@ -335,6 +388,11 @@ for (let mode of modes_list) {
     modes_map[mode.name] = mode;
 }
 
+import { Rule, loadPolicy, describePolicy, validatePolicy } from './behavior/policy.js';
+
+// Safety reflexes that always outrank user policy rules.
+const PRIORITY_ABOVE_POLICY = ['self_preservation', 'unstuck'];
+
 class ModeController {
     /*
     SECURITY WARNING:
@@ -344,26 +402,61 @@ class ModeController {
     */
     constructor() {
         this.behavior_log = '';
+        // User policy rules compiled from natural language. Contain plain
+        // spec data only -- no agent references (see security warning).
+        this.rules = [];
+        this.policy_source = null;
+    }
+
+    // Priority-ordered behavior tree roots: safety reflexes, then user
+    // policy rules, then the remaining built-in modes.
+    _entries() {
+        const above = PRIORITY_ABOVE_POLICY.map(n => modes_map[n]);
+        const rest = modes_list.filter(m => !PRIORITY_ABOVE_POLICY.includes(m.name));
+        return [...above, ...this.rules, ...rest];
+    }
+
+    _find(name) {
+        return modes_map[name] ?? this.rules.find(r => r.name === name || r.spec.name === name);
+    }
+
+    installPolicy(policy, source_text) {
+        this.rules = policy.rules.map(spec => new Rule(spec));
+        this.policy_source = source_text;
+        if (policy.modes) {
+            this._pre_policy_modes = this._pre_policy_modes ?? this.getJson();
+            for (let m in policy.modes)
+                if (this.exists(m)) this.setOn(m, policy.modes[m]);
+        }
+    }
+
+    clearPolicy() {
+        this.rules = [];
+        this.policy_source = null;
+        if (this._pre_policy_modes) {
+            this.loadJson(this._pre_policy_modes);
+            this._pre_policy_modes = null;
+        }
     }
 
     exists(mode_name) {
-        return modes_map[mode_name] != null;
+        return this._find(mode_name) != null;
     }
 
     setOn(mode_name, on) {
-        modes_map[mode_name].on = on;
+        this._find(mode_name).on = on;
     }
 
     isOn(mode_name) {
-        return modes_map[mode_name].on;
+        return this._find(mode_name).on;
     }
 
     pause(mode_name) {
-        modes_map[mode_name].paused = true;
+        this._find(mode_name).paused = true;
     }
 
     unpause(mode_name) {
-        const mode = modes_map[mode_name];
+        const mode = this._find(mode_name);
         //if  unpause func is defined and mode is currently paused
         if (mode.unpause && mode.paused) {
             mode.unpause();
@@ -372,27 +465,29 @@ class ModeController {
     }
 
     unPauseAll() {
-        for (let mode of modes_list) {
-            if (mode.paused) console.log(`Unpausing mode ${mode.name}`);
-            this.unpause(mode.name);
+        for (let entry of this._entries()) {
+            if (entry.paused) console.log(`Unpausing mode ${entry.name}`);
+            this.unpause(entry.name);
         }
     }
 
     getMiniDocs() { // no descriptions
         let res = 'Agent Modes:';
-        for (let mode of modes_list) {
-            let on = mode.on ? 'ON' : 'OFF';
-            res += `\n- ${mode.name}(${on})`;
+        for (let entry of this._entries()) {
+            let on = entry.on ? 'ON' : 'OFF';
+            res += `\n- ${entry.name}(${on})`;
         }
         return res;
     }
 
     getDocs() {
         let res = 'Agent Modes:';
-        for (let mode of modes_list) {
-            let on = mode.on ? 'ON' : 'OFF';
-            res += `\n- ${mode.name}(${on}): ${mode.description}`;
+        for (let entry of this._entries()) {
+            let on = entry.on ? 'ON' : 'OFF';
+            res += `\n- ${entry.name}(${on}): ${entry.description}`;
         }
+        if (this.policy_source)
+            res += `\n\nActive policy (from: "${this.policy_source}"). Rules run in priority order between unstuck and the remaining modes.`;
         return res;
     }
 
@@ -400,12 +495,15 @@ class ModeController {
         if (_agent.isIdle()) {
             this.unPauseAll();
         }
-        for (let mode of modes_list) {
-            let interruptible = mode.interrupts.some(i => i === 'all') || mode.interrupts.some(i => i === _agent.actions.currentActionLabel);
-            if (mode.on && !mode.paused && !mode.active && (_agent.isIdle() || interruptible)) {
-                await mode.update(_agent);
+        // Behavior-tree arbiter: walk entries in priority order. Entries
+        // before a running one may still fire (preemption); entries after
+        // it are skipped, same as the old mode loop.
+        for (let entry of this._entries()) {
+            let interruptible = entry.interrupts.some(i => i === 'all') || entry.interrupts.some(i => i === _agent.actions.currentActionLabel);
+            if (entry.on && !entry.paused && !entry.active && (_agent.isIdle() || interruptible)) {
+                await entry.update(_agent, execute);
             }
-            if (mode.active) break;
+            if (entry.active) break;
         }
     }
 
@@ -442,5 +540,19 @@ export function initModes(agent) {
     let modes_json = agent.prompter.getInitModes();
     if (modes_json) {
         agent.bot.modes.loadJson(modes_json);
+    }
+    const saved = loadPolicy(agent.name);
+    if (saved?.policy) {
+        // Validate on load, not just on compile: a policy saved before a guard
+        // existed outlives every restart. Andy's go_to_chest_at_night re-pathed
+        // every 3 seconds all night and came back after each restart.
+        const err = validatePolicy(saved.policy);
+        if (err) {
+            console.warn(`Discarding saved policy for ${agent.name}, it is no longer valid: ${err}`);
+            console.warn('Running default behaviors. Re-issue the instructions to recompile it.');
+        } else {
+            agent.bot.modes.installPolicy(saved.policy, saved.source);
+            console.log(`Loaded saved policy for ${agent.name}: ${saved.source}`);
+        }
     }
 }

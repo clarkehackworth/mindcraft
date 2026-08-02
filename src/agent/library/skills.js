@@ -74,8 +74,10 @@ export async function craftRecipe(bot, itemName, num=1) {
         craftingTable = world.getNearestBlock(bot, 'crafting_table', craftingTableRange);
         if (craftingTable === null){
 
-            // Try to place crafting table
-            let hasTable = world.getInventoryCounts(bot)['crafting_table'] > 0;
+            // Try to place a crafting table, crafting one first if needed.
+            // (crafting_table itself is table-free, so this can't recurse here.)
+            let hasTable = world.getInventoryCounts(bot)['crafting_table'] > 0
+                || await craftRecipe(bot, 'crafting_table', 1);
             if (hasTable) {
                 let pos = world.getNearestFreeSpace(bot, 1, 6);
                 await placeBlock(bot, 'crafting_table', pos.x, pos.y, pos.z);
@@ -95,6 +97,19 @@ export async function craftRecipe(bot, itemName, num=1) {
         }
     }
     if (!recipes || recipes.length === 0) {
+        // Missing ingredients may themselves be craftable (log -> planks -> sticks).
+        // The recipe graph is known, so walk it in code instead of burning an LLM
+        // roundtrip per intermediate craft.
+        const plan = mc.getCraftingPlan(itemName, num, world.getInventoryCounts(bot));
+        const intermediates = plan ? plan.steps.filter(s => s.item !== itemName) : [];
+        if (plan && Object.keys(plan.required).length === 0 && intermediates.length > 0) {
+            log(bot, `Crafting intermediate items for ${itemName}: ${intermediates.map(s => `${s.count} ${s.item}`).join(', ')}.`);
+            for (const step of intermediates) {
+                if (bot.interrupt_code) return false;
+                if (!await craftRecipe(bot, step.item, step.count)) return false;
+            }
+            return await craftRecipe(bot, itemName, num);
+        }
         log(bot, `You do not have the resources to craft a ${itemName}. It requires: ${Object.entries(mc.getItemCraftingRecipes(itemName)[0][0]).map(([key, value]) => `${key}: ${value}`).join(', ')}.`);
         if (placedTable) {
             await collectBlock(bot, 'crafting_table', 1);
@@ -462,25 +477,29 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
     // Blocks to ignore safety for, usually next to lava/water
     const unsafeBlocks = ['obsidian'];
 
+    // Two phases, because the old single predicate scan built a full Block for
+    // every block within 64 just to read its name, which profiled at half the
+    // agent's CPU. Phase one narrows to the right block type on integers; phase
+    // two builds Blocks only for those candidates, since safeToBreak needs one.
+    const block_ids = world.getBlockIdsByName(bot, blocktypes);
+    const isExcluded = (block) => exclude?.some(p =>
+        block.position.x === p.x && block.position.y === p.y && block.position.z === p.z);
+    const isCollectable = (block) => isLiquid
+        ? block.metadata === 0                                   // source blocks only
+        : movements.safeToBreak(block) || unsafeBlocks.includes(block.name);
+
     for (let i=0; i<num; i++) {
-        let blocks = world.getNearestBlocksWhere(bot, block => {
-            if (!blocktypes.includes(block.name)) {
-                return false;
-            }
-            if (exclude) {
-                for (let position of exclude) {
-                    if (block.position.x === position.x && block.position.y === position.y && block.position.z === position.z) {
-                        return false;
-                    }
-                }
-            }
-            if (isLiquid) {
-                // collect only source blocks
-                return block.metadata === 0;
-            }
-            
-            return movements.safeToBreak(block) || unsafeBlocks.includes(block.name);
-        }, 64, 1);
+        // CANDIDATES nearest blocks of the right type, then the first that is
+        // actually collectable. Enough that "all of them are unsafe" does not
+        // happen in practice; the old scan would have kept looking to 64.
+        const CANDIDATES = 64;
+        let blocks = [];
+        for (const pos of world.findBlockPositions(bot, block_ids, 64, CANDIDATES)) {
+            const block = bot.blockAt(pos);
+            if (!block || isExcluded(block) || !isCollectable(block)) continue;
+            blocks = [block];
+            break;
+        }
 
         if (blocks.length === 0) {
             if (collected === 0)
@@ -1415,6 +1434,73 @@ export async function followPlayer(bot, username, distance=4) {
 }
 
 
+export function isBreathing(bot) {
+    /**
+     * Is the bot's head out of water? Oxygen only falls while the head is
+     * submerged, so a full bar means air -- no matter what the block is called.
+     * Block names cannot answer this: water, kelp, seagrass and any waterlogged
+     * stair or slab all drown you, and only the first is named 'water'.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @returns {boolean} true if the bot has full air.
+     **/
+    // ponytail: falls back to the old name check only if the server never sends
+    // oxygen. Refill is ~5 ticks from empty, so waiting for a full bar costs a
+    // quarter second and removes every false "surfaced".
+    if (bot.oxygenLevel === undefined) {
+        const head = bot.blockAt(bot.entity.position.offset(0, bot.entity.eyeHeight ?? 1.62, 0));
+        return !head || head.name === 'air';
+    }
+    return bot.oxygenLevel >= 20;
+}
+
+export async function surface(bot, timeout_seconds=20) {
+    /**
+     * Swim straight up until the bot's head is out of water. Abandons any
+     * pathfinder goal first -- drowning outranks wherever it was going.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @param {number} timeout_seconds, give up after this long, so a bot sealed
+     *      under a ceiling does not hold the action forever.
+     * @returns {Promise<boolean>} true if the bot reached air.
+     * @example
+     * await skills.surface(bot);
+     **/
+    // ponytail: air is up. No pathfinder search for a reachable surface -- that
+    // is what failed here in the first place, and it costs seconds the bot's
+    // oxygen does not have. Straight up handles open water, which is where
+    // bots actually drown; a ceiling overhead (ice over a lake, most often --
+    // Andy drowned pinned under one) gets punched through rather than waited out.
+    bot.pathfinder.stop();
+    bot.clearControlStates();
+    bot.setControlState('jump', true);
+    const start = Date.now();
+    try {
+        while (!bot.interrupt_code && Date.now() - start < timeout_seconds*1000) {
+            const eye = bot.entity.eyeHeight ?? 1.62;
+            const head = bot.blockAt(bot.entity.position.offset(0, eye, 0));
+            // Air, not block names. A head inside kelp or seagrass drowns you
+            // exactly like open water, but the block is named 'kelp' -- so the
+            // old name !== 'water' test returned true on the first tick and the
+            // log cheerfully reported "Surfaced with -1/20 air left" while Andy
+            // died in a kelp forest. Oxygen is the server's own answer to the
+            // only question being asked, and it costs nothing to read.
+            if (isBreathing(bot)) {
+                log(bot, `Surfaced with ${bot.oxygenLevel}/20 air left.`);
+                return true;
+            }
+            // Pinned under a solid ceiling: swimming up does nothing, dig it out.
+            const ceiling = bot.blockAt(bot.entity.position.offset(0, eye + 1, 0));
+            if (ceiling && ceiling.name !== 'water' && ceiling.name !== 'air' && bot.canDigBlock(ceiling)) {
+                try { await bot.dig(ceiling); } catch {}
+            }
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+    } finally {
+        bot.setControlState('jump', false);
+    }
+    log(bot, `Could not reach the surface within ${timeout_seconds} seconds.`);
+    return false;
+}
+
 export async function moveAway(bot, distance) {
     /**
      * Move away from current position in any direction.
@@ -1493,14 +1579,17 @@ export async function avoidEnemies(bot, distance=16) {
     return true;
 }
 
-export async function stay(bot, seconds=30) {
+export async function stay(bot, seconds=30, until=null, until_desc='') {
     /**
      * Stay in the current position until interrupted. Disables all modes.
      * @param {MinecraftBot} bot, reference to the minecraft bot.
      * @param {number} seconds, the number of seconds to stay. Defaults to 30. -1 for indefinite.
+     * @param {function} until, optional zero-arg predicate; the stay ends as soon as it returns true.
+     * @param {string} until_desc, human-readable description of `until`, used in the log.
      * @returns {Promise<boolean>} true if the bot stayed, false otherwise.
      * @example
      * await skills.stay(bot);
+     * await skills.stay(bot, -1, () => bot.health >= 20, 'health is full');
      **/
     bot.modes.pause('self_preservation');
     bot.modes.pause('unstuck');
@@ -1509,11 +1598,31 @@ export async function stay(bot, seconds=30) {
     bot.modes.pause('hunting');
     bot.modes.pause('torch_placing');
     bot.modes.pause('item_collecting');
+    // ponytail: with no condition given, the only reason to park a bot
+    // indefinitely is to wait out the night, so -1 means "until morning" rather
+    // than "until heat death". Andy parked at dusk with !stay(-1) and was still
+    // sitting at base the next afternoon ignoring its gathering goal.
+    if (!until && seconds === -1 && world.isNight(bot)) {
+        until = () => !world.isNight(bot);
+        until_desc = 'day broke';
+    }
+    // A condition already true when we arrive means there is nothing to wait for.
+    if (until && until()) {
+        log(bot, `Not staying, ${until_desc || 'the condition'} already.`);
+        return true;
+    }
     let start = Date.now();
     while (!bot.interrupt_code && (seconds === -1 || Date.now() - start < seconds*1000)) {
+        if (until && until()) {
+            log(bot, `Stayed ${Math.round((Date.now() - start)/1000)} seconds, until ${until_desc || 'the condition was met'}.`);
+            return true;
+        }
         await new Promise(resolve => setTimeout(resolve, 500));
     }
-    log(bot, `Stayed for ${(Date.now() - start)/1000} seconds.`);
+    if (until && !bot.interrupt_code)
+        log(bot, `Gave up waiting for ${until_desc || 'the condition'} after ${seconds} seconds.`);
+    else
+        log(bot, `Stayed for ${(Date.now() - start)/1000} seconds.`);
     return true;
 }
 
