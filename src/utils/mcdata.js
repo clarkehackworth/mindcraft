@@ -615,6 +615,11 @@ export function getItemCraftingRecipes(itemName, inventory = null) {
             {craftedCount : r.result.count}
         ]);
     }
+    // Ranking cannot express "mine it instead of crafting it", and an attempt to
+    // add that as a candidate ("prefer mining whenever the item is also a
+    // block") was wrong: furnace, piston, beacon and chest are all blocks, so
+    // the planner started answering "go find a furnace" instead of "craft one
+    // from 8 cobblestone". Being a block does not mean occurring in the world.
     // Rank by what the bot can actually use, falling back to the old bias
     // toward common vanilla materials when no inventory is supplied.
     // That bias used to be the only ranking, and on a modded server it sorts
@@ -853,14 +858,13 @@ function planCost(item, count, inventory, leftovers, depth) {
     return Object.values(scratch.required).reduce((a, b) => a + b, 0);
 }
 
-// Recipes are not automatically better than mining. Prominence 2 has a
-// 12 pebble -> 3 cobblestone recipe, and taking the first recipe blindly meant
-// getCraftingPlan answered "to get a stone_pickaxe you are missing 12 pebble"
-// instead of "mine 3 cobblestone". Andy went looking for pebbles. Costing both
-// paths in raw units picks mining (3) over crafting (12) without needing a rule
-// about which items are "really" base items.
-// ponytail: 4 candidates, depth 6. Widen only if a real recipe tree needs it --
-// this runs per ingredient, so the search is the expensive part, not the data.
+// Pick the recipe variant whose ingredients the bot is closest to having, by
+// costing each candidate's whole tree in raw units still needed. This is what
+// makes a wooden_pickaxe plan use the spruce in the bag instead of the oak that
+// happens to sort first.
+// ponytail: 4 candidates, depth 6, and it only ranks recipes against each
+// other. It deliberately does NOT decide whether mining beats crafting -- see
+// getItemCraftingRecipes for why the "is it a block" version of that was wrong.
 const MAX_RECIPE_CANDIDATES = 4;
 const MAX_PLAN_DEPTH = 6;
 
@@ -870,8 +874,6 @@ function chooseRecipe(item, stillNeeded, inventory, leftovers, depth) {
     if (depth >= MAX_PLAN_DEPTH) return recipes[0];
 
     let best = recipes[0], bestCost = Infinity;
-    // Mining it directly is always a candidate when it exists as a block.
-    const minable = getBlockId(item) !== null ? stillNeeded : Infinity;
     for (const recipe of recipes.slice(0, MAX_RECIPE_CANDIDATES)) {
         const [ingredients, result] = recipe;
         const batches = Math.ceil(stillNeeded / result.craftedCount);
@@ -880,7 +882,7 @@ function chooseRecipe(item, stillNeeded, inventory, leftovers, depth) {
             cost += planCost(name, amount * batches, inventory, leftovers, depth);
         if (cost < bestCost) { bestCost = cost; best = recipe; }
     }
-    return minable < bestCost ? null : best;
+    return best;
 }
 
 function craftItem(item, count, inventory, leftovers, crafted = { required: {}, steps: [], leftovers: {} }, depth = 0) {
@@ -906,7 +908,12 @@ function craftItem(item, count, inventory, leftovers, crafted = { required: {}, 
     if (availableLeft > 0) leftovers[item] = 0;
     if (availableInv > 0) inventory[item] = 0;
 
-    if (isBaseItem(item)) {
+    // Stop descending and just ask for the item. Recipe graphs have cycles that
+    // the loopingItems list does not cover -- with the mod pack's 11736 recipes,
+    // costing the alternatives walks into a stick -> planks -> ... -> stick loop
+    // that recipes[0] happened to step around, and craftRecipe("stick", 4) died
+    // with "Maximum call stack size exceeded" instead of crafting anything.
+    if (isBaseItem(item) || depth >= MAX_PLAN_DEPTH) {
         crafted.required[item] = (crafted.required[item] || 0) + stillNeeded;
         return crafted;
     }

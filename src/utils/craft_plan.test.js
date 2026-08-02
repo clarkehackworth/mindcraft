@@ -44,11 +44,30 @@ assert.match(getDetailedCraftingPlan('wooden_pickaxe', 1, { spruce_log: 3 }), /s
 const empty = getCraftingPlan('wooden_pickaxe', 1, {});
 assert.ok(Object.keys(empty.required).some(i => i.includes('log')), 'an empty inventory still plans from logs');
 
-// Mining beats crafting when it costs fewer raw units. Prominence 2 has a
-// 12 pebble -> 3 cobblestone recipe, and taking the first recipe blindly told
-// Andy his stone_pickaxe was 12 pebbles away instead of 3 mined cobblestone.
 const stone = getCraftingPlan('stone_pickaxe', 1, { spruce_log: 3 });
-assert.equal(stone.required.cobblestone, 3, `cobblestone is mined, not crafted: ${JSON.stringify(stone.required)}`);
+assert.equal(stone.required.cobblestone, 3, `cobblestone is required directly: ${JSON.stringify(stone.required)}`);
+
+// Craftables that are also blocks must still be CRAFTED. A first attempt at
+// preferring cheap mining over expensive crafting keyed off "is this item a
+// block", and furnace/piston/beacon/chest are all blocks -- the planner started
+// answering "go find a furnace" instead of "craft one from 8 cobblestone".
+for (const item of ['furnace', 'chest', 'crafting_table', 'piston', 'beacon']) {
+    const p = getCraftingPlan(item, 1, { oak_log: 5 });
+    assert.ok(p.steps.some(s => s.item === item),
+        `${item} must be crafted, not sought in the world: ${JSON.stringify(p)}`);
+    assert.ok(!(item in p.required), `${item} must not ask the bot to go find one: ${JSON.stringify(p.required)}`);
+}
+
+// Recipe graphs contain cycles that the loopingItems list does not cover. With
+// the mod pack's 11736 recipes, costing alternatives walked into
+// stick -> planks -> ... -> stick and craftRecipe("stick", 4) died with
+// "Maximum call stack size exceeded" instead of crafting anything. Planning is
+// depth-bounded now, so every plan terminates whatever the graph looks like.
+for (const item of ['stick', 'wooden_pickaxe', 'stone_pickaxe', 'torch', 'compass', 'beacon']) {
+    const t = Date.now();
+    assert.ok(getCraftingPlan(item, 4, {}), `${item} must produce a plan`);
+    assert.ok(Date.now() - t < 2000, `${item} planned in bounded time`);
+}
 
 console.log('ok: crafting plan returns a structured, executable step chain');
 process.exit(0);
