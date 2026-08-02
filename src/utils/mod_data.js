@@ -81,7 +81,14 @@ export function applyModDataPacks(registry, packs) {
         }
         added_recipes += addRecipes(registry, pack.recipes);
     }
-    const expanded = packs.length ? expandPlankRecipes(registry) : 0;
+    // A pack dumped after the tag fix says outright what each slot accepts, so
+    // expansion is exact. Older packs only ever named one item per slot, and
+    // the plank heuristic is the best guess available for those.
+    let expanded = 0;
+    if (packs.length) {
+        expanded = expandChoiceRecipes(registry);
+        if (!expanded) expanded = expandPlankRecipes(registry);
+    }
     if (packs.length) {
         console.log(`loaded ${packs.length} mod data pack(s): ${added_blocks} blocks, ${added_items} items, ${added_recipes} recipes` +
             (expanded ? `, +${expanded} plank variants` : ''));
@@ -104,6 +111,73 @@ function addRecipes(registry, recipes) {
         count += variants.length;
     }
     return count;
+}
+
+/**
+ * Turn slots that accept a whole tag into concrete recipes.
+ *
+ * The dumper writes an ingredient slot as {"any": [ids...]} when more than one
+ * item fits it -- that is the #minecraft:planks tag and its kind, listed rather
+ * than guessed. mineflayer only understands single-item slots, so the choices
+ * are resolved here, before anything reads registry.recipes.
+ *
+ * Slots that accept the SAME set move together: a pickaxe's three plank slots
+ * all become pine, all become oak, and so on. Minecraft would also accept one
+ * of each, but the bot has no reason to want that and enumerating it is the
+ * combinatorial explosion the dumper's old comment rightly refused -- 70 wood
+ * types over 3 slots is 70 recipes this way and 343,000 the other.
+ *
+ * ponytail: capped per recipe. A pathological tag (every dye, every potion)
+ * would otherwise bloat the registry that mineflayer linear-scans on every
+ * craft. Raise MAX_VARIANTS if a real recipe gets truncated.
+ */
+const MAX_VARIANTS = 128;
+
+export function expandChoiceRecipes(registry) {
+    if (!registry.recipes) return 0;
+    const key = (slot) => JSON.stringify(slot.any);
+    const pick = (shape, chosen) => shape.map(cell => {
+        if (Array.isArray(cell)) return pick(cell, chosen);
+        if (cell && typeof cell === 'object' && cell.any)
+            return chosen[key(cell)] ?? cell.any[0];
+        return cell;
+    });
+
+    let added = 0;
+    for (const variants of Object.values(registry.recipes)) {
+        const grown = [];
+        let expanded_any = false;
+        for (const variant of variants) {
+            const shape = variant.inShape ?? variant.ingredients;
+            // Distinct choice-sets in this recipe, each expanded independently
+            // against the others' defaults.
+            const sets = new Map();
+            const walk = (s) => s.forEach(cell => Array.isArray(cell) ? walk(cell)
+                : (cell && typeof cell === 'object' && cell.any && sets.set(key(cell), cell.any)));
+            if (shape) walk(shape);
+            // A variant with nothing to choose is carried through untouched --
+            // dropping it would delete every single-item recipe in the pack.
+            if (!sets.size) { grown.push(variant); continue; }
+            expanded_any = true;
+            for (const [k, options] of sets) {
+                for (const option of options.slice(0, MAX_VARIANTS)) {
+                    const chosen = { [k]: option };
+                    const clone = { ...variant };
+                    if (variant.inShape) clone.inShape = pick(variant.inShape, chosen);
+                    else clone.ingredients = pick(variant.ingredients, chosen);
+                    grown.push(clone);
+                }
+            }
+        }
+        if (expanded_any) {
+            // The originals still carry {"any": ...} cells mineflayer cannot
+            // read, so they are replaced rather than appended to.
+            added += grown.length - variants.length;
+            variants.length = 0;
+            variants.push(...grown);
+        }
+    }
+    return added;
 }
 
 /**

@@ -7,7 +7,7 @@
 // neither plan nor craft one while standing in a frozen pine taiga holding 20
 // pine_planks, and eventually wrote "pine unusable" into his own memory.
 import assert from 'assert';
-import { expandPlankRecipes } from './mod_data.js';
+import { expandPlankRecipes, expandChoiceRecipes } from './mod_data.js';
 
 // oak and pine are real woods (they have logs). The chipped mod's decorative
 // "planks" have no log and are NOT in the tag -- crafting from them would be
@@ -53,6 +53,38 @@ assert.ok(reg.recipes[6].some(v => v.inShape.flat().includes(3)), 'sticks can be
 const single = { itemsByName: { oak_planks: { id: 1 }, oak_log: { id: 2 } }, recipes: { 7: [{ inShape: [[1]] }] } };
 assert.equal(expandPlankRecipes(single), 0, 'one plank type means nothing to substitute');
 assert.equal(single.recipes[7].length, 1, 'and the recipe list is left alone');
+
+// A pack dumped after the tag fix states what each slot accepts, so no guessing
+// is needed. mineflayer only understands single-item slots, so {"any": [...]}
+// must be gone by the time anything reads registry.recipes.
+const tagged = {
+    recipes: {
+        7: [{ result: { id: 7, count: 1 },
+              inShape: [[{ any: [1, 3] }, { any: [1, 3] }, { any: [1, 3] }], [null, 6, null], [null, 6, null]] }],
+        9: [{ result: { id: 9, count: 1 }, ingredients: [2] }],   // no choices at all
+    },
+};
+const grew = expandChoiceRecipes(tagged);
+assert.ok(grew > 0, 'choice slots expand');
+
+const shapes = tagged.recipes[7].map(v => v.inShape);
+assert.equal(shapes.length, 2, 'one variant per candidate, not per combination');
+for (const shape of shapes) {
+    const top = shape[0];
+    assert.equal(new Set(top).size, 1, `slots sharing a choice set move together: ${JSON.stringify(top)}`);
+    assert.ok(top.every(c => typeof c === 'number'), `no {any} cells may survive: ${JSON.stringify(top)}`);
+}
+assert.deepEqual(shapes.map(s => s[0][0]).sort(), [1, 3], 'every candidate is represented');
+assert.equal(tagged.recipes[7][0].inShape[1][1], 6, 'non-choice cells are left alone');
+
+// The recipe with no choices must survive untouched -- an earlier version of
+// this dropped every single-item recipe in the pack.
+assert.equal(tagged.recipes[9].length, 1, 'a recipe with no choices is kept');
+assert.deepEqual(tagged.recipes[9][0].ingredients, [2], 'and is unchanged');
+
+// Old packs have no choice sets, so the caller falls back to the plank guess.
+assert.equal(expandChoiceRecipes({ recipes: { 7: [{ inShape: [[1, 1, 1]] }] } }), 0,
+    'a pre-tag pack reports nothing expanded, so the plank heuristic still runs');
 
 console.log('ok: tag-collapsed plank recipes are expanded back across every real wood');
 process.exit(0);

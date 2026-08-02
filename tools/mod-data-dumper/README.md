@@ -38,6 +38,29 @@ normally throughout.
 
 The mod is server-only and does nothing else, so it can stay installed.
 
+## Ingredient slots
+
+A slot that accepts more than one item — anything taking a tag, like the
+`#minecraft:planks` in every wooden recipe — is dumped as `{"any": [ids...]}`
+listing everything it accepts. Single-item slots stay bare ids.
+
+This matters more than it looks. The dumper used to write only the tag's first
+item, so a `wooden_pickaxe` came out demanding `minecraft:oak_planks`
+specifically. mineflayer's `recipesFor()` reads the same table the crafting
+planner does, so a bot in a frozen pine taiga holding 20 `pine_planks` could
+neither plan nor craft a pickaxe — it died 18+ times without one and recorded
+"pine unusable" in its own memory, which was true of the dump and false of the
+server.
+
+`mod_data.js` resolves these into concrete recipes at load, one variant per
+candidate, with slots sharing a set moving together (all three plank slots
+become pine, or all three become oak). Minecraft would also accept one of each,
+but enumerating that is the combinatorial explosion worth avoiding: 70 woods
+over 3 slots is 70 recipes this way and 343,000 the other.
+
+Packs dumped before this change have no `any` slots; `mod_data.js` detects that
+and falls back to a planks-only heuristic, so old packs keep working.
+
 Built for Fabric 1.20.1. For other versions bump `minecraft`, `fabric-api` and
 `~1.20` in `build.gradle` / `fabric.mod.json`; the code uses only long-lived
 vanilla APIs. For NeoForge/Forge packs the same ~150 lines need a different

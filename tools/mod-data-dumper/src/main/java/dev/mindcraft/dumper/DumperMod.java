@@ -2,7 +2,10 @@ package dev.mindcraft.dumper;
 
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.loader.api.FabricLoader;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
@@ -40,6 +43,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.SortedSet;
+import java.util.TreeSet;
 
 /**
  * Dumps the running server's block/item/entity/recipe registries into a JSON
@@ -311,8 +316,7 @@ public class DumperMod implements ModInitializer {
                     for (int y = 0; y < shaped.getHeight(); y++) {
                         JsonArray row = new JsonArray();
                         for (int x = 0; x < shaped.getWidth(); x++) {
-                            Integer id = firstItemId(shaped.getIngredients().get(y * shaped.getWidth() + x));
-                            if (id == null) row.add((String) null); else row.add(id);
+                            row.add(ingredientJson(shaped.getIngredients().get(y * shaped.getWidth() + x)));
                         }
                         rows.add(row);
                     }
@@ -320,8 +324,8 @@ public class DumperMod implements ModInitializer {
                 } else {
                     JsonArray ingredients = new JsonArray();
                     for (Ingredient ingredient : recipe.getIngredients()) {
-                        Integer id = firstItemId(ingredient);
-                        if (id != null) ingredients.add(id);
+                        JsonElement slot = ingredientJson(ingredient);
+                        if (!slot.isJsonNull()) ingredients.add(slot);
                     }
                     if (ingredients.isEmpty()) continue;
                     json.add("ingredients", ingredients);
@@ -339,11 +343,39 @@ public class DumperMod implements ModInitializer {
         return recipes;
     }
 
-    private Integer firstItemId(Ingredient ingredient) {
-        if (ingredient.isEmpty()) return null;
+    /**
+     * One ingredient slot: a bare item id when only one item fits, otherwise
+     * {"any": [ids...]} listing everything the slot accepts.
+     *
+     * This used to write only the first item, which was a real bug and not a
+     * cosmetic one. Minecraft's wooden recipes take the #planks tag, so a
+     * wooden_pickaxe came out demanding minecraft:oak_planks specifically.
+     * mineflayer's recipesFor() reads the same table the plan does, so a bot in
+     * a frozen pine taiga holding 20 pine_planks could neither plan nor craft a
+     * pickaxe. It died 18+ times without one and wrote "pine unusable" into its
+     * own memory -- true of the dump, false of the server.
+     *
+     * The old comment here rejected "the cartesian product of every tag, which
+     * for this pack is millions of recipes". That is still the right thing to
+     * reject, but listing what a slot accepts is not that product: the reader
+     * expands one variant per candidate rather than every combination, so a
+     * 70-wood pickaxe recipe becomes 70 recipes, not 70^3.
+     */
+    private JsonElement ingredientJson(Ingredient ingredient) {
+        if (ingredient.isEmpty()) return JsonNull.INSTANCE;
         ItemStack[] stacks = ingredient.getItems();
-        if (stacks.length == 0) return null;
-        return BuiltInRegistries.ITEM.getId(stacks[0].getItem());
+        if (stacks.length == 0) return JsonNull.INSTANCE;
+        if (stacks.length == 1) return new JsonPrimitive(BuiltInRegistries.ITEM.getId(stacks[0].getItem()));
+
+        // Sorted and de-duplicated so a rebuild of the same pack is byte-identical.
+        SortedSet<Integer> ids = new TreeSet<>();
+        for (ItemStack stack : stacks) ids.add(BuiltInRegistries.ITEM.getId(stack.getItem()));
+        if (ids.size() == 1) return new JsonPrimitive(ids.first());
+        JsonArray any = new JsonArray();
+        for (Integer id : ids) any.add(id);
+        JsonObject slot = new JsonObject();
+        slot.add("any", any);
+        return slot;
     }
 
     /**
