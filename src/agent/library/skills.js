@@ -110,7 +110,9 @@ export async function craftRecipe(bot, itemName, num=1) {
             }
             return await craftRecipe(bot, itemName, num);
         }
-        log(bot, `You do not have the resources to craft a ${itemName}. It requires: ${Object.entries(mc.getItemCraftingRecipes(itemName)[0][0]).map(([key, value]) => `${key}: ${value}`).join(', ')}.`);
+        // Ranked against what the bot is holding, so the message names the wood
+        // it actually has instead of always naming oak.
+        log(bot, `You do not have the resources to craft a ${itemName}. It requires: ${Object.entries(mc.getItemCraftingRecipes(itemName, world.getInventoryCounts(bot))[0][0]).map(([key, value]) => `${key}: ${value}`).join(', ')}.`);
         if (placedTable) {
             await collectBlock(bot, 'crafting_table', 1);
         }

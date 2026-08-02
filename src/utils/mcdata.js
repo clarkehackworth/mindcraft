@@ -10,6 +10,9 @@ import plugin from 'mineflayer-armor-manager';
 const armorManager = plugin;
 let mc_version = settings.minecraft_version;
 let mcdata = null;
+
+// Normally set from bot.registry on login; tests inject a bare registry here.
+export function useRegistry(registry) { mcdata = registry; }
 let Item = null;
 
 // How often "summary" packet_error_logging emits a rollup count.
@@ -264,7 +267,11 @@ export function initBot(username) {
 
     bot.once('login', () => {
         mc_version = bot.version;
-        applyModDataPacks(bot.registry, loadModDataPacks(settings.mod_data));
+        vanilla_block_states = snapshotBlockStates(bot.registry);
+        const mod_packs = loadModDataPacks(settings.mod_data);
+        if (!mod_packs.length)
+            console.warn(`[mcdata] no mod data packs loaded (mod_data=${JSON.stringify(settings.mod_data)}). On a modded server every block name will be wrong.`);
+        applyModDataPacks(bot.registry, mod_packs);
         patchUnknownBlocks(bot.registry);
         // bot.registry is minecraft-data for this version plus whatever the mod
         // data packs added, so everything asking mcdata about blocks and items
@@ -275,6 +282,31 @@ export function initBot(username) {
     });
 
     return bot;
+}
+
+/**
+ * Vanilla state id ranges by block name, as they were before the mod data packs
+ * were applied.
+ *
+ * minecraft-data caches its block objects per version and prismarine-registry
+ * hands out those very objects, so applying a mod pack rewrites "vanilla" data
+ * for the whole process -- asking minecraft-data afterwards gives the modded
+ * answer. The render view needs the original ids, because the browser draws
+ * chunks with plain vanilla data.
+ */
+export let vanilla_block_states = null;
+
+function snapshotBlockStates(registry) {
+    const states = {};
+    for (const block of registry.blocksArray ?? []) {
+        if (!Number.isInteger(block.minStateId)) continue;
+        states[block.name] = {
+            minStateId: block.minStateId,
+            maxStateId: block.maxStateId,
+            defaultState: block.defaultState,
+        };
+    }
+    return states;
 }
 
 // Block id every unknown (modded) block state is reported as. Well above the
@@ -309,16 +341,73 @@ export const UNKNOWN_BLOCK_ID = 65535;
 // ponytail: hooked on setMovements rather than fixed at each call site, because
 // skills.js builds `new pf.Movements(bot)` in a dozen places and would only
 // grow more. Drop the hook if those ever share one constructor.
+// A door is the one block nobody places by accident, so it is the cheapest
+// honest signal that the surrounding blocks are somebody's build. Blocks within
+// this box of a door get priced out of digging; everything else -- caves, hills,
+// the mine the bot dug itself -- keeps the default dig cost.
+const BUILD_RADIUS = 12;
+const BUILD_HEIGHT = 8;
+// Back to 64 now that world scans compare state ids instead of building a Block
+// per candidate (see world.js findBlockPositions). At 64 with the old scan this
+// was 14% of the agent's CPU; the same range now costs a fraction of that, and
+// 64 means a door is seen early enough that the bot does not path into
+// somebody's build before the next rescan notices it.
+const BUILD_SCAN_DISTANCE = 64;
+const BUILD_RESCAN_MS = 5000;
+// Must stay under 100: pathfinder treats >=100 as unbreakable, and a bot shut
+// inside a room with the door closed behind it would then have no path at all.
+const BUILD_DIG_PENALTY = 99;
+
 export function tameMovements(bot) {
     if (!bot.pathfinder?.setMovements) {
         console.warn('[mcdata] pathfinder missing at spawn, movement taming disabled');
         return;
     }
+
+    let doors = [];
+    let scannedAt = -Infinity;
+    let doorIds = null;
+    // Called from inside A*, so the scan is cached and the check is plain
+    // arithmetic over a handful of doors.
+    const buildPenalty = (block) => {
+        if (!block?.position) return 0;
+        const now = Date.now();
+        if (now - scannedAt > BUILD_RESCAN_MS) {
+            scannedAt = now;
+            doorIds ??= (bot.registry?.blocksArray ?? [])
+                .filter(b => b.name.endsWith('_door'))
+                .map(b => b.id);
+            try {
+                doors = doorIds.length
+                    ? bot.findBlocks({ matching: doorIds, maxDistance: BUILD_SCAN_DISTANCE, count: 16 })
+                    : [];
+            } catch (err) {
+                doors = [];  // world not loaded yet; the next path will try again
+            }
+        }
+        for (const door of doors) {
+            if (Math.abs(block.position.x - door.x) <= BUILD_RADIUS &&
+                Math.abs(block.position.z - door.z) <= BUILD_RADIUS &&
+                Math.abs(block.position.y - door.y) <= BUILD_HEIGHT) return BUILD_DIG_PENALTY;
+        }
+        return 0;
+    };
+
     const originalSetMovements = bot.pathfinder.setMovements.bind(bot.pathfinder);
     bot.pathfinder.setMovements = function (movements) {
         if (movements) {
             movements.allowParkour = false;
             movements.allowSprinting = false;
+            // Digging one block through a wall costs ~2-5 by default, so a door
+            // twenty blocks away always loses and the bot tunnels into the base.
+            // canOpenDoors is already on; it just needed the walls to be the
+            // expensive option. ponytail: a box around each door, not a real
+            // structure detector -- upgrade to a flood fill of the enclosed
+            // volume if bots start tunnelling through outbuildings 13 blocks out.
+            if (Array.isArray(movements.exclusionAreasBreak) &&
+                !movements.exclusionAreasBreak.includes(buildPenalty)) {
+                movements.exclusionAreasBreak.push(buildPenalty);
+            }
         }
         return originalSetMovements(movements);
     };
@@ -346,6 +435,25 @@ export function patchUnknownBlocks(registry) {
     registry.blocks[UNKNOWN_BLOCK_ID] = template;
     registry.blocksByName['unknown'] = template;
 
+    // prismarine-block rebuilds every block's `shapes` from blockCollisionShapes
+    // when its provider is created, which happens after this patch runs. A name
+    // missing from that table gets shapes=undefined, and pathfinder iterates
+    // block.shapes unguarded -- one modded block underfoot and `b.shapes is not
+    // iterable` crashes the agent out of an event handler. Give 'unknown' the
+    // same entry stone has so the rebuild finds a full cube.
+    const collision_shapes = registry.blockCollisionShapes;
+    if (collision_shapes?.blocks) {
+        collision_shapes.blocks['unknown'] = collision_shapes.blocks['stone'];
+    }
+
+    // A mod data pack covers the server's palette with no holes, so a state id
+    // past the end of it means the server has more block states than the pack
+    // knows about: the pack is stale. That is not a local miss -- every id
+    // above the first insertion point is shifted, so block names, digging and
+    // the render view are all quietly wrong until the pack is re-dumped.
+    const max_known_state = registry.blocksArray?.reduce((max, b) => Math.max(max, b.maxStateId ?? 0), 0) ?? 0;
+    let warned_stale = false;
+
     const unknown_states = {};
     registry.blocksByStateId = new Proxy(registry.blocksByStateId, {
         get(target, prop) {
@@ -353,6 +461,12 @@ export function patchUnknownBlocks(registry) {
             if (known !== undefined || typeof prop !== 'string') return known;
             const state_id = Number(prop);
             if (!Number.isInteger(state_id) || state_id < 0) return undefined;
+            if (state_id > max_known_state && !warned_stale) {
+                warned_stale = true;
+                console.warn(`[mcdata] the server sent block state id ${state_id}, past the ${max_known_state} this registry knows. ` +
+                    'The mod data pack is missing or does not match the server. Until it is fixed, block names, ' +
+                    'digging and the render view are wrong for everything above the first shifted block.');
+            }
             // minStateId/maxStateId are what prismarine-block subtracts to get
             // metadata; pinning them to the state id keeps metadata at 0.
             return unknown_states[state_id] ??= { ...template, minStateId: state_id, maxStateId: state_id };
@@ -474,7 +588,7 @@ export function getAllBiomes() {
     return mcdata.biomes;
 }
 
-export function getItemCraftingRecipes(itemName) {
+export function getItemCraftingRecipes(itemName, inventory = null) {
     let itemId = getItemId(itemName);
     if (!mcdata.recipes[itemId]) {
         return null;
@@ -501,13 +615,19 @@ export function getItemCraftingRecipes(itemName) {
             {craftedCount : r.result.count}
         ]);
     }
-    // sort recipes by if their ingredients include common items
+    // Rank by what the bot can actually use, falling back to the old bias
+    // toward common vanilla materials when no inventory is supplied.
+    // That bias used to be the only ranking, and on a modded server it sorts
+    // the one usable recipe last: Andy, standing in a spruce/larch forest with
+    // larch_planks already craftable, was told a wooden_pickaxe needs an
+    // oak_log -- a tree that does not grow in his biome. He spent a day of
+    // real time trying to obtain oak.
     const commonItems = ['oak_planks', 'oak_log', 'coal', 'cobblestone'];
-    recipes.sort((a, b) => {
-        let commonCountA = Object.keys(a[0]).filter(key => commonItems.includes(key)).reduce((acc, key) => acc + a[0][key], 0);
-        let commonCountB = Object.keys(b[0]).filter(key => commonItems.includes(key)).reduce((acc, key) => acc + b[0][key], 0);
-        return commonCountB - commonCountA;
-    });
+    const haveScore = ([ingredients]) => Object.entries(ingredients)
+        .reduce((n, [name, count]) => n + Math.min(inventory?.[name] ?? 0, count), 0);
+    const commonScore = ([ingredients]) => Object.keys(ingredients)
+        .filter(key => commonItems.includes(key)).reduce((acc, key) => acc + ingredients[key], 0);
+    recipes.sort((a, b) => (haveScore(b) - haveScore(a)) || (commonScore(b) - commonScore(a)));
 
     return recipes;
 }
@@ -710,11 +830,60 @@ export function getDetailedCraftingPlan(targetItem, count = 1, current_inventory
     return formatPlan(targetItem, plan);
 }
 
+/**
+ * Structured crafting plan: {required, steps: [{item, count, ingredients}], leftovers}.
+ * steps are bottom-up; the target item is the last step. Returns null for
+ * base/unknown items.
+ */
+export function getCraftingPlan(targetItem, count = 1, current_inventory = {}) {
+    initializeLoopingItems();
+    if (!targetItem || count <= 0 || !getItemId(targetItem) || isBaseItem(targetItem))
+        return null;
+    return craftItem(targetItem, count, { ...current_inventory }, {});
+}
+
 function isBaseItem(item) {
     return loopingItems.has(item) || getItemCraftingRecipes(item) === null;
 }
 
-function craftItem(item, count, inventory, leftovers, crafted = { required: {}, steps: [], leftovers: {} }) {
+// How many raw units a plan ends up asking the bot to go find. Cheapest wins.
+function planCost(item, count, inventory, leftovers, depth) {
+    const scratch = craftItem(item, count, { ...inventory }, { ...leftovers },
+        { required: {}, steps: [], leftovers: {} }, depth + 1);
+    return Object.values(scratch.required).reduce((a, b) => a + b, 0);
+}
+
+// Recipes are not automatically better than mining. Prominence 2 has a
+// 12 pebble -> 3 cobblestone recipe, and taking the first recipe blindly meant
+// getCraftingPlan answered "to get a stone_pickaxe you are missing 12 pebble"
+// instead of "mine 3 cobblestone". Andy went looking for pebbles. Costing both
+// paths in raw units picks mining (3) over crafting (12) without needing a rule
+// about which items are "really" base items.
+// ponytail: 4 candidates, depth 6. Widen only if a real recipe tree needs it --
+// this runs per ingredient, so the search is the expensive part, not the data.
+const MAX_RECIPE_CANDIDATES = 4;
+const MAX_PLAN_DEPTH = 6;
+
+function chooseRecipe(item, stillNeeded, inventory, leftovers, depth) {
+    const recipes = getItemCraftingRecipes(item, inventory);
+    if (!recipes || recipes.length === 0) return null;
+    if (depth >= MAX_PLAN_DEPTH) return recipes[0];
+
+    let best = recipes[0], bestCost = Infinity;
+    // Mining it directly is always a candidate when it exists as a block.
+    const minable = getBlockId(item) !== null ? stillNeeded : Infinity;
+    for (const recipe of recipes.slice(0, MAX_RECIPE_CANDIDATES)) {
+        const [ingredients, result] = recipe;
+        const batches = Math.ceil(stillNeeded / result.craftedCount);
+        let cost = 0;
+        for (const [name, amount] of Object.entries(ingredients))
+            cost += planCost(name, amount * batches, inventory, leftovers, depth);
+        if (cost < bestCost) { bestCost = cost; best = recipe; }
+    }
+    return minable < bestCost ? null : best;
+}
+
+function craftItem(item, count, inventory, leftovers, crafted = { required: {}, steps: [], leftovers: {} }, depth = 0) {
     // Check available inventory and leftovers first
     const availableInv = inventory[item] || 0;
     const availableLeft = leftovers[item] || 0;
@@ -742,7 +911,7 @@ function craftItem(item, count, inventory, leftovers, crafted = { required: {}, 
         return crafted;
     }
 
-    const recipe = getItemCraftingRecipes(item)?.[0];
+    const recipe = chooseRecipe(item, stillNeeded, inventory, leftovers, depth);
     if (!recipe) {
         crafted.required[item] = stillNeeded;
         return crafted;
@@ -761,14 +930,14 @@ function craftItem(item, count, inventory, leftovers, crafted = { required: {}, 
     // Process each ingredient
     for (const [ingredientName, ingredientCount] of Object.entries(ingredients)) {
         const totalIngredientNeeded = ingredientCount * batchCount;
-        craftItem(ingredientName, totalIngredientNeeded, inventory, leftovers, crafted);
+        craftItem(ingredientName, totalIngredientNeeded, inventory, leftovers, crafted, depth + 1);
     }
 
     // Add crafting step
-    const stepIngredients = Object.entries(ingredients)
-        .map(([name, amount]) => `${amount * batchCount} ${name}`)
-        .join(' + ');
-    crafted.steps.push(`Craft ${stepIngredients} -> ${totalProduced} ${item}`);
+    const stepIngredients = {};
+    for (const [name, amount] of Object.entries(ingredients))
+        stepIngredients[name] = amount * batchCount;
+    crafted.steps.push({ item, count: totalProduced, ingredients: stepIngredients });
 
     return crafted;
 }
@@ -787,7 +956,8 @@ function formatPlan(targetItem, { required, steps, leftovers }) {
     }
 
     lines.push('');
-    lines.push(...steps);
+    lines.push(...steps.map(s =>
+        `Craft ${Object.entries(s.ingredients).map(([name, amount]) => `${amount} ${name}`).join(' + ')} -> ${s.count} ${s.item}`));
 
     if (Object.keys(required).some(item => item.includes('oak')) && !targetItem.includes('oak')) {
         lines.push('Note: Any varient of wood can be used for this recipe.');
