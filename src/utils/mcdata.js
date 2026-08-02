@@ -355,6 +355,9 @@ const BUILD_HEIGHT = 8;
 // somebody's build before the next rescan notices it.
 const BUILD_SCAN_DISTANCE = 64;
 const BUILD_RESCAN_MS = 5000;
+// How often to recheck which blocks the bot has a tool for; only changes when
+// it gains or loses a tool.
+const HARVEST_RECHECK_MS = 5000;
 // Must stay under 100: pathfinder treats >=100 as unbreakable, and a bot shut
 // inside a room with the door closed behind it would then have no path at all.
 const BUILD_DIG_PENALTY = 99;
@@ -394,6 +397,36 @@ export function tameMovements(bot) {
         return 0;
     };
 
+    // Routes through blocks the bot has no tool for. Andy is in a frozen pine
+    // taiga, where snow_block needs a shovel he does not have: the planner kept
+    // routing through it, and a watchdog in goToPosition aborted the path once
+    // digging had already started -- so he re-planned the same impossible route
+    // over and over ("Cannot break snow_block with current tools", six times in
+    // half an hour, plus the pathfinding timeouts it caused).
+    // safeToBreak treats an exclusion cost of 100 as "cannot break", so this
+    // makes A* route around the snow instead of into it.
+    let harvestable = new Map();
+    let harvestStamp = -Infinity;
+    const harvestCheck = (block) => {
+        if (!block?.type) return 0;
+        const now = Date.now();
+        // Cached per block type and rechecked periodically, because this runs
+        // inside A* for every candidate dig and the answer only changes when
+        // the bot picks up or loses a tool.
+        if (now - harvestStamp > HARVEST_RECHECK_MS) { harvestable.clear(); harvestStamp = now; }
+        let ok = harvestable.get(block.type);
+        if (ok === undefined) {
+            try {
+                ok = block.harvestTools === undefined || block.canHarvest(null) ||
+                    bot.inventory.items().some(item => block.canHarvest(item.type));
+            } catch {
+                ok = true;  // unknown block: let the old behaviour handle it
+            }
+            harvestable.set(block.type, ok);
+        }
+        return ok ? 0 : 100;
+    };
+
     const originalSetMovements = bot.pathfinder.setMovements.bind(bot.pathfinder);
     bot.pathfinder.setMovements = function (movements) {
         if (movements) {
@@ -408,6 +441,10 @@ export function tameMovements(bot) {
             if (Array.isArray(movements.exclusionAreasBreak) &&
                 !movements.exclusionAreasBreak.includes(buildPenalty)) {
                 movements.exclusionAreasBreak.push(buildPenalty);
+            }
+            if (Array.isArray(movements.exclusionAreasBreak) &&
+                !movements.exclusionAreasBreak.includes(harvestCheck)) {
+                movements.exclusionAreasBreak.push(harvestCheck);
             }
         }
         return originalSetMovements(movements);
@@ -634,14 +671,28 @@ export function getItemCraftingRecipes(itemName, inventory = null, lookahead = t
     // zero and the tiebreak hands the job back to oak -- and only the top few
     // candidates are ever costed, so pine never gets considered at all.
     const held = (name, count) => Math.min(inventory?.[name] ?? 0, count);
-    const nearlyHeld = (name) => !lookahead ? 0 :
-        (getItemCraftingRecipes(name, inventory, false) ?? []).slice(0, 4)
-            .some(([sub]) => Object.keys(sub).some(k => (inventory?.[k] ?? 0) > 0)) ? 1 : 0;
+    // Memoized per call: one tag-expanded recipe list can hold 522 variants that
+    // between them name only a couple of distinct ingredients, and the lookahead
+    // is a recursive registry walk.
+    const nearly = new Map();
+    const nearlyHeld = (name) => {
+        if (!lookahead) return 0;
+        if (!nearly.has(name)) {
+            nearly.set(name, (getItemCraftingRecipes(name, inventory, false) ?? []).slice(0, 4)
+                .some(([sub]) => Object.keys(sub).some(k => (inventory?.[k] ?? 0) > 0)) ? 1 : 0);
+        }
+        return nearly.get(name);
+    };
     const haveScore = ([ingredients]) => Object.entries(ingredients)
         .reduce((n, [name, count]) => n + (held(name, count) || nearlyHeld(name)), 0);
     const commonScore = ([ingredients]) => Object.keys(ingredients)
         .filter(key => commonItems.includes(key)).reduce((acc, key) => acc + ingredients[key], 0);
-    recipes.sort((a, b) => (haveScore(b) - haveScore(a)) || (commonScore(b) - commonScore(a)));
+    // Score once per recipe, then sort. Scoring inside the comparator meant
+    // O(n log n) scores instead of O(n) -- about 9400 recursive lookups for a
+    // 522-variant plank recipe, which stopped pack loading finishing at all.
+    const ranked = recipes.map(r => ({ r, have: haveScore(r), common: commonScore(r) }));
+    ranked.sort((a, b) => (b.have - a.have) || (b.common - a.common));
+    recipes = ranked.map(s => s.r);
 
     return recipes;
 }

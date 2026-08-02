@@ -82,6 +82,19 @@ assert.equal(tagged.recipes[7][0].inShape[1][1], 6, 'non-choice cells are left a
 assert.equal(tagged.recipes[9].length, 1, 'a recipe with no choices is kept');
 assert.deepEqual(tagged.recipes[9][0].ingredients, [2], 'and is unchanged');
 
+// Prominence 2's #planks accepts 522 items and the list is ordered by item id,
+// so pine_planks (19789) sits near the end. A 128 cap silently dropped it and
+// the pickaxe went back to demanding oak -- the exact bug this file exists for.
+// Every candidate in a realistically large set must survive.
+const big = { any: Array.from({ length: 522 }, (_, i) => i + 1) };
+const wide = { recipes: { 900: [{ result: { id: 900, count: 1 }, inShape: [[big, big, big]] }] } };
+expandChoiceRecipes(wide);
+assert.equal(wide.recipes[900].length, 522, 'a 522-item ingredient expands to one recipe per candidate');
+const produced = new Set(wide.recipes[900].map(v => v.inShape[0][0]));
+assert.ok(produced.has(522), 'the last candidate in a large set is not dropped');
+assert.ok(produced.has(1), 'nor the first');
+assert.equal(produced.size, 522, 'every candidate is represented exactly once');
+
 // Old packs have no choice sets, so the caller falls back to the plank guess.
 assert.equal(expandChoiceRecipes({ recipes: { 7: [{ inShape: [[1, 1, 1]] }] } }), 0,
     'a pre-tag pack reports nothing expanded, so the plank heuristic still runs');

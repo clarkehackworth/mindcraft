@@ -84,14 +84,18 @@ export function applyModDataPacks(registry, packs) {
     // A pack dumped after the tag fix says outright what each slot accepts, so
     // expansion is exact. Older packs only ever named one item per slot, and
     // the plank heuristic is the best guess available for those.
-    let expanded = 0;
+    let expanded = 0, expansion = '';
     if (packs.length) {
         expanded = expandChoiceRecipes(registry);
-        if (!expanded) expanded = expandPlankRecipes(registry);
+        expansion = 'tag';
+        if (!expanded) {
+            expanded = expandPlankRecipes(registry);
+            expansion = 'guessed plank';
+        }
     }
     if (packs.length) {
         console.log(`loaded ${packs.length} mod data pack(s): ${added_blocks} blocks, ${added_items} items, ${added_recipes} recipes` +
-            (expanded ? `, +${expanded} plank variants` : ''));
+            (expanded ? `, +${expanded} ${expansion} variants` : ''));
         if (moved_vanilla) {
             console.log(`corrected block state ids for ${moved_vanilla} vanilla blocks`);
         }
@@ -127,15 +131,25 @@ function addRecipes(registry, recipes) {
  * combinatorial explosion the dumper's old comment rightly refused -- 70 wood
  * types over 3 slots is 70 recipes this way and 343,000 the other.
  *
- * ponytail: capped per recipe. A pathological tag (every dye, every potion)
- * would otherwise bloat the registry that mineflayer linear-scans on every
- * craft. Raise MAX_VARIANTS if a real recipe gets truncated.
+ * The cap is a backstop against a pathological tag, not a size policy. It was
+ * 128 for about ten minutes and that was a bug: Prominence 2's #planks accepts
+ * 522 items, the list is ordered by item id, and pine_planks (19789) sits past
+ * the cut -- so the pickaxe recipe came back oak-only again, exactly the bug
+ * this whole exercise exists to fix. Measured on that pack, expanding
+ * everything is 163068 variants against 11736 recipes, and the median choice
+ * set is 4 items; the plank tag is the lone outlier. A truncation is therefore
+ * a signal that something is wrong, and it says so out loud rather than
+ * quietly producing recipes the bot cannot use.
  */
-const MAX_VARIANTS = 128;
+const MAX_VARIANTS = 1024;
 
 export function expandChoiceRecipes(registry) {
     if (!registry.recipes) return 0;
-    const key = (slot) => JSON.stringify(slot.any);
+    // Cheap structural key. This was JSON.stringify(slot.any), which meant
+    // serializing a 522-element array once per cell per candidate -- roughly
+    // 1500 stringifications of a 3KB string for a single pickaxe recipe, and
+    // pack loading stopped finishing at all.
+    const key = (slot) => `${slot.any.length}:${slot.any[0]}:${slot.any[slot.any.length - 1]}`;
     const pick = (shape, chosen) => shape.map(cell => {
         if (Array.isArray(cell)) return pick(cell, chosen);
         if (cell && typeof cell === 'object' && cell.any)
@@ -160,6 +174,9 @@ export function expandChoiceRecipes(registry) {
             if (!sets.size) { grown.push(variant); continue; }
             expanded_any = true;
             for (const [k, options] of sets) {
+                if (options.length > MAX_VARIANTS)
+                    console.warn(`[mod_data] ingredient accepting ${options.length} items truncated to ${MAX_VARIANTS}; ` +
+                        'the bot will not know it can use the rest');
                 for (const option of options.slice(0, MAX_VARIANTS)) {
                     const chosen = { [k]: option };
                     const clone = { ...variant };

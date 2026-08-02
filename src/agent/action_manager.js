@@ -167,12 +167,23 @@ export class ActionManager {
             clearTimeout(TIMEOUT);
             this.cancelResume();
             await this.stop();
+            // Read the stack BEFORE flattening to a string: this was
+            // err.toString() first and err.stack second, so every stack trace
+            // ever logged said "undefined".
+            const stack = err?.stack ?? '(no stack)';
+            // PathStopped is not a failure, it is the pathfinder acknowledging
+            // that something interrupted it -- usually us, via a mode that
+            // interrupts all. Reporting it as a thrown exception put 25 "!!Code
+            // threw exception!!" blocks in half an hour of logs and buried the
+            // errors that mattered.
+            const stopped = err?.name === 'PathStopped';
             err = err.toString();
 
-            let message = this.getBotOutputSummary() +
-                '!!Code threw exception!!\n' +
-                'Error: ' + err + '\n' +
-                'Stack trace:\n' + err.stack+'\n';
+            let message = this.getBotOutputSummary() + (stopped
+                ? `Pathfinding stopped before reaching the goal: ${err}\n`
+                : '!!Code threw exception!!\n' +
+                  'Error: ' + err + '\n' +
+                  'Stack trace:\n' + stack + '\n');
 
             let interrupted = this.agent.bot.interrupt_code;
             this.agent.clearBotLogs();
