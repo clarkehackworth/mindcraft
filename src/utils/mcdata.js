@@ -72,6 +72,24 @@ export const MATCHING_WOOD_BLOCKS = [
     'pressure_plate',
     'trapdoor'
 ]
+// A policy that says "log" should work in a birch forest, and "coal_ore"
+// should still match below y=0. Family names expand to every variant; exact
+// names ("oak_log") stay exact so stated intent is preserved.
+export function expandBlockName(name) {
+    if (typeof name !== 'string') return [name];
+    const wood_families = [...MATCHING_WOOD_BLOCKS, 'leaves', 'wood'];
+    if (wood_families.includes(name))
+        return WOOD_TYPES.map(wood => `${wood}_${name}`);
+    const stripped = name.startsWith('stripped_') && name.slice(9);
+    if (stripped && wood_families.includes(stripped))
+        return WOOD_TYPES.map(wood => `stripped_${wood}_${stripped}`);
+    if (name === 'wool')
+        return WOOL_COLORS.map(color => `${color}_wool`);
+    if (name.endsWith('_ore') && !name.startsWith('deepslate_'))
+        return [name, 'deepslate_' + name];
+    return [name];
+}
+
 export const WOOL_COLORS = [
     'white',
     'orange',
@@ -106,6 +124,10 @@ export function initBot(username) {
     }
 
     const bot = createBot(options);
+    // mineflayer + its plugins legitimately register ~11 error listeners,
+    // which trips Node's default warning threshold of 10. Not a leak.
+    bot.setMaxListeners(20);
+    bot._client.setMaxListeners(20);
 
     // Throttle position packets to avoid kicks on Paper/Spigot servers
     // Paper enforces stricter packet rate limits than vanilla, causing ECONNRESET
@@ -427,11 +449,26 @@ export function tameMovements(bot) {
         return ok ? 0 : 100;
     };
 
+    // A* runs synchronously on the event loop. The default budgets (40s total,
+    // 40ms per tick -- and a "tick" stretches much further than 40ms when the
+    // exclusion penalties make node expansion slow) let a 147-block
+    // destructive-path search starve keepalives until the server dropped the
+    // connection ("lost connection: Timed out"). A failed path is recoverable;
+    // a disconnect is not, so give up early and think in smaller slices.
+    bot.pathfinder.thinkTimeout = 5000;
+    bot.pathfinder.tickTimeout = 10;
+
     const originalSetMovements = bot.pathfinder.setMovements.bind(bot.pathfinder);
     bot.pathfinder.setMovements = function (movements) {
         if (movements) {
             movements.allowParkour = false;
             movements.allowSprinting = false;
+            // Default true forbids placing any block next to liquid, which
+            // made every tower-up move in a flooded shaft illegal -- the bot
+            // sat at the bottom of its own wet mine with 64 cobblestone and
+            // "path not found". Its shafts keep hitting aquifers; being able
+            // to pillar out beats keeping streams tidy.
+            movements.dontCreateFlow = false;
             // Digging one block through a wall costs ~2-5 by default, so a door
             // twenty blocks away always loses and the bot tunnels into the base.
             // canOpenDoors is already on; it just needed the walls to be the

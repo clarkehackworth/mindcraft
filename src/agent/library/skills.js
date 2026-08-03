@@ -46,6 +46,96 @@ async function equipHighestAttack(bot) {
         await bot.equip(weapon, 'hand');
 }
 
+// mineflayer's bot.craft simulates the entire table transaction client-side --
+// its grabResult() literally fabricates the result item into the window
+// without asking the server -- so on servers where a mod changes container
+// timing (VisualWorkbench rebroadcasts the result slot every tick, making
+// naive clicks stale-on-arrival), it pockets phantom items while the real
+// ingredients sit in the table. This crafts at a table treating server packets
+// as the only truth: place ingredients, wait for the server to OFFER the
+// result in slot 0, shift-click it, and confirm the take by watching the grid
+// empty -- an ignored take gets re-asserted by the server within a tick.
+// Works identically on vanilla servers. Returns the number of completed
+// crafts. ponytail: assumes 1 item per grid slot, true of every vanilla-style
+// recipe; teach it counts if a mod recipe ever needs stacks in the grid.
+export async function tableCraft(bot, recipe, count, craftingTable) {
+    const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+    const gridSlot = (x, y) => 1 + x + 3 * y;
+    const gridEmpty = (window) => window.slots.slice(1, 10).every(s => !s);
+
+    // One craft's worth of [grid slot, item id] placements.
+    const placements = [];
+    if (recipe.inShape) {
+        for (let y = 0; y < recipe.inShape.length; y++)
+            for (let x = 0; x < recipe.inShape[y].length; x++)
+                if (recipe.inShape[y][x].id !== -1)
+                    placements.push([gridSlot(x, y), recipe.inShape[y][x].id]);
+    }
+    if (recipe.ingredients) { // shapeless: fill unused slots from the top left
+        const used = new Set(placements.map(p => p[0]));
+        let s = 1;
+        for (const ing of recipe.ingredients) {
+            while (used.has(s)) s++;
+            used.add(s);
+            placements.push([s, ing.id]);
+        }
+    }
+
+    const window = await bot.openBlock(craftingTable);
+    let done = 0;
+    try {
+        await sleep(300); // authoritative window_items, plus a VW sync tick
+        for (let i = 0; i < count && !bot.interrupt_code; i++) {
+            for (const [dest, id] of placements) {
+                if (window.slots[dest]?.type === id) continue; // already there (left by an earlier attempt)
+                const source = window.findInventoryItem(id, null);
+                if (!source) throw new Error('missing ingredient');
+                await bot.clickWindow(source.slot, 0, 0); // pick up the stack
+                await bot.clickWindow(dest, 1, 0);        // drop one in the grid
+                if (window.selectedItem)
+                    await bot.clickWindow(source.slot, 0, 0); // put the rest back
+            }
+            // The result slot filling is the server's word that it recognizes
+            // the recipe; the client never predicts it.
+            let offered = false;
+            for (let t = 0; t < 10 && !offered; t++) {
+                await sleep(200);
+                offered = !!window.slots[0];
+            }
+            if (!offered) break;
+            let took = false;
+            for (let attempt = 0; attempt < 5 && !took; attempt++) {
+                try { await bot.clickWindow(0, 0, 1); } catch {} // shift-click result to inventory
+                await sleep(350); // an ignored take is re-asserted by the next sync tick
+                if (!window.slots[0] && gridEmpty(window)) took = true;
+            }
+            if (!took) break;
+            done++;
+        }
+        // Withdraw anything left in the grid so nothing is stranded in the table.
+        for (let s = 1; s <= 9; s++) {
+            if (!window.slots[s]) continue;
+            try { await bot.clickWindow(s, 0, 1); } catch {}
+            await sleep(120);
+        }
+    } finally {
+        bot.closeWindow(window);
+    }
+    return done;
+}
+
+// What the bot could put its hands on right now: held items, plus one of every
+// block type in sight. Only for ranking recipe variants -- a block in sight is
+// not a block in the inventory, so never feed this to a crafting plan.
+// ponytail: flat count of 1 per nearby type, not an actual block census. The
+// ranking only asks "is this material around at all"; count a vein properly if
+// something ever needs to choose between two materials that are both present.
+function reachableCounts(bot) {
+    const counts = {};
+    for (const name of world.getNearbyBlockTypes(bot)) counts[name] = 1;
+    return {...counts, ...world.getInventoryCounts(bot)};
+}
+
 export async function craftRecipe(bot, itemName, num=1) {
     /**
      * Attempt to craft the given item name from a recipe. May craft many items.
@@ -111,8 +201,11 @@ export async function craftRecipe(bot, itemName, num=1) {
             return await craftRecipe(bot, itemName, num);
         }
         // Ranked against what the bot is holding, so the message names the wood
-        // it actually has instead of always naming oak.
-        log(bot, `You do not have the resources to craft a ${itemName}. It requires: ${Object.entries(mc.getItemCraftingRecipes(itemName, world.getInventoryCounts(bot))[0][0]).map(([key, value]) => `${key}: ${value}`).join(', ')}.`);
+        // it actually has instead of always naming oak. Holding none of it, rank
+        // against what is standing within sight too: empty-handed in a pine
+        // forest the tiebreak used to name oak_planks, and Andy spent a day of
+        // real time hunting an oak tree that does not grow in this biome.
+        log(bot, `You do not have the resources to craft a ${itemName}. It requires: ${Object.entries(mc.getItemCraftingRecipes(itemName, reachableCounts(bot))[0][0]).map(([key, value]) => `${key}: ${value}`).join(', ')}.`);
         if (placedTable) {
             await collectBlock(bot, 'crafting_table', 1);
         }
@@ -130,9 +223,31 @@ export async function craftRecipe(bot, itemName, num=1) {
     const requiredIngredients = mc.ingredientsFromPrismarineRecipe(recipe); //Items required to use the recipe once.
     const craftLimit = mc.calculateLimitingResource(inventory, requiredIngredients);
     
-    await bot.craft(recipe, Math.min(craftLimit.num, num), craftingTable);
-    if(craftLimit.num<num) log(bot, `Not enough ${craftLimit.limitingResource} to craft ${num}, crafted ${craftLimit.num}. You now have ${world.getInventoryCounts(bot)[itemName]} ${itemName}.`);
-    else log(bot, `Successfully crafted ${itemName}, you now have ${world.getInventoryCounts(bot)[itemName]} ${itemName}.`);
+    // bot.craft simulates the window clicks client-side and "succeeds" even
+    // when the server rejected every one of them. Seen live: VisualWorkbench
+    // replaces the crafting-table menu, mineflayer clicks a grid that is not
+    // there, the server destroys the ingredients, and the LLM is told
+    // "Successfully crafted" -- it then plans around a pickaxe it does not
+    // have. Verify against the post-close resync before reporting anything.
+    const count_before_craft = world.getInventoryCounts(bot)[itemName] ?? 0;
+    if (craftingTable) {
+        const done = await tableCraft(bot, recipe, Math.min(craftLimit.num, num), craftingTable);
+        if (done === 0) {
+            log(bot, `Crafting ${itemName} FAILED: the crafting table never produced the result. If ingredients are stuck inside the table (VisualWorkbench stores them), break the table to recover them.`);
+            if (placedTable) {
+                await collectBlock(bot, 'crafting_table', 1);
+            }
+            return false;
+        }
+    } else {
+        await bot.craft(recipe, Math.min(craftLimit.num, num), null);
+    }
+    // Report what was actually gained: "crafted 6" used to mean 6 crafting
+    // operations at 4 planks each, and the "you now have N" total hid it.
+    const total_after_craft = world.getInventoryCounts(bot)[itemName] ?? 0;
+    const gained_from_craft = total_after_craft - count_before_craft;
+    if(craftLimit.num<num) log(bot, `Not enough ${craftLimit.limitingResource} for ${num} crafts, made ${gained_from_craft} ${itemName}. You now have ${total_after_craft} ${itemName}.`);
+    else log(bot, `Crafted ${gained_from_craft} ${itemName}, you now have ${total_after_craft} ${itemName}.`);
     if (placedTable) {
         await collectBlock(bot, 'crafting_table', 1);
     }
@@ -255,6 +370,7 @@ export async function smeltItem(bot, itemName, num=1) {
         console.log(`Added ${put_fuel} ${mc.getItemName(fuel.type)} to furnace fuel.`)
     }
     // put the items in the furnace
+    const inv_before_smelt = world.getInventoryCounts(bot);
     await furnace.putInput(mc.getItemId(itemName), null, num);
     // wait for the items to smelt
     let total = 0;
@@ -298,7 +414,16 @@ export async function smeltItem(bot, itemName, num=1) {
         log(bot, `Only smelted ${total} ${mc.getItemName(smelted_item.type)}.`);
         return false;
     }
-    log(bot, `Successfully smelted ${itemName}, got ${total} ${mc.getItemName(smelted_item.type)}.`);
+    // Trust inventory over the window: takeOutput counts what the client
+    // believes it took, and modded containers have lied about that before
+    // (see craftRecipe). Report the verified amount.
+    const product = mc.getItemName(smelted_item.type);
+    const gained = (world.getInventoryCounts(bot)[product] ?? 0) - (inv_before_smelt[product] ?? 0);
+    if (gained < total) {
+        log(bot, `Smelting reported ${total} ${product} but only ${gained} arrived in your inventory -- the furnace may be desynced. Check !inventory before smelting more.`);
+        return gained > 0;
+    }
+    log(bot, `Successfully smelted ${itemName}, got ${total} ${product}.`);
     return true;
 }
 
@@ -412,7 +537,10 @@ export async function defendSelf(bot, range=9) {
     let enemy = world.getNearestEntityWhere(bot, entity => mc.isHostile(entity), range);
     while (enemy) {
         await equipHighestAttack(bot);
-        if (bot.entity.position.distanceTo(enemy.position) >= 4 && enemy.name !== 'creeper' && enemy.name !== 'phantom') {
+        // Substring, not equality: a modded server names its mobs things like
+        // 'mutant_creeper', which failed both equality checks, so the bot closed
+        // to 3.5 blocks and charged one. It blew up on him.
+        if (bot.entity.position.distanceTo(enemy.position) >= 4 && !enemy.name.includes('creeper') && !enemy.name.includes('phantom')) {
             try {
                 bot.pathfinder.setMovements(new pf.Movements(bot));
                 await bot.pathfinder.goto(new pf.goals.GoalFollow(enemy, 3.5), true);
@@ -471,6 +599,9 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
     const isLiquid = blockType === 'lava' || blockType === 'water';
 
     let collected = 0;
+    // Total item count, not per-item names: what a block drops (stone ->
+    // cobblestone, ore -> raw metal) is a mapping this check does not need.
+    const items_before_collect = bot.inventory.items().reduce((sum, i) => sum + i.count, 0);
 
     const movements = new pf.Movements(bot);
     movements.dontMineUnderFallingBlock = false;
@@ -532,6 +663,10 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
             }
             else if (mc.mustCollectManually(blockType)) {
                 await goToPosition(bot, block.position.x, block.position.y, block.position.z, 2);
+                if (wouldMaroon(bot, block.position)) {
+                    log(bot, `Skipping ${blockType} at ${block.position}: breaking it would strand you on a pillar.`);
+                    continue;
+                }
                 await bot.dig(block);
                 await pickupNearbyItems(bot);
                 success = true;
@@ -558,6 +693,15 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
         if (bot.interrupt_code)
             break;  
     }
+    // The counter counts blocks broken, not items banked. Drops can fall into
+    // holes, burn, or despawn ("Got 8 pine logs" with an empty inventory sent
+    // the LLM planning around wood it did not have). Only claim success the
+    // inventory can back up.
+    const items_after_collect = bot.inventory.items().reduce((sum, i) => sum + i.count, 0);
+    if (collected > 0 && items_after_collect <= items_before_collect) {
+        log(bot, `Broke ${collected} ${blockType} but nothing entered your inventory -- the drops were lost or are out of reach. Check !inventory before planning around them.`);
+        return false;
+    }
     log(bot, `Collected ${collected} ${blockType}.`);
     return collected > 0;
 }
@@ -574,7 +718,10 @@ export async function pickupNearbyItems(bot) {
     const getNearestItem = bot => bot.nearestEntity(entity => entity.name === 'item' && bot.entity.position.distanceTo(entity.position) < distance);
     let nearestItem = getNearestItem(bot);
     let pickedUp = 0;
-    while (nearestItem) {
+    // Same shape as the sleep loop below: one pathfind per item, and nothing
+    // watching the interrupt flag, so a pile of drops holds the action open past
+    // the grace period.
+    while (nearestItem && !bot.interrupt_code) {
         let movements = new pf.Movements(bot);
         movements.canDig = false;
         bot.pathfinder.setMovements(movements);
@@ -591,6 +738,50 @@ export async function pickupNearbyItems(bot) {
     return true;
 }
 
+
+// Every break is locally harmless, but enough of them around the bot's own feet
+// and it is standing on a 1x1 pillar over a void with nothing to bridge with --
+// pathfinder then correctly reports no path from anywhere to anywhere, and the
+// agent burns API calls retrying forever. Andy spent five hours like that at
+// (7,80,3), having mined out everything within four blocks of himself.
+//
+// Marooned means every horizontal neighbour of the bot, at foot level and the
+// level below, is air: nothing to step onto and nothing to dig into. A bot in a
+// 1x1 shaft is enclosed, not marooned, so ordinary mining and digDown are
+// untouched -- this only fires on the break that removes the last foothold.
+//
+// ponytail: one ring, no reachability search. Upgrade to a small flood fill if
+// bots start stranding themselves two blocks out instead of one.
+// Blocks the bot deliberately broke, so convenience modes do not undo the
+// work: torch_placing kept re-torching the exact spot placeBlock had just
+// cleared for a crafting table, and the two fought forever while the LLM
+// wandered around the mine placing nothing.
+const recently_cleared = new Map();
+export function markCleared(x, y, z) {
+    recently_cleared.set(`${Math.floor(x)},${Math.floor(y)},${Math.floor(z)}`, Date.now());
+}
+export function wasRecentlyCleared(x, y, z, ms = 60000) {
+    const at = recently_cleared.get(`${Math.floor(x)},${Math.floor(y)},${Math.floor(z)}`);
+    return at !== undefined && Date.now() - at < ms;
+}
+
+const FOOTHOLD_RING = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
+export function wouldMaroon(bot, pos) {
+    const feet = bot.entity?.position?.floored();
+    if (!feet) return false;
+    // Only the ground plane can strand the bot; a wall or a ceiling is never a
+    // foothold, so breaking one cannot take the last one away.
+    if (pos.y !== feet.y && pos.y !== feet.y - 1) return false;
+    for (const [dx, dz] of FOOTHOLD_RING) {
+        for (const dy of [0, -1]) {
+            const p = feet.offset(dx, dy, dz);
+            if (p.equals(pos)) continue;  // this one is about to become air
+            const block = bot.blockAt(p);
+            if (block && block.boundingBox === 'block') return false;
+        }
+    }
+    return true;
+}
 
 export async function breakBlockAt(bot, x, y, z) {
     /**
@@ -631,7 +822,12 @@ export async function breakBlockAt(bot, x, y, z) {
                 return false;
             }
         }
+        if (wouldMaroon(bot, block.position)) {
+            log(bot, `Not breaking ${block.name} at x:${x.toFixed(1)}, y:${y.toFixed(1)}, z:${z.toFixed(1)}: it is the last block you could step onto, and removing it would strand you on a pillar. Move somewhere else first, or place a block to stand on.`);
+            return false;
+        }
         await bot.dig(block, true);
+        markCleared(x, y, z);
         log(bot, `Broke ${block.name} at x:${x.toFixed(1)}, y:${y.toFixed(1)}, z:${z.toFixed(1)}.`);
     }
     else {
@@ -1018,6 +1214,15 @@ export async function consume(bot, itemName="") {
         item = bot.inventory.findInventoryItem(itemName);
         name = itemName;
     }
+    else {
+        // The `if (itemName)` above always implied an else that was never
+        // written, so consume() with no argument could only ever log "You do not
+        // have any undefined to eat". Eating whatever food is in the bag is the
+        // only thing a no-argument call can sensibly mean, and it lets one
+        // policy rule cover hunger without naming every food in the game.
+        item = bot.inventory.items().find(i => bot.registry.foods?.[i.type]);
+        name = 'food';
+    }
     if (!item) {
         log(bot, `You do not have any ${name} to eat.`);
         return false;
@@ -1120,16 +1325,34 @@ export async function goToGoal(bot, goal) {
 
     let final_movements = destructiveMovements;
 
-    const pathfind_timeout = 1000;
-    if (await bot.pathfinder.getPathTo(nonDestructiveMovements, goal, pathfind_timeout).status === 'success') {
+    // 1s was too short for goals a few dozen blocks out: reachable targets kept
+    // probing as "no path" and fell into the walk-anyway branch below.
+    const pathfind_timeout = 3000;
+    const non_destructive = bot.pathfinder.getPathTo(nonDestructiveMovements, goal, pathfind_timeout).status;
+    const destructive = non_destructive === 'success' ? null
+        : bot.pathfinder.getPathTo(destructiveMovements, goal, pathfind_timeout).status;
+
+    if (non_destructive === 'success') {
         final_movements = nonDestructiveMovements;
         log(bot, `Found non-destructive path.`);
     }
-    else if (await bot.pathfinder.getPathTo(destructiveMovements, goal, pathfind_timeout).status === 'success') {
+    else if (destructive === 'success') {
         log(bot, `Found destructive path.`);
     }
+    else if (non_destructive === 'noPath' && destructive === 'noPath') {
+        // Walking at an unreachable goal anyway just makes the bot thrash against
+        // whatever is in the way until something else interrupts it. Fail fast so
+        // the LLM sees "no path" and picks a different target.
+        throw new Error('No path to the goal');
+    }
     else {
-        log(bot, `Path not found, but attempting to navigate anyway using destructive movements.`);
+        // 'timeout'/'partial' means the search ran out of budget, not that the
+        // goal is walled off. On a modded server (17k block types) every probe
+        // to Andy's own base 30 blocks away timed out, so goToGoal threw before
+        // taking a step -- fourteen straight refusals to walk home, while
+        // moveAway, which hands the goal straight to pathfinder, moved him every
+        // time. pathfinder.goto replans as it walks and gets there.
+        log(bot, `Path search ran long; heading that way and replanning as I go.`);
     }
 
     const doorCheckInterval = startDoorInterval(bot);
@@ -1512,7 +1735,10 @@ export async function moveAway(bot, distance) {
      * @example
      * await skills.moveAway(bot, 8);
      **/
-    const pos = bot.entity.position;
+    // Clone: bot.entity.position is mutated in place as the bot walks, so
+    // holding the reference makes the "from" in the log follow the bot and
+    // every move read as a no-op.
+    const pos = bot.entity.position.clone();
     let goal = new pf.goals.GoalNear(pos.x, pos.y, pos.z, distance);
     let inverted_goal = new pf.goals.GoalInvert(goal);
     bot.pathfinder.setMovements(new pf.Movements(bot));
@@ -1530,8 +1756,22 @@ export async function moveAway(bot, distance) {
         }
     }
 
-    await goToGoal(bot, inverted_goal);
+    // Not goToGoal: its up-front getPathTo probe reports 'noPath' for an
+    // inverted goal (GoalInvert negates the heuristic, so A* cannot bound the
+    // search) and goToGoal then throws before the bot takes a step. That is why
+    // every escape in Andy's log said "nowhere to go" while standing on open
+    // grass. pathfinder.goto walks the best partial path it finds instead.
+    try {
+        await bot.pathfinder.goto(inverted_goal);
+    } catch (err) { /* handled by the distance check below */ }
     let new_pos = bot.entity.position;
+    // goToGoal can also resolve without the bot getting anywhere, so a stranded
+    // bot (pillar with no reachable neighbour, empty inventory) used to be told
+    // it had moved and would try the same escape forever. Say it failed instead.
+    if (new_pos.distanceTo(pos) < 1) {
+        log(bot, `Could not move away from ${pos.floored()}: nowhere to go. You may be stranded; try placing a block to walk on or digging out.`);
+        return false;
+    }
     log(bot, `Moved away from ${pos.floored()} to ${new_pos.floored()}.`);
     return true;
 }
@@ -1698,6 +1938,17 @@ export async function goToBed(bot) {
     log(bot, `You are in bed.`);
     bot.modes.pause('unstuck');
     while (bot.isSleeping) {
+        // Sleeping lasts until morning -- minutes, not seconds -- and this loop
+        // checked nothing, so the ActionManager's 10s grace period expired and
+        // it abandoned the action every time: `action "mode:policy:
+        // shelter_at_night" ignored the interrupt for 10s, abandoning it`.
+        // Get out of bed on the way out, or everything that runs next is trying
+        // to move a sleeping bot.
+        if (bot.interrupt_code) {
+            try { await bot.wake(); } catch { /* already awake, or the bed is gone */ }
+            log(bot, `Woke up early.`);
+            return true;
+        }
         await new Promise(resolve => setTimeout(resolve, 500));
     }
     log(bot, `You have woken up.`);
@@ -2090,6 +2341,83 @@ export async function digDown(bot, distance = 10) {
     }
     log(bot, `Dug down ${distance} blocks.`);
     return true;
+}
+
+// mineflayer-pathfinder has no swim move, so a bot that falls into water with
+// walls around it cannot path out even when dry land is one block away -- every
+// goal reports "path not found" and the LLM is left improvising. Andy bobbed in
+// a 2-block flooded pocket at (81,60,-124) doing exactly that, and teleporting
+// him to the lip of the hole just let him walk back in.
+//
+// Steer out by hand instead: hold jump to float up, walk at the nearest dry
+// landing. ponytail: straight-line steering, no obstacle avoidance. It only has
+// to clear the puddle -- once the bot is on land pathfinder works again.
+const LIQUIDS = ['water', 'lava', 'flowing_water', 'flowing_lava'];
+const ESCAPE_RADIUS = 8;
+const ESCAPE_TIMEOUT_MS = 10000;
+
+export function isInLiquid(bot) {
+    const feet = bot.blockAt(bot.entity.position.floored());
+    return !!feet && LIQUIDS.includes(feet.name);
+}
+
+// Water's boundingBox is 'empty' like air's, so standing room has to be checked
+// by name as well as by shape.
+function isFreeSpace(block) {
+    return !!block && block.boundingBox === 'empty' && !LIQUIDS.includes(block.name);
+}
+
+function nearestDryLanding(bot) {
+    const feet = bot.entity.position.floored();
+    let best = null;
+    let best_dist = Infinity;
+    for (let dx = -ESCAPE_RADIUS; dx <= ESCAPE_RADIUS; dx++) {
+        for (let dz = -ESCAPE_RADIUS; dz <= ESCAPE_RADIUS; dz++) {
+            for (let dy = -2; dy <= 4; dy++) {
+                const p = feet.offset(dx, dy, dz);
+                if (bot.blockAt(p.offset(0, -1, 0))?.boundingBox !== 'block') continue;
+                if (!isFreeSpace(bot.blockAt(p))) continue;
+                if (!isFreeSpace(bot.blockAt(p.offset(0, 1, 0)))) continue;
+                const dist = p.distanceTo(feet);
+                if (dist < best_dist) { best_dist = dist; best = p; }
+            }
+        }
+    }
+    return best;
+}
+
+export async function escapeLiquid(bot) {
+    /**
+     * Swim to the nearest dry standing spot. Pathfinder cannot do this.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @returns {Promise<boolean>} true if the bot reached dry land, false if it
+     * was never in liquid or could not get clear.
+     **/
+    if (!isInLiquid(bot)) return false;
+    const target = nearestDryLanding(bot);
+    if (!target) {
+        log(bot, `You are in liquid and there is no dry ground within ${ESCAPE_RADIUS} blocks. Break the blocks around you or place blocks to climb out.`);
+        return false;
+    }
+    const aim = target.offset(0.5, 0, 0.5);
+    const deadline = Date.now() + ESCAPE_TIMEOUT_MS;
+    bot.setControlState('jump', true);  // swim up instead of sinking
+    bot.setControlState('forward', true);
+    try {
+        while (Date.now() < deadline && !bot.interrupt_code) {
+            await bot.lookAt(aim, true);
+            if (!isInLiquid(bot) && bot.entity.position.distanceTo(aim) < 1.5) break;
+            await new Promise(resolve => setTimeout(resolve, 200));
+        }
+    } finally {
+        bot.setControlState('jump', false);
+        bot.setControlState('forward', false);
+    }
+    const escaped = !isInLiquid(bot);
+    log(bot, escaped
+        ? `Swam out of the liquid onto ${target}.`
+        : `Could not swim clear of the liquid; still at ${bot.entity.position.floored()}.`);
+    return escaped;
 }
 
 export async function goToSurface(bot) {

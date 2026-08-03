@@ -110,8 +110,11 @@ export function parseCommandMessage(message) {
     const params = commandParams(command);
     const paramNames = commandParamNames(command);
     
-    if (args.length !== params.length)
-        return `Command ${command.name} was given ${args.length} args, but requires ${params.length} args.`;
+    // Params declared optional may be left off the end; the perform signature
+    // supplies the default. Without this an optional param is optional in name
+    // only and every caller has to pass it.
+    if (args.length > params.length || args.length < numRequiredParams(command))
+        return `Command ${command.name} was given ${args.length} args, but requires ${numRequiredParams(command)} args.`;
 
     
     for (let i = 0; i < args.length; i++) {
@@ -209,26 +212,33 @@ function numParams(command) {
     return commandParams(command).length;
 }
 
+function numRequiredParams(command) {
+    return commandParams(command).filter(p => !p.optional).length;
+}
+
 // Nothing tells the agent it is repeating itself: a command that got
 // interrupted, or that did nothing, reads exactly like a fresh one, so it will
 // happily reissue it forever (seen live: !goToCoordinates to the same spot
 // every few seconds for minutes). Count identical calls and say so.
 const REPEAT_LIMIT = 3;
+// Consecutive counting missed the loop that actually happens: goToCoordinates,
+// searchForBlock, goToCoordinates, moveAway, goToCoordinates... Any other
+// command reset the counter, so 700 trips to the same coordinates never once
+// tripped the check. Look at a window of recent commands instead.
+const REPEAT_WINDOW = 10;
 
 // ponytail: a warning, not a block. Repetition is sometimes right -- retrying a
 // path that a mob interrupted, mining the same vein -- so the LLM decides.
 export function checkRepeat(agent, parsed) {
     const signature = parsed.commandName + JSON.stringify(parsed.args ?? []);
-    if (agent.last_command_signature === signature)
-        agent.repeat_count = (agent.repeat_count ?? 1) + 1;
-    else {
-        agent.last_command_signature = signature;
-        agent.repeat_count = 1;
-    }
-    if (agent.repeat_count < REPEAT_LIMIT) return '';
-    return `(REPEATED COMMAND) You have run ${parsed.commandName} with the same arguments ${agent.repeat_count} times in a row ` +
-        'and you are still here. It is not working. Do something different -- a different command, different arguments, ' +
-        'or a different place -- and do not run it again.\n';
+    const recent = agent.recent_command_signatures ??= [];
+    recent.push(signature);
+    if (recent.length > REPEAT_WINDOW) recent.shift();
+    const count = recent.filter(s => s === signature).length;
+    if (count < REPEAT_LIMIT) return '';
+    return `(REPEATED COMMAND) You have run ${parsed.commandName} with the same arguments ${count} times in the last ` +
+        `${recent.length} commands and you are still here. It is not working. Do something different -- a different command, ` +
+        'different arguments, or a different place -- and do not run it again.\n';
 }
 
 /**
@@ -249,8 +259,8 @@ export async function executeCommand(agent, message, self_issued = false) {
         if (parsed.args) {
             numArgs = parsed.args.length;
         }
-        if (numArgs !== numParams(command))
-            return `Command ${command.name} was given ${numArgs} args, but requires ${numParams(command)} args.`;
+        if (numArgs > numParams(command) || numArgs < numRequiredParams(command))
+            return `Command ${command.name} was given ${numArgs} args, but requires ${numRequiredParams(command)} args.`;
         else {
             const repeated = checkRepeat(agent, parsed);
             agent.command_self_issued = self_issued;

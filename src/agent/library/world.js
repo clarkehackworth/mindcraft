@@ -1,4 +1,5 @@
 import pf from 'mineflayer-pathfinder';
+import { Vec3 } from 'vec3';
 import * as mc from '../../utils/mcdata.js';
 
 
@@ -134,11 +135,187 @@ export function getNearestBlocks(bot, block_types=null, distance=8, count=10000)
     else {
         if (!Array.isArray(block_types))
             block_types = [block_types];
-        for(let block_type of block_types) {
-            block_ids.push(mc.getBlockId(block_type));
+        // Family names ("log", "coal_ore") expand here too, and unknown names
+        // are dropped instead of pushing a null id into the scan.
+        block_ids = getBlockIdsByName(bot, block_types);
+    }
+    // Integer state-id scan, not bot.findBlocks: see findBlockPositions.
+    return findBlockPositions(bot, block_ids, distance, count)
+        .map(pos => bot.blockAt(pos))
+        .filter(block => block);
+}
+
+// Why this exists instead of bot.findBlocks:
+//
+// findBlocks skips a chunk section only when section.palette proves the block is
+// absent, and it proves it by calling Block.fromStateId on every palette entry.
+// Prominence 2 sends 20-bits-per-block sections (see patches/prismarine-chunk),
+// which are DIRECT palettes -- section.palette is undefined -- so the check
+// gives up and returns "might be in there" for every section. It then builds a
+// full Block object, biome and block-entity lookup included, for all 4096 blocks
+// of every section in range, just to read its type. A profile of the live agent
+// put 56.9% of ALL its CPU in that loop.
+//
+// A block's identity is already an integer in the section data. So compare
+// integers: state ids carry the block type, and a block's states are one
+// contiguous [minStateId, maxStateId] range, so matching is a range check. That
+// gives a real fast path for all three container shapes rather than just one:
+//
+//   SingleValueContainer  one comparison rejects the whole section (all the air)
+//   IndirectPalette       compare the palette as integers, no Blocks built
+//   DirectPalette         read 4096 ints instead of building 4096 Blocks
+//
+// Blocks are only constructed for the handful of positions actually returned.
+
+// Past this many ranges, walking the list per block costs more than paying for
+// a byte per state id up front. getNearestBlocks(bot, null) asks for every block
+// in the registry, so both shapes are real.
+const SMALL_TARGET_RANGES = 16;
+
+// Above this, keeping the results sorted as we go costs more than one sort at
+// the end. Also the ceiling on collectBlock's candidate list.
+const BOUNDED_COUNT = 64;
+
+export function getBlockIdsByName(bot, names) {
+    /**
+     * Resolve block names to type ids using the bot's own (modded) registry.
+     * @param {Bot} bot
+     * @param {string[]} names
+     * @returns {number[]} - ids of the names that exist, unknown names dropped.
+     */
+    const by_name = bot.registry?.blocksByName ?? {};
+    const ids = new Set();
+    for (const name of names.flatMap(n => mc.expandBlockName(n))) {
+        const id = by_name[name]?.id ?? mc.getBlockId(name);
+        if (id !== null && id !== undefined) ids.add(id);
+    }
+    return [...ids];
+}
+
+function stateIdMatcher(bot, block_ids) {
+    const blocks = bot.registry?.blocks ?? {};
+    const ranges = [];   // flat [lo0, hi0, lo1, hi1, ...], no per-entry objects
+    let max_state = 0;
+    for (const id of block_ids) {
+        const b = blocks[id];
+        if (!b) continue;
+        const lo = b.minStateId ?? b.defaultState;
+        const hi = b.maxStateId ?? b.defaultState;
+        if (lo === undefined || hi === undefined) continue;
+        ranges.push(lo, hi);
+        if (hi > max_state) max_state = hi;
+    }
+    if (ranges.length === 0) return null;
+    if (ranges.length <= SMALL_TARGET_RANGES) {
+        return (state) => {
+            for (let i = 0; i < ranges.length; i += 2)
+                if (state >= ranges[i] && state <= ranges[i + 1]) return true;
+            return false;
+        };
+    }
+    const table = new Uint8Array(max_state + 1);
+    for (let i = 0; i < ranges.length; i += 2) table.fill(1, ranges[i], ranges[i + 1] + 1);
+    return (state) => state <= max_state && table[state] === 1;
+}
+
+export function findBlockPositions(bot, block_ids, distance=16, count=1) {
+    /**
+     * Find positions of blocks of the given type ids without constructing Block
+     * objects, nearest first.
+     * @param {Bot} bot
+     * @param {number[]} block_ids - block type ids to match.
+     * @param {number} distance - maximum euclidean distance to search.
+     * @param {number} count - maximum number of positions to return.
+     * @returns {Vec3[]} - matching positions, nearest first, at most `count`.
+     */
+    const matches = stateIdMatcher(bot, block_ids);
+    if (!matches) return [];
+
+    const origin = bot.entity.position.floored();
+    const max2 = distance * distance;
+    const chunk_radius = Math.ceil(distance / 16);
+    const ox = origin.x, oy = origin.y, oz = origin.z;
+    const base_cx = Math.floor(ox / 16), base_cz = Math.floor(oz / 16);
+
+    // Nearest column first, so the early exit below can stop while the far
+    // columns are still unread.
+    const columns = [];
+    for (let dx = -chunk_radius; dx <= chunk_radius; dx++)
+        for (let dz = -chunk_radius; dz <= chunk_radius; dz++)
+            columns.push([base_cx + dx, base_cz + dz, dx * dx + dz * dz]);
+    columns.sort((a, b) => a[2] - b[2]);
+
+    // Small counts keep a sorted top-N, which also gives the pruning below its
+    // cutoff. Big counts (getNearestBlocks(bot, null) asks for 10000) would turn
+    // that insertion into an O(n^2) sort of the whole neighbourhood, so those
+    // collect flat and sort once.
+    const bounded = count <= BOUNDED_COUNT;
+    const hits = [];
+    let worst_d2 = Infinity;
+    const offer = (x, y, z, d2) => {
+        if (!bounded) { hits.push({ x, y, z, d2 }); return; }
+        if (hits.length >= count && d2 >= worst_d2) return;
+        let i = hits.length;
+        while (i > 0 && hits[i - 1].d2 > d2) i--;
+        hits.splice(i, 0, { x, y, z, d2 });
+        if (hits.length > count) hits.pop();
+        worst_d2 = hits.length >= count ? hits[hits.length - 1].d2 : Infinity;
+    };
+
+    for (const [cx, cz, _] of columns) {
+        // Closest any block in this column could possibly be. Once that is
+        // farther than the worst hit we already hold, no later column can help.
+        if (bounded && hits.length >= count) {
+            const nx = Math.max(cx * 16, Math.min(ox, cx * 16 + 15));
+            const nz = Math.max(cz * 16, Math.min(oz, cz * 16 + 15));
+            const dx = nx - ox, dz = nz - oz;
+            if (dx * dx + dz * dz > worst_d2) break;
+        }
+        const column = bot.world?.getColumn?.(cx, cz);
+        const sections = column?.sections;
+        if (!sections) continue;
+        const min_y = column.minY ?? 0;
+
+        for (let si = 0; si < sections.length; si++) {
+            const section = sections[si];
+            if (!section) continue;
+            const container = section.data;
+            if (!container?.get) continue;
+            const base_y = min_y + si * 16;
+            if (base_y + 15 < oy - distance || base_y > oy + distance) continue;
+
+            // Reject the whole section on integers where the shape allows it.
+            if (container.palette) {
+                let possible = false;
+                for (const state of container.palette) { if (matches(state)) { possible = true; break; } }
+                if (!possible) continue;
+            }
+            else if (container.value !== undefined) {
+                if (!matches(container.value)) continue;
+            }
+
+            for (let y = 0; y < 16; y++) {
+                const wy = base_y + y;
+                const dy = wy - oy;
+                if (dy * dy > max2) continue;
+                for (let z = 0; z < 16; z++) {
+                    const wz = cz * 16 + z;
+                    const dz = wz - oz;
+                    const dydz = dy * dy + dz * dz;
+                    if (dydz > max2) continue;
+                    for (let x = 0; x < 16; x++) {
+                        const wx = cx * 16 + x;
+                        const dx = wx - ox;
+                        const d2 = dydz + dx * dx;
+                        if (d2 > max2 || (bounded && hits.length >= count && d2 >= worst_d2)) continue;
+                        if (matches(container.get((y << 8) | (z << 4) | x))) offer(wx, wy, wz, d2);
+                    }
+                }
+            }
         }
     }
-    return getNearestBlocksWhere(bot, block_ids, distance, count);  
+    if (!bounded) hits.sort((a, b) => a.d2 - b.d2);
+    return hits.slice(0, count).map(h => new Vec3(h.x, h.y, h.z));
 }
 
 export function getNearestBlocksWhere(bot, predicate, distance=8, count=10000) {
@@ -299,10 +476,21 @@ export function getCraftableItems(bot) {
             }
         }
     }
+    // recipesFor is the cheap candidate generator, but on a modded server it
+    // waves through recipes whose ingredients the mod dump left unresolvable --
+    // Andy was told he could craft coal_ore, id_regex and sixteen table cloths
+    // while holding four planks. Re-check each candidate against the inventory
+    // using our own recipe data, which is a few dozen checks, not 22000.
+    const counts = getInventoryCounts(bot);
+    // lookahead off: every variant is scanned anyway, so its only job -- nudging
+    // the ranking -- is wasted work here.
+    const affordable = (name) => (mc.getItemCraftingRecipes(name, counts, false) ?? [])
+        .some(([ingredients]) => Object.entries(ingredients)
+            .every(([item, need]) => (counts[item] ?? 0) >= need));
     let res = [];
     for (const item of mc.getAllItems()) {
         let recipes = bot.recipesFor(item.id, null, 1, table);
-        if (recipes.length > 0)
+        if (recipes.length > 0 && affordable(item.name))
             res.push(item.name);
     }
     return res;
@@ -433,4 +621,32 @@ export function getBiomeName(bot) {
     // has never heard of. Fall back to static data, then to the raw id.
     const biome = bot.registry?.biomes?.[biomeId] ?? mc.getAllBiomes()[biomeId];
     return biome?.name ?? `biome_${biomeId}`;
+}
+
+export const NIGHT_START = 13000;
+
+export function isNight(bot, lead = 0) {
+    /**
+     * Whether hostile mobs spawn on the surface right now. The single source of
+     * truth for day vs night -- anything that reports or reacts to the time of
+     * day goes through here, so the bot cannot tell itself two different stories.
+     * @param {Bot} bot, reference to the minecraft bot.
+     * @param {number} lead, ticks before nightfall to start saying yes. Walking
+     * home takes time, so a rule that wants to be indoors BY nightfall has to
+     * leave before it. Everything else passes 0 and sees the old behaviour.
+     * @returns {boolean} true if it is night.
+     **/
+    // Night runs 13000 to 24000, not 13000 to 23000: sunrise starts at 23000 but
+    // it is still dark until the day rolls over. The old upper bound left a
+    // 1000-tick hole at dawn where this said day while !stats said night, and
+    // the bot was told it was night while its own policy rules disagreed.
+    //
+    // Ticks, not mineflayer's bot.time.isDay, because isDay cannot express a
+    // lead. It is not a second opinion: mineflayer computes isDay as
+    // `timeOfDay >= 0 && timeOfDay < 13000` (lib/plugins/time.js), which is this
+    // same line, so nothing changes at lead 0.
+    const t = bot.time?.timeOfDay;
+    if (t == null) return bot.time?.isDay === false;
+    if (t < 0) return true; // fixed-time servers send a negative tick count
+    return t >= NIGHT_START - lead;
 }
