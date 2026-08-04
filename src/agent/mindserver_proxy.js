@@ -2,6 +2,7 @@ import { io } from 'socket.io-client';
 import convoManager from './conversation.js';
 import { setSettings } from './settings.js';
 import { getFullState } from './library/full_state.js';
+import { validatePolicy, LAYERS, loadPolicyState, savePolicyState, clearPolicyState, composePolicy, describePolicyState, setPolicyLocked, isPolicyLocked } from './behavior/policy.js';
 
 // agent's individual connection to the mindserver
 // always connect to localhost
@@ -39,12 +40,33 @@ class MindServerProxy {
         this.connected = true;
         console.log(name, 'connected to MindServer');
 
-        this.socket.on('disconnect', () => {
-            console.log('Disconnected from MindServer');
+        this.socket.on('disconnect', (reason) => {
+            console.log('Disconnected from MindServer:', reason);
             this.connected = false;
-            if (this.agent) {
-                this.agent.cleanKill('Disconnected from MindServer. Killing agent process.');
-            }
+            // socket.io reconnects on its own, so a stalled event loop or a
+            // momentary blip on a localhost socket should not cost the agent
+            // its whole process. Only give up if it is still down later.
+            // A server-initiated disconnect does not auto-reconnect.
+            if (reason === 'io server disconnect') this.socket.connect();
+            clearTimeout(this.reconnect_timer);
+            // ponytail: fixed grace period, make it a setting if it ever needs tuning
+            this.reconnect_timer = setTimeout(() => {
+                if (!this.connected && this.agent) {
+                    this.agent.cleanKill('Could not reconnect to MindServer. Killing agent process.');
+                }
+            }, 30000);
+        });
+
+        this.socket.on('connect', () => {
+            clearTimeout(this.reconnect_timer);
+            if (this.connected) return;
+            this.connected = true;
+            console.log(name, 'reconnected to MindServer');
+            // the mindserver rebinds a connection by agent name, so simply
+            // re-announcing restores it. login_time is only set once the bot
+            // is actually in the world, and the process dies if it leaves.
+            this.socket.emit('connect-agent-process', name);
+            if (this.agent?.login_time) this.socket.emit('login-agent', name);
         });
 
         this.socket.on('chat-message', (agentName, json) => {
@@ -90,6 +112,81 @@ class MindServerProxy {
             } catch (error) {
                 console.error('Error getting full state:', error);
                 callback(null);
+            }
+        });
+
+        this.socket.on('get-policy', (callback) => {
+            try {
+                callback(loadPolicyState(this.agent.name)); // {layers, locked}, empty layers if none
+            } catch (error) {
+                console.error('Error getting policy:', error);
+                callback(null);
+            }
+        });
+
+        this.socket.on('get-memory', (callback) => {
+            callback(this.agent.history.memory ?? '');
+        });
+
+        this.socket.on('set-memory', (text, callback) => {
+            try {
+                this.agent.history.memory = String(text ?? '').slice(0, 500);
+                this.agent.history.save().catch(e => console.error('Failed to persist edited memory:', e));
+                callback({ success: true });
+            } catch (error) {
+                console.error('Error setting memory:', error);
+                callback({ success: false, error: error.message });
+            }
+        });
+
+        this.socket.on('set-policy', (data, callback) => {
+            try {
+                const modes = this.agent.bot?.modes;
+                if (!data?.layers || Object.keys(data.layers).length === 0) {
+                    modes?.clearPolicy();
+                    clearPolicyState(this.agent.name);
+                    return callback({ success: true });
+                }
+                const state = loadPolicyState(this.agent.name); // keep locked flag
+                state.layers = {};
+                for (const layer of LAYERS) {
+                    const l = data.layers[layer];
+                    if (!l?.policy) continue;
+                    const err = validatePolicy(l.policy);
+                    if (err) return callback({ success: false, error: `${layer}: ${err}` });
+                    state.layers[layer] = {
+                        profile: l.profile ?? null,
+                        source: typeof l.source === 'string' ? [l.source] : (l.source ?? ['edited via web UI']),
+                        policy: l.policy,
+                    };
+                }
+                const composed = composePolicy(state);
+                if (composed.rules.length === 0 && Object.keys(composed.modes).length === 0)
+                    modes?.clearPolicy();
+                else
+                    modes?.installPolicy(composed, describePolicyState(state));
+                savePolicyState(this.agent.name, state);
+                this.agent.history.add('system', `Your policy was edited via the web UI. It is now:\n${describePolicyState(state)}`);
+                callback({ success: true });
+            } catch (error) {
+                console.error('Error setting policy:', error);
+                callback({ success: false, error: error.message });
+            }
+        });
+
+        // The lock is a human's decision about the agent, so it is persisted on
+        // disk rather than held in memory: it has to survive a restart the agent
+        // itself may have asked for.
+        this.socket.on('set-policy-lock', (locked, callback) => {
+            try {
+                setPolicyLocked(this.agent.name, locked);
+                this.agent.history.add('system', locked
+                    ? 'Your policy was locked by an admin. You may not load policy profiles until it is unlocked.'
+                    : 'Your policy was unlocked by an admin. You may load policy profiles again.');
+                callback({ success: true, locked: isPolicyLocked(this.agent.name) });
+            } catch (error) {
+                console.error('Error setting policy lock:', error);
+                callback({ success: false, error: error.message });
             }
         });
 
