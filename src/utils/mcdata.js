@@ -12,7 +12,7 @@ let mc_version = settings.minecraft_version;
 let mcdata = null;
 
 // Normally set from bot.registry on login; tests inject a bare registry here.
-export function useRegistry(registry) { mcdata = registry; minable_items = null; }
+export function useRegistry(registry) { mcdata = registry; minable_items = null; parsed_recipes = new Map(); recipe_ingredients = new Map(); }
 let Item = null;
 
 // How often "summary" packet_error_logging emits a rollup count.
@@ -301,6 +301,8 @@ export function initBot(username) {
         // modded registry instead of a vanilla-only one.
         mcdata = bot.registry;
         minable_items = null; // rebuild from the modded drop tables, not vanilla's
+        parsed_recipes = new Map(); // the mod pack just rewrote the recipe table
+        recipe_ingredients = new Map();
         Item = prismarine_items(bot.registry);
     });
 
@@ -663,13 +665,27 @@ export function getAllBiomes() {
     return mcdata.biomes;
 }
 
-export function getItemCraftingRecipes(itemName, inventory = null, lookahead = true) {
-    let itemId = getItemId(itemName);
-    if (!mcdata.recipes[itemId]) {
-        return null;
-    }
+// Turning one item's raw recipe variants into {ingredient: count} pairs depends
+// only on the registry, never on what the bot is carrying -- but the planner
+// re-derived it on every recursive step. Costing a single wooden_pickaxe walked
+// the tag-expanded plank list, 522 variants, thousands of times: 7 seconds of
+// blocked event loop for one !getCraftingPlan. Minecraft drops a client that
+// misses two keepalives, so Andy was timing out mid-plan and the reconnect
+// looked like a flaky network. Parse once per item, rank per call.
+let parsed_recipes = new Map();
+// Every ingredient name that appears anywhere in an item's variants, flattened.
+// Also registry-only, so it lives as long as parsed_recipes does.
+let recipe_ingredients = new Map();
 
-    let recipes = [];
+/**
+ * An item's recipe variants as [{ingredient: count}, {craftedCount}] pairs.
+ * The entries are shared across every caller -- treat them as read-only;
+ * writing to one rewrites that recipe for every later plan.
+ */
+function parsedRecipes(itemId) {
+    let parsed = parsed_recipes.get(itemId);
+    if (parsed) return parsed;
+    parsed = [];
     for (let r of mcdata.recipes[itemId]) {
         let recipe = {};
         let ingredients = [];
@@ -685,11 +701,44 @@ export function getItemCraftingRecipes(itemName, inventory = null, lookahead = t
                 recipe[ingredientName] = 0;
             recipe[ingredientName]++;
         }
-        recipes.push([
+        parsed.push([
             recipe,
             {craftedCount : r.result.count}
         ]);
     }
+    parsed_recipes.set(itemId, parsed);
+    return parsed;
+}
+
+/**
+ * Could this item be made from something the bot is holding? Answering it by
+ * ranking the item's own recipes meant a recursive walk per ingredient name,
+ * and a tag-expanded list names ~500 of them: costing one wooden_sword while
+ * holding pine_planks took 9.7 seconds and blocked every keepalive with it.
+ * Which ingredients an item can be made from does not depend on the inventory,
+ * so the set is built once and the question becomes a lookup.
+ */
+function craftableFrom(itemName) {
+    const itemId = getItemId(itemName);
+    if (!mcdata.recipes[itemId]) return null;
+    let names = recipe_ingredients.get(itemId);
+    if (!names) {
+        names = new Set();
+        for (const [ingredients] of parsedRecipes(itemId))
+            for (const name of Object.keys(ingredients)) names.add(name);
+        recipe_ingredients.set(itemId, names);
+    }
+    return names;
+}
+
+export function getItemCraftingRecipes(itemName, inventory = null, lookahead = true) {
+    let itemId = getItemId(itemName);
+    if (!mcdata.recipes[itemId]) {
+        return null;
+    }
+
+    // Ranking below builds a fresh array, so callers never get this one.
+    let recipes = parsedRecipes(itemId);
     // Ranking cannot express "mine it instead of crafting it", and an attempt to
     // add that as a candidate ("prefer mining whenever the item is also a
     // block") was wrong: furnace, piston, beacon and chest are all blocks, so
@@ -708,15 +757,14 @@ export function getItemCraftingRecipes(itemName, inventory = null, lookahead = t
     // zero and the tiebreak hands the job back to oak -- and only the top few
     // candidates are ever costed, so pine never gets considered at all.
     const held = (name, count) => Math.min(inventory?.[name] ?? 0, count);
-    // Memoized per call: one tag-expanded recipe list can hold 522 variants that
-    // between them name only a couple of distinct ingredients, and the lookahead
-    // is a recursive registry walk.
+    // Held once, not per ingredient: a tag-expanded list asks about ~500 names.
+    const carrying = Object.keys(inventory ?? {}).filter(name => inventory[name] > 0);
     const nearly = new Map();
     const nearlyHeld = (name) => {
-        if (!lookahead) return 0;
+        if (!lookahead || !carrying.length) return 0;
         if (!nearly.has(name)) {
-            nearly.set(name, (getItemCraftingRecipes(name, inventory, false) ?? []).slice(0, 4)
-                .some(([sub]) => Object.keys(sub).some(k => (inventory?.[k] ?? 0) > 0)) ? 1 : 0);
+            const from = craftableFrom(name);
+            nearly.set(name, from && carrying.some(item => from.has(item)) ? 1 : 0);
         }
         return nearly.get(name);
     };
