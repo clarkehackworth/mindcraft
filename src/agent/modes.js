@@ -43,16 +43,32 @@ const modes_list = [
             // never ran once in Andy's entire log, including the run that
             // killed him in a kelp forest.
             const submerged = !skills.isBreathing(bot);
-            if (bot.oxygenLevel !== undefined && bot.oxygenLevel <= 12) {
+            // ...but the air bar reads 0 for the tick after a respawn, before the
+            // first health packet lands. Andy died 14 times and each death was
+            // followed by a phantom "drowning" that interrupted his action and
+            // killed the self-prompt loop, logging "Surfaced with 20/20 air left"
+            // 17 times. You cannot drown with your head in air; requiring a wet
+            // head costs nothing and still covers kelp, seagrass and waterlogged
+            // stairs, which are the cases a name === 'water' test missed.
+            const head_wet = blockAbove.name !== 'air';
+            if (bot.oxygenLevel === undefined || bot.oxygenLevel > 15)
+                this._said_drowning = false; // air recovered: next episode announces again
+            if (head_wet && bot.oxygenLevel !== undefined && bot.oxygenLevel <= 12) {
                 // Actually drowning. Interrupt whatever it was doing -- the bot
                 // drowned pathfinding to a block it had found underwater, and
                 // the passive branch below never fired because a goal was set.
-                say(agent, 'I\'m drowning!');
+                // Announce once per episode, not once per tick: six "I'm
+                // drowning!" in two minutes is noise, and each one is an LLM
+                // interruption.
+                if (!this._said_drowning) {
+                    say(agent, 'I\'m drowning!');
+                    this._said_drowning = true;
+                }
                 execute(this, agent, async () => {
                     await skills.surface(bot);
                 });
             }
-            else if (submerged) {
+            else if (submerged && head_wet) {
                 // Head is wet but there is air to spare: nudge upward without
                 // interrupting whatever the bot is busy with.
                 if (!bot.pathfinder.goal) {
@@ -152,7 +168,11 @@ const modes_list = [
                     // bot in the world, so killing on positional stuckness just crash-
                     // looped forever. Bounded escape attempt, then hand it to the LLM.
                     const giveUp = setTimeout(() => agent.requestInterrupt(), 10000);
-                    try { await skills.moveAway(bot, 5); } catch {}
+                    // Water first: pathfinder cannot swim, so moveAway is
+                    // guaranteed to fail while the bot is floating in a pocket.
+                    try {
+                        if (!await skills.escapeLiquid(bot)) await skills.moveAway(bot, 5);
+                    } catch {}
                     clearTimeout(giveUp);
                     if (bot.entity.position.distanceTo(start_pos) >= this.distance) {
                         say(agent, 'I\'m free.');
@@ -263,8 +283,12 @@ const modes_list = [
         update: function (agent) {
             if (world.shouldPlaceTorch(agent.bot)) {
                 if (Date.now() - this.last_place < this.cooldown * 1000) return;
+                const pos = agent.bot.entity.position;
+                // The agent just broke a block here on purpose (probably to
+                // place something) -- re-torching it starts a tug-of-war the
+                // agent cannot win. Leave deliberately cleared spots alone.
+                if (skills.wasRecentlyCleared(pos.x, pos.y, pos.z)) return;
                 execute(this, agent, async () => {
-                    const pos = agent.bot.entity.position;
                     await skills.placeBlock(agent.bot, 'torch', pos.x, pos.y, pos.z, 'bottom', true);
                 });
                 this.last_place = Date.now();
@@ -388,7 +412,7 @@ for (let mode of modes_list) {
     modes_map[mode.name] = mode;
 }
 
-import { Rule, loadPolicy, describePolicy, validatePolicy } from './behavior/policy.js';
+import { Rule, loadPolicyState, composePolicy, describePolicyState, validatePolicy, LAYERS } from './behavior/policy.js';
 
 // Safety reflexes that always outrank user policy rules.
 const PRIORITY_ABOVE_POLICY = ['self_preservation', 'unstuck'];
@@ -501,6 +525,18 @@ class ModeController {
         for (let entry of this._entries()) {
             let interruptible = entry.interrupts.some(i => i === 'all') || entry.interrupts.some(i => i === _agent.actions.currentActionLabel);
             if (entry.on && !entry.paused && !entry.active && (_agent.isIdle() || interruptible)) {
+                // Preemption cancels the running action's pathfinder. Letting
+                // the loser fire again the moment the winner finishes just
+                // re-triggers the same preemption 300ms later: standing next to
+                // a zombie, Andy's self_preservation interrupted self_defense
+                // 157 times in a row and his policy's flee rule interrupted
+                // cowardice 122 times, every one of them a PathStopped. He
+                // never got more than a step from the mob that was killing him.
+                // Both entries wanted the same thing; priority order already
+                // said which one gets it, so the loser sits out until the
+                // situation is over. unPauseAll on idle above is the reset.
+                const losing = this._entries().find(e => e.active && e !== entry);
+                if (losing) losing.paused = true;
                 await entry.update(_agent, execute);
             }
             if (entry.active) break;
@@ -541,18 +577,24 @@ export function initModes(agent) {
     if (modes_json) {
         agent.bot.modes.loadJson(modes_json);
     }
-    const saved = loadPolicy(agent.name);
-    if (saved?.policy) {
-        // Validate on load, not just on compile: a policy saved before a guard
-        // existed outlives every restart. Andy's go_to_chest_at_night re-pathed
-        // every 3 seconds all night and came back after each restart.
-        const err = validatePolicy(saved.policy);
+    const state = loadPolicyState(agent.name);
+    // Validate on load, not just on compile: a policy saved before a guard
+    // existed outlives every restart. Andy's go_to_chest_at_night re-pathed
+    // every 3 seconds all night and came back after each restart. Layers are
+    // validated independently so one bad layer does not cost the others.
+    for (let layer of LAYERS) {
+        const policy = state.layers?.[layer]?.policy;
+        if (!policy) continue;
+        const err = validatePolicy(policy);
         if (err) {
-            console.warn(`Discarding saved policy for ${agent.name}, it is no longer valid: ${err}`);
-            console.warn('Running default behaviors. Re-issue the instructions to recompile it.');
-        } else {
-            agent.bot.modes.installPolicy(saved.policy, saved.source);
-            console.log(`Loaded saved policy for ${agent.name}: ${saved.source}`);
+            console.warn(`Discarding the "${layer}" policy layer for ${agent.name}, it is no longer valid: ${err}`);
+            console.warn('Re-issue those instructions to recompile that layer.');
+            delete state.layers[layer];
         }
+    }
+    const composed = composePolicy(state);
+    if (composed.rules.length > 0 || Object.keys(composed.modes).length > 0) {
+        agent.bot.modes.installPolicy(composed, describePolicyState(state));
+        console.log(`Loaded saved policy for ${agent.name}:\n${describePolicyState(state)}`);
     }
 }
