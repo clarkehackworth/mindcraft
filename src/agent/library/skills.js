@@ -34,16 +34,21 @@ async function autoLight(bot) {
     return false;
 }
 
-async function equipHighestAttack(bot) {
+export async function equipHighestAttack(bot) {
     let weapons = bot.inventory.items().filter(item => item.name.includes('sword') || (item.name.includes('axe') && !item.name.includes('pickaxe')));
     if (weapons.length === 0)
         weapons = bot.inventory.items().filter(item => item.name.includes('pickaxe') || item.name.includes('shovel'));
     if (weapons.length === 0)
-        return;
+        return false;
     weapons.sort((a, b) => b.attackDamage - a.attackDamage);
     let weapon = weapons[0];
-    if (weapon)
-        await bot.equip(weapon, 'hand');
+    if (!weapon) return false;
+    // Re-equipping what is already in hand is work that accomplishes nothing,
+    // and a policy rule that "succeeds" every time never backs off: Andy's
+    // equip-a-weapon rule fired 156 times in 12 minutes holding the same sword.
+    if (bot.heldItem?.name === weapon.name) return false;
+    await bot.equip(weapon, 'hand');
+    return true;
 }
 
 // mineflayer's bot.craft simulates the entire table transaction client-side --

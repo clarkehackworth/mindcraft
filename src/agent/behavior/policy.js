@@ -1,7 +1,7 @@
 import * as skills from '../library/skills.js';
 import * as world from '../library/world.js';
 import * as mc from '../../utils/mcdata.js';
-import { writeFileSync, readFileSync, mkdirSync, existsSync, unlinkSync } from 'fs';
+import { writeFileSync, readFileSync, readdirSync, mkdirSync, existsSync, unlinkSync } from 'fs';
 
 // A policy is a set of standing rules compiled from natural-language
 // instructions by the LLM. Each rule is a tiny behavior tree: a condition
@@ -37,7 +37,7 @@ export const CONDITIONS = {
     },
     block_nearby: {
         args: { name: 'string block name, e.g. "wheat"', range: `number (default 16, max ${MAX_COND_SCAN})` },
-        desc: 'A block of the given type is within range.',
+        desc: 'A block of the given type is within range. Family names match every variant: "log" is any wood\'s log, "planks" any plank, and any "<x>_ore" includes its deepslate form.',
         // Profiled at 47% of all agent CPU: six of these at range 32, in one
         // rule's condition. Scan cost is cubic, so 32 -> 16 is ~8x cheaper, and
         // "is it near me" does not need 32. See MAX_COND_SCAN.
@@ -66,8 +66,11 @@ export const CONDITIONS = {
     },
     has_item: {
         args: { item: 'string item name', count: 'number (default 1)' },
-        desc: 'Bot inventory contains at least count of item.',
-        fn: (agent, a) => (world.getInventoryCounts(agent.bot)[a.item] ?? 0) >= (a.count ?? 1)
+        desc: 'Bot inventory contains at least count of item. Family names count all variants: "log" is every wood\'s log, "planks" every plank.',
+        fn: (agent, a) => {
+            const counts = world.getInventoryCounts(agent.bot);
+            return mc.expandBlockName(a.item).reduce((sum, name) => sum + (counts[name] ?? 0), 0) >= (a.count ?? 1);
+        }
     },
     at_position: {
         args: { x: 'number', y: 'number', z: 'number', range: 'number (default 3)' },
@@ -81,9 +84,9 @@ export const CONDITIONS = {
         fn: (agent, a) => agent.bot.oxygenLevel !== undefined && agent.bot.oxygenLevel <= (a.air ?? 12)
     },
     is_night: {
-        args: {},
+        args: { lead: 'number of ticks before nightfall to start saying yes (default 0). ~1500 gives the bot time to walk home before mobs are out.' },
         desc: 'It is night time.',
-        fn: (agent) => world.isNight(agent.bot)
+        fn: (agent, a) => world.isNight(agent.bot, a.lead ?? 0)
     },
     is_idle: {
         args: {},
@@ -152,7 +155,7 @@ export const ACTIONS = {
     },
     search_block: {
         args: { type: 'string block name', range: 'number (default 64, max 512)' },
-        desc: 'Find and go to the nearest block of a type, searching farther than collect.',
+        desc: 'Find and go to the nearest block of a type, searching farther than collect. Family names ("log", "<x>_ore") match every variant.',
         fn: async (agent, a) => await skills.goToNearestBlock(agent.bot, a.type, 2, Math.min(a.range ?? 64, MAX_BLOCK_SEARCH))
     },
     search_entity: {
@@ -162,23 +165,38 @@ export const ACTIONS = {
     },
     collect: {
         args: { type: 'string block name', num: 'number (default 1)' },
-        desc: 'Collect blocks of a type within 64 blocks. If none are that close, the rule simply collects nothing -- gate it on block_nearby so it does not retry forever.',
+        desc: 'Collect blocks of a type within 64 blocks. Family names ("log", "<x>_ore") collect any variant. If none are that close, the rule simply collects nothing -- gate it on block_nearby so it does not retry forever.',
         fn: async (agent, a) => await skills.collectBlock(agent.bot, a.type, a.num ?? 1)
     },
     deposit: {
         args: { item: 'string item name', num: 'number (default all)' },
-        desc: 'Put items into the nearest chest (within 32 blocks). Use goto first to reach a specific chest.',
-        fn: async (agent, a) => await skills.putInChest(agent.bot, a.item, a.num ?? -1)
+        desc: 'Put items into the nearest chest (within 32 blocks). Use goto first to reach a specific chest. Family names deposit all variants: "log" is every wood\'s log.',
+        fn: async (agent, a) => {
+            const counts = world.getInventoryCounts(agent.bot);
+            for (const name of mc.expandBlockName(a.item))
+                if (counts[name])
+                    await skills.putInChest(agent.bot, name, a.num ?? -1);
+        }
     },
     consume: {
-        args: { item: 'string item name' },
+        args: { item: 'string item name, or omit to eat whatever food is in the bag' },
         desc: 'Eat or drink an inventory item.',
-        fn: async (agent, a) => await skills.consume(agent.bot, a.item)
+        fn: async (agent, a) => await skills.consume(agent.bot, a.item ?? '')
     },
     equip: {
         args: { item: 'string item name' },
         desc: 'Equip an inventory item.',
         fn: async (agent, a) => await skills.equip(agent.bot, a.item)
+    },
+    equip_weapon: {
+        args: {},
+        desc: 'Hold the best weapon in the inventory. Does nothing if it is already held, or if there is no weapon.',
+        // "equip a weapon" spelled with the equip action needs the rule to name
+        // one item, so it named wooden_sword while its guard accepted any of
+        // five swords -- holding only a stone_sword it fired and failed every
+        // 3 seconds. This picks by attack damage, which also covers the
+        // modpack's swords that no hardcoded list would name.
+        fn: async (agent) => await skills.equipHighestAttack(agent.bot)
     },
     go_to_bed: {
         args: {},
@@ -259,6 +277,14 @@ function triggersOnNight(when) {
     return when.cond === 'is_night';
 }
 
+// Largest is_night lead anywhere in a condition tree, or -1 if it mentions none.
+function nightLead(spec) {
+    if (!spec) return -1;
+    if (spec.all || spec.any) return Math.max(...(spec.all ?? spec.any).map(nightLead));
+    if (spec.not) return nightLead(spec.not);
+    return spec.cond === 'is_night' ? (spec.lead ?? 0) : -1;
+}
+
 export function validatePolicy(policy) {
     if (!policy || typeof policy !== 'object') return 'Policy must be a JSON object.';
     if (policy.modes) {
@@ -278,12 +304,27 @@ export function validatePolicy(policy) {
             if (!step.act || !ACTIONS[step.act])
                 return `Rule "${rule.name}": unknown action "${step?.act}". Valid: ${Object.keys(ACTIONS).join(', ')}`;
             if (step.act === 'stay') {
-                const { error } = parseConditionExpr(step.until ?? '');
+                const { spec, error } = parseConditionExpr(step.until ?? '');
                 if (error) return `Rule "${rule.name}": stay needs a valid "until" condition (a stay with no exit parks the bot forever): ${error}`;
+                // Trigger at dusk, park until dawn: the two have to agree on
+                // where night starts. "is_night 1500" fires at tick 11500, but
+                // "until not is_night" is already true at 11500, so the stay
+                // ends the tick it begins and the bot wanders back out. The log
+                // says "Not staying, not is_night already" and nothing else.
+                const lead = nightLead(rule.when), stay_lead = nightLead(spec);
+                if (lead > 0 && stay_lead >= 0 && stay_lead < lead)
+                    return `Rule "${rule.name}": the trigger says night starts ${lead} ticks early but the stay ` +
+                        `uses ${stay_lead}, so "${step.until}" is already true when the rule fires and the stay ` +
+                        `ends immediately. Write it as "not is_night ${lead}".`;
             }
         }
         if (rule.interrupts && !['all', 'idle'].includes(rule.interrupts))
             return `Rule "${rule.name}": "interrupts" must be "all" or "idle".`;
+        // ponytail: no cap on how many rules a layer pins. If an agent starts
+        // pinning everything and starves a person's job rules, cap pinned rules
+        // in the self layer where !policy writes it.
+        if (rule.pinned !== undefined && typeof rule.pinned !== 'boolean')
+            return `Rule "${rule.name}": "pinned" must be true or false.`;
         if (!hasPositiveTrigger(rule.when) && rule.do.every(step => AIMLESS_ACTIONS.includes(step.act)))
             return `Rule "${rule.name}" fires whenever nothing is happening but only does ${rule.do.map(s => s.act).join('/')}. ` +
                 'Doing nothing is the agent\'s resting state, so this rule would fire forever and starve every real action. ' +
@@ -420,7 +461,18 @@ export class Rule {
             await execute(this, agent, async () => {
                 for (let step of steps) {
                     if (agent.bot.interrupt_code) return;
-                    if (await ACTIONS[step.act].fn(agent, step) !== false) progress = true;
+                    // A step that throws must not take the rest of the rule with
+                    // it. shelter_at_night is [goto base, stay until dawn], and
+                    // goto threw "No path to the goal" every single night, so the
+                    // stay -- the step that actually keeps the bot alive -- never
+                    // ran. Andy stood in the open until something killed him, and
+                    // since nothing reported progress the rule's backoff doubled
+                    // until it was only trying twice an hour.
+                    try {
+                        if (await ACTIONS[step.act].fn(agent, step) !== false) progress = true;
+                    } catch (err) {
+                        skills.log(agent.bot, `Rule '${this.spec.name}' step ${step.act} failed: ${err.message}`);
+                    }
                 }
             });
             // ponytail: capped at ~17 min so a rule that starts working again is
@@ -439,33 +491,180 @@ function policyPath(agentName) {
     return `./bots/${agentName}/policy.json`;
 }
 
-export function savePolicy(agentName, policy, sourceText, user_set = true) {
-    mkdirSync(`./bots/${agentName}`, { recursive: true });
-    writeFileSync(policyPath(agentName), JSON.stringify({ source: sourceText, policy, user_set }, null, 2));
+// Standing instructions live in three layers so the agent's own notes can never
+// wipe out a person's. It replaced its survival policy with a note about
+// preferred planks twice in one hour; the second time it died 26 times in 6
+// minutes, respawning into zombies with no rule left telling it to flee or
+// shelter. Self-issued writes are confined to the "self" layer, which is
+// composed at the lowest priority and never touches "base" or "active", so
+// there is nothing for a note-to-self to overwrite.
+export const LAYERS = ['base', 'active', 'self'];
+
+// Modes later in this list win; rules earlier in the composed list win.
+const MODE_ORDER = ['self', 'base', 'active'];
+const RULE_ORDER = ['active', 'base', 'self'];
+
+// The agent appends to its own layer unprompted. Without a cap the joined
+// source grows until the compile prompt is mostly stale notes.
+export const SELF_SOURCE_CAP = 8;
+
+function emptyState() {
+    return { layers: {}, locked: false };
 }
 
-// Standing instructions from a person outrank the agent's own. It replaced its
-// survival policy with a note about preferred planks twice in one hour; the
-// second time it died 26 times in 6 minutes, respawning into zombies with no
-// rule left telling it to flee or shelter. Policies written before this field
-// existed were all set by a person, so a missing value means user-set.
-export function isUserPolicy(agentName) {
-    const saved = loadPolicy(agentName);
-    return !!saved && saved.user_set !== false;
+// Old flat files were {source, policy, user_set}. A person's went to what is
+// now the active layer; the agent's own to self. Missing user_set predates the
+// field and was always a person's.
+function migrateFlat(saved) {
+    const state = emptyState();
+    const layer = saved.user_set === false ? 'self' : 'active';
+    state.layers[layer] = {
+        profile: null,
+        source: typeof saved.source === 'string' ? [saved.source] : (saved.source ?? []),
+        policy: saved.policy,
+    };
+    return state;
 }
 
-export function loadPolicy(agentName) {
+export function loadPolicyState(agentName) {
     try {
-        if (!existsSync(policyPath(agentName))) return null;
-        return JSON.parse(readFileSync(policyPath(agentName), 'utf8'));
+        if (!existsSync(policyPath(agentName))) return emptyState();
+        const saved = JSON.parse(readFileSync(policyPath(agentName), 'utf8'));
+        if (saved?.layers) return { layers: saved.layers ?? {}, locked: !!saved.locked };
+        if (saved?.policy) return migrateFlat(saved);
+        return emptyState();
     } catch (err) {
         console.error('Failed to load policy:', err);
+        return emptyState();
+    }
+}
+
+export function savePolicyState(agentName, state) {
+    mkdirSync(`./bots/${agentName}`, { recursive: true });
+    writeFileSync(policyPath(agentName), JSON.stringify({
+        layers: state.layers ?? {},
+        locked: !!state.locked,
+    }, null, 2));
+}
+
+export function deletePolicyLayer(state, layer) {
+    delete state.layers[layer];
+    return state;
+}
+
+export function clearPolicyState(agentName) {
+    try { unlinkSync(policyPath(agentName)); } catch {}
+}
+
+// Appends an instruction to a layer's accumulated source, evicting oldest first
+// when the self layer is over its cap.
+// Returns the evicted instructions too: an instruction that silently stops
+// existing is worse than one that was never added, because the agent goes on
+// believing it still holds. The caller tells it what it lost.
+export function appendLayerSource(state, layer, instruction) {
+    const source = [...(state.layers?.[layer]?.source ?? []), instruction];
+    const evicted = layer === 'self' && source.length > SELF_SOURCE_CAP
+        ? source.splice(0, source.length - SELF_SOURCE_CAP)
+        : [];
+    return { source, evicted };
+}
+
+// One {modes, rules} for installPolicy. Rule names carry their layer so two
+// layers can both name a rule "gather_wood" without colliding in the arbiter.
+export function composePolicy(state) {
+    const modes = {};
+    const rules = [];
+    for (let layer of MODE_ORDER)
+        Object.assign(modes, state.layers?.[layer]?.policy?.modes ?? {});
+    // A pinned rule sorts above every unpinned one, whatever layer it came from:
+    // it is how a survival rule the agent wrote for itself survives a job profile
+    // loaded into the layer above it. Pinning does not flatten the layers, it
+    // just moves the whole priority contest up one level -- among pinned rules
+    // the usual active > base > self order still decides, so a person can always
+    // pin their own rule to outrank one the agent pinned.
+    for (let layer of RULE_ORDER)
+        for (let rule of state.layers?.[layer]?.policy?.rules ?? [])
+            rules.push({ ...rule, name: `${layer}:${rule.name}`, _rank: RULE_ORDER.indexOf(layer) });
+    rules.sort((a, b) => (!!b.pinned - !!a.pinned) || (a._rank - b._rank));
+    return { modes, rules: rules.map(({ _rank, ...rule }) => rule) };
+}
+
+export function describePolicyState(state) {
+    const parts = [];
+    for (let layer of LAYERS) {
+        const l = state.layers?.[layer];
+        if (!l?.policy) continue;
+        const from = l.profile ? ` (profile "${l.profile}")` : '';
+        parts.push(`[${layer}]${from} ${l.source?.join(' | ') ?? ''}`);
+    }
+    if (state.locked) parts.push('(locked: the agent may not load profiles)');
+    return parts.length ? parts.join('\n') : 'No policy set.';
+}
+
+export function setPolicyLocked(agentName, locked) {
+    const state = loadPolicyState(agentName);
+    state.locked = !!locked;
+    savePolicyState(agentName, state);
+    return state.locked;
+}
+
+export function isPolicyLocked(agentName) {
+    return !!loadPolicyState(agentName).locked;
+}
+
+// ---------- shared profile library ----------
+
+// ./profiles holds model configs; the policy library is its own directory.
+function profilePath(profileName) {
+    if (!/^[\w-]+$/.test(profileName ?? '')) return null;
+    return `./policies/${profileName}.json`;
+}
+
+export function saveProfile(profileName, { source, policy, layer_hint }) {
+    const path = profilePath(profileName);
+    if (!path) throw new Error(`Invalid profile name "${profileName}". Use letters, numbers, - and _ only.`);
+    mkdirSync('./policies', { recursive: true });
+    writeFileSync(path, JSON.stringify({
+        source: Array.isArray(source) ? source : [source],
+        policy,
+        ...(layer_hint ? { layer_hint } : {}),
+    }, null, 2));
+}
+
+export function loadProfile(profileName) {
+    try {
+        const path = profilePath(profileName);
+        if (!path || !existsSync(path)) return null;
+        const data = JSON.parse(readFileSync(path, 'utf8'));
+        if (!data?.policy) return null;
+        if (typeof data.source === 'string') data.source = [data.source];
+        data.source = data.source ?? [];
+        return data;
+    } catch (err) {
+        console.error('Failed to load policy profile:', err);
         return null;
     }
 }
 
-export function deletePolicy(agentName) {
-    try { unlinkSync(policyPath(agentName)); } catch {}
+export function listProfiles() {
+    try {
+        if (!existsSync('./policies')) return [];
+        return readdirSync('./policies').filter(f => f.endsWith('.json')).map(f => {
+            const name = f.slice(0, -5);
+            const data = loadProfile(name);
+            if (!data) return null;
+            return { name, layer_hint: data.layer_hint ?? 'active', summary: profileSummary(data) };
+        }).filter(Boolean);
+    } catch (err) {
+        console.error('Failed to list policy profiles:', err);
+        return [];
+    }
+}
+
+function profileSummary(data) {
+    const text = data.source.join('; ')
+        || (data.policy.rules ?? []).map(r => r.description ?? r.name).join('; ');
+    return text.length > 120 ? text.slice(0, 117) + '...' : text;
 }
 
 // ---------- LLM compiler ----------
@@ -488,8 +687,9 @@ Built-in modes that can be toggled with the top-level "modes" object: self_prese
 IMPORTANT: if the instructions imply a combat stance (fleeing or fighting), explicitly disable the conflicting built-in mode(s). E.g. "flee from mobs" must set {"self_defense": false, "hunting": false} and may keep cowardice on or express fleeing as a rule.
 
 Rule format:
-{"name": "snake_case_id", "description": "short human summary", "when": <condition>, "do": [<actions>], "interrupts": "all"|"idle", "cooldown": <seconds, default 3>}
+{"name": "snake_case_id", "description": "short human summary", "when": <condition>, "do": [<actions>], "interrupts": "all"|"idle", "cooldown": <seconds, default 3>, "pinned": <true only for rules that keep the agent alive>}
 - "interrupts": "all" = rule fires even while the agent is busy (reflexes: fleeing, eating when dying). "idle" = only fires when the agent has nothing to do (opportunistic: collecting, exploring).
+- "pinned": true lifts a rule above every unpinned rule, including ones from higher-priority layers, so a job the agent is given cannot crowd out the reflex that keeps it alive. Pin ONLY rules that prevent death (fleeing a losing fight, eating before starving, surfacing when drowning, avoiding a mob that killed it). Never pin gathering, building, exploring or anything else that is merely useful: pinning everything ranks nothing.
 - Use "prompt_self" only for situations no other action can express.
 - A rule must react to something in the world. "when the agent is idle" and "when nothing bad is nearby" are its resting state, so a rule gated only on those fires forever: if it just wanders (move_away) or re-prompts (prompt_self), the agent walks in circles and every real action it starts is interrupted. Vague instructions like "move freely when safe" or "keep a low profile" are not rules -- either drop them or express them as a mode toggle.
 - Do NOT write a rule that answers "a mob is nearby" with only flee/move_away. That is the cowardice mode -- set {"cowardice": true} in "modes". A rule that retreats on proximity re-triggers from wherever it lands and loops forever.
@@ -535,6 +735,6 @@ export function describePolicy(policy) {
     if (policy.modes && Object.keys(policy.modes).length > 0)
         res += 'Mode overrides: ' + Object.entries(policy.modes).map(([m, on]) => `${m}=${on ? 'on' : 'off'}`).join(', ') + '\n';
     for (let rule of policy.rules)
-        res += `- ${rule.name} (${rule.interrupts ?? 'all'}): ${rule.description ?? JSON.stringify(rule.when)}\n`;
+        res += `- ${rule.name} (${rule.interrupts ?? 'all'}${rule.pinned ? ', pinned' : ''}): ${rule.description ?? JSON.stringify(rule.when)}\n`;
     return res.trim();
 }
