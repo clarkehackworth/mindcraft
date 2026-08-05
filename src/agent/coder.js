@@ -5,6 +5,7 @@ import { makeCompartment, lockdown } from './library/lockdown.js';
 import * as skills from './library/skills.js';
 import * as world from './library/world.js';
 import { Vec3 } from 'vec3';
+import pf from 'mineflayer-pathfinder';
 import {ESLint} from "eslint";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -81,6 +82,7 @@ export class Coder {
 
         let code = null;
         let no_code_failures = 0;
+        let last_lint = null;
         for (let i=0; i<MAX_ATTEMPTS; i++) {
             if (this.agent.bot.interrupt_code)
                 return null;
@@ -117,6 +119,17 @@ export class Coder {
             if (lintResult) {
                 const message = 'Error: Code lint error:'+'\n'+lintResult+'\nPlease try again.';
                 console.warn("Linting error:"+'\n'+lintResult+'\n');
+                // The same lint error twice running means the retry loop cannot
+                // converge: the docs the model was given do not change between
+                // attempts, so neither does what it reaches for. Five attempts
+                // at ~100-line programs took over 20 minutes to produce nothing.
+                // Stop and hand the reason back, which at least lets the agent
+                // pick a different approach.
+                if (lintResult === last_lint) {
+                    console.warn('Same lint error twice; the retry loop cannot converge.');
+                    return `Could not write working code: ${lintResult}`;
+                }
+                last_lint = lintResult;
                 messages.push({ role: 'system', content: message });
                 continue;
             }
@@ -190,6 +203,19 @@ export class Coder {
         const exceptions = results.map(r => r.messages).flat();
 
         if (exceptions.length > 0) {
+            // A task phrased as "move a few blocks to a clear spot" retrieved no
+            // movement skill (there are eight), so the model reached past the
+            // library for bot.pathfinder.goto(new goals.GoalNear(...)) -- and
+            // "goals" is not in the sandbox. The lint error alone says only that
+            // the name is undefined, which is true five times in a row and never
+            // once useful: the docs shown were chosen from the task text and
+            // never change, so the retries cannot converge. What the model
+            // reached FOR is the better search query, so ask the library again
+            // with the undefined names and hand back what it finds.
+            const undefined_names = [...new Set(exceptions
+                .filter(e => e.ruleId === 'no-undef')
+                .map(e => /'([^']+)'/.exec(e.message)?.[1])
+                .filter(Boolean))];
             exceptions.forEach((exc, index) => {
                 if (exc.line && exc.column ) {
                     const errorLine = codeLines[exc.line - 1]?.trim() || 'Unable to retrieve error line content';
@@ -199,6 +225,11 @@ export class Coder {
                     result += `Related Code Line: ${errorLine}\n`;
                 }
             });
+            if (undefined_names.length > 0) {
+                const docs = await this.agent.prompter.skill_libary.getRelevantSkillDocs(undefined_names.join(' '), 5);
+                result += `\nOnly bot, skills, world, Vec3 and log are in scope -- ${undefined_names.join(', ')} ` +
+                    'are not, and no import can bring them in. Skills that look like what you reached for:\n' + docs + '\n';
+            }
             result += 'The code contains exceptions and cannot continue execution.';
         } else {
             return null;//no error
@@ -243,6 +274,13 @@ export class Coder {
             log: skills.log,
             world,
             Vec3,
+            // The model reaches for `new goals.GoalNear(...)` whenever doc
+            // selection hands it no movement skill, and the sandbox had Vec3 but
+            // not this -- so the attempt died on "goals is not defined" with
+            // nothing in the retry telling it what to use instead. Cheaper to
+            // let the obvious code work than to keep rejecting it; the lint
+            // feedback below still points at the skills first.
+            goals: pf.goals,
         });
         const mainFn = compartment.evaluate(src);
         
