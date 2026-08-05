@@ -1,0 +1,278 @@
+{
+  "source": [
+    "Mine ore whenever it is in reach, working up from coal and iron to diamond, and keep a pickaxe good enough for what you are digging.",
+    "Light the tunnels, go back to the surface when hurt or out of air, and haul the ore and stone back to the base chests instead of carrying it all."
+  ],
+  "goal": "Bring ore home: dig for coal, iron and diamond with a pickaxe good enough for the job, light what you dig, and haul it back to the base chests.",
+  "kind": "attribute",
+  "policy": {
+    "modes": {
+      "torch_placing": true,
+      "item_collecting": true,
+      "elbow_room": true
+    },
+    "rules": [
+      {
+        "name": "mine_diamond_ore",
+        "description": "Diamond first, always -- it is the rarest thing you will walk past.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "block_nearby",
+              "name": "diamond_ore",
+              "range": 24
+            },
+            {
+              "cond": "has_item",
+              "item": "iron_pickaxe",
+              "count": 1
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "collect",
+            "type": "diamond_ore",
+            "num": 8
+          }
+        ],
+        "cooldown": 20,
+        "pinned": true
+      },
+      {
+        "name": "mine_iron_ore",
+        "description": "Iron is armour, tools and buckets. Take every vein you find.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "block_nearby",
+              "name": "iron_ore",
+              "range": 24
+            },
+            {
+              "cond": "has_item",
+              "item": "stone_pickaxe",
+              "count": 1
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "collect",
+            "type": "iron_ore",
+            "num": 16
+          }
+        ],
+        "cooldown": 30
+      },
+      {
+        "name": "mine_coal_ore",
+        "description": "Coal is torches and furnace fuel, and torches are what keep the tunnel safe.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "block_nearby",
+              "name": "coal_ore",
+              "range": 24
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "coal",
+                "count": 48
+              }
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "collect",
+            "type": "coal_ore",
+            "num": 16
+          }
+        ],
+        "cooldown": 30
+      },
+      {
+        "name": "keep_stone_stocked",
+        "description": "Cobblestone is furnaces, tools and a wall between you and whatever is down there.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "block_nearby",
+              "name": "stone",
+              "range": 16
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "cobblestone",
+                "count": 64
+              }
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "collect",
+            "type": "stone",
+            "num": 32
+          }
+        ],
+        "cooldown": 60
+      },
+      {
+        "name": "smelt_raw_ore",
+        "description": "Raw ore is dead weight until it goes through a furnace. Named actions, not a prompt: the item is known exactly, so spending an LLM turn to ask for it bought nothing but cost and latency.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "has_item",
+              "item": "raw_iron",
+              "count": 5
+            },
+            {
+              "cond": "block_nearby",
+              "name": "furnace",
+              "range": 16
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "smelt",
+            "item": "raw_iron",
+            "num": 5
+          }
+        ],
+        "cooldown": 90
+      },
+      {
+        "name": "make_torches_for_the_tunnel",
+        "description": "A dark tunnel spawns the mobs that kill you. Coal plus sticks fixes that. Named actions, not a prompt: the item is known exactly, so spending an LLM turn to ask for it bought nothing but cost and latency.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "has_item",
+              "item": "coal",
+              "count": 4
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "torch",
+                "count": 16
+              }
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "craft",
+            "item": "torch",
+            "num": 16
+          }
+        ],
+        "cooldown": 240
+      },
+      {
+        "name": "go_find_ore",
+        "description": "Nothing worth mining in sight: go look for a vein rather than standing around.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "is_idle"
+            },
+            {
+              "not": {
+                "cond": "block_nearby",
+                "name": "iron_ore",
+                "range": 24
+              }
+            },
+            {
+              "cond": "has_item",
+              "item": "stone_pickaxe",
+              "count": 1
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "search_block",
+            "type": "iron_ore",
+            "range": 128
+          }
+        ],
+        "cooldown": 120
+      },
+      {
+        "name": "surface_when_hurt_underground",
+        "description": "Bleeding in a tunnel with no way out is how mining trips end. Climb out and eat. Gated on having food: with an empty bag the consume does nothing, so it re-fires every cooldown and cancels every other action.",
+        "interrupts": "all",
+        "when": {
+          "all": [
+            {
+              "cond": "health_below",
+              "value": 12
+            },
+            {
+              "cond": "has_food"
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "go_to_surface"
+          },
+          {
+            "act": "consume"
+          }
+        ],
+        "cooldown": 30
+      },
+      {
+        "name": "haul_ore_to_base",
+        "description": "Carry the ore home instead of losing the lot to one bad fall.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "block_nearby",
+              "name": "chest",
+              "range": 24
+            },
+            {
+              "cond": "has_item",
+              "item": "cobblestone",
+              "count": 64
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "deposit",
+            "item": "cobblestone"
+          },
+          {
+            "act": "deposit",
+            "item": "coal",
+            "num": 32
+          },
+          {
+            "act": "deposit",
+            "item": "raw_copper"
+          }
+        ],
+        "cooldown": 120
+      }
+    ]
+  }
+}

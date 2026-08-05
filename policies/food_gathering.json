@@ -1,0 +1,501 @@
+{
+  "source": [
+    "Build up a food surplus instead of eating hand to mouth. Harvest carrots, potatoes, beetroot and sweet berries whenever they are in reach, and hunt nearby animals when the meat supply is short.",
+    "Cook raw meat at a furnace before storing it, and bank the surplus in the base chests so there is always food to come home to."
+  ],
+  "goal": "Keep a standing food surplus in the base chests, going out to farm, forage and hunt for it rather than waiting until you are hungry.",
+  "kind": "attribute",
+  "policy": {
+    "modes": {
+      "hunting": true,
+      "item_collecting": true
+    },
+    "rules": [
+      {
+        "name": "forage_carrots",
+        "description": "Carrots in reach are free food. Take them.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "block_nearby",
+              "name": "carrots",
+              "range": 24
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "carrot",
+                "count": 32
+              }
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "collect",
+            "type": "carrots",
+            "num": 16
+          }
+        ],
+        "cooldown": 45
+      },
+      {
+        "name": "forage_potatoes",
+        "description": "Potatoes in reach are free food. Take them.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "block_nearby",
+              "name": "potatoes",
+              "range": 24
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "potato",
+                "count": 32
+              }
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "collect",
+            "type": "potatoes",
+            "num": 16
+          }
+        ],
+        "cooldown": 45
+      },
+      {
+        "name": "forage_berries",
+        "description": "Berry bushes restock themselves, so pick them every time you pass one.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "block_nearby",
+              "name": "sweet_berry_bush",
+              "range": 24
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "sweet_berries",
+                "count": 32
+              }
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "collect",
+            "type": "sweet_berry_bush",
+            "num": 12
+          }
+        ],
+        "cooldown": 45
+      },
+      {
+        "name": "harvest_wheat_for_bread",
+        "description": "Wheat is not edible on its own -- it is bread once there are three of them.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "block_nearby",
+              "name": "wheat",
+              "range": 24
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "wheat",
+                "count": 24
+              }
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "collect",
+            "type": "wheat",
+            "num": 24
+          }
+        ],
+        "cooldown": 60
+      },
+      {
+        "name": "bake_bread",
+        "description": "Wheat is worth more as bread. Named action, not a prompt: nothing here needs deciding.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "has_item",
+              "item": "wheat",
+              "count": 3
+            },
+            {
+              "cond": "is_idle"
+            },
+            {
+              "any": [
+                {
+                  "cond": "has_item",
+                  "item": "wooden_sword",
+                  "count": 1
+                },
+                {
+                  "cond": "has_item",
+                  "item": "stone_sword",
+                  "count": 1
+                },
+                {
+                  "cond": "has_item",
+                  "item": "iron_sword",
+                  "count": 1
+                },
+                {
+                  "cond": "has_item",
+                  "item": "golden_sword",
+                  "count": 1
+                },
+                {
+                  "cond": "has_item",
+                  "item": "diamond_sword",
+                  "count": 1
+                }
+              ]
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "craft",
+            "item": "bread",
+            "num": 3
+          }
+        ],
+        "cooldown": 300
+      },
+      {
+        "name": "cook_raw_meat",
+        "description": "Raw meat feeds half as well and can poison you. A smelt step per meat: each one is a no-op if you have none of it, which is cheaper than one LLM turn asking which you have.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "any": [
+                {
+                  "cond": "has_item",
+                  "item": "beef",
+                  "count": 3
+                },
+                {
+                  "cond": "has_item",
+                  "item": "mutton",
+                  "count": 3
+                },
+                {
+                  "cond": "has_item",
+                  "item": "porkchop",
+                  "count": 3
+                },
+                {
+                  "cond": "has_item",
+                  "item": "chicken",
+                  "count": 3
+                },
+                {
+                  "cond": "has_item",
+                  "item": "rabbit",
+                  "count": 3
+                }
+              ]
+            },
+            {
+              "cond": "block_nearby",
+              "name": "furnace",
+              "range": 16
+            },
+            {
+              "cond": "is_idle"
+            },
+            {
+              "any": [
+                {
+                  "cond": "has_item",
+                  "item": "wooden_sword",
+                  "count": 1
+                },
+                {
+                  "cond": "has_item",
+                  "item": "stone_sword",
+                  "count": 1
+                },
+                {
+                  "cond": "has_item",
+                  "item": "iron_sword",
+                  "count": 1
+                },
+                {
+                  "cond": "has_item",
+                  "item": "golden_sword",
+                  "count": 1
+                },
+                {
+                  "cond": "has_item",
+                  "item": "diamond_sword",
+                  "count": 1
+                }
+              ]
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "smelt",
+            "item": "beef",
+            "num": 8
+          },
+          {
+            "act": "smelt",
+            "item": "mutton",
+            "num": 8
+          },
+          {
+            "act": "smelt",
+            "item": "porkchop",
+            "num": 8
+          },
+          {
+            "act": "smelt",
+            "item": "chicken",
+            "num": 8
+          },
+          {
+            "act": "smelt",
+            "item": "rabbit",
+            "num": 8
+          }
+        ],
+        "cooldown": 180
+      },
+      {
+        "name": "build_a_furnace_for_cooking",
+        "description": "No furnace in reach and cobblestone in the bag: make one and put it down where you stand. Two named actions -- the LLM turn this replaced only ever said the same two things.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "has_item",
+              "item": "cobblestone",
+              "count": 8
+            },
+            {
+              "not": {
+                "cond": "block_nearby",
+                "name": "furnace",
+                "range": 24
+              }
+            },
+            {
+              "cond": "is_idle"
+            },
+            {
+              "any": [
+                {
+                  "cond": "has_item",
+                  "item": "wooden_sword",
+                  "count": 1
+                },
+                {
+                  "cond": "has_item",
+                  "item": "stone_sword",
+                  "count": 1
+                },
+                {
+                  "cond": "has_item",
+                  "item": "iron_sword",
+                  "count": 1
+                },
+                {
+                  "cond": "has_item",
+                  "item": "golden_sword",
+                  "count": 1
+                },
+                {
+                  "cond": "has_item",
+                  "item": "diamond_sword",
+                  "count": 1
+                }
+              ]
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "craft",
+            "item": "furnace"
+          },
+          {
+            "act": "place",
+            "block": "furnace"
+          }
+        ],
+        "cooldown": 300
+      },
+      {
+        "name": "stock_the_pantry",
+        "description": "Bank the harvest at the base and keep a working supply on hand.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "block_nearby",
+              "name": "chest",
+              "range": 24
+            },
+            {
+              "cond": "has_item",
+              "item": "carrot",
+              "count": 32
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "deposit",
+            "item": "carrot",
+            "num": 16
+          },
+          {
+            "act": "deposit",
+            "item": "potato",
+            "num": 16
+          },
+          {
+            "act": "deposit",
+            "item": "bread",
+            "num": 8
+          }
+        ],
+        "cooldown": 180
+      },
+      {
+        "name": "go_find_food_when_none_in_reach",
+        "description": "Nothing edible in the bag and nothing to forage within 24 blocks. Every other rule here waits for food to come to it; this one goes out and looks, before hunger makes it an emergency.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "is_idle"
+            },
+            {
+              "any": [
+                {
+                  "cond": "has_item",
+                  "item": "wooden_sword",
+                  "count": 1
+                },
+                {
+                  "cond": "has_item",
+                  "item": "stone_sword",
+                  "count": 1
+                },
+                {
+                  "cond": "has_item",
+                  "item": "iron_sword",
+                  "count": 1
+                },
+                {
+                  "cond": "has_item",
+                  "item": "golden_sword",
+                  "count": 1
+                },
+                {
+                  "cond": "has_item",
+                  "item": "diamond_sword",
+                  "count": 1
+                }
+              ]
+            },
+            {
+              "not": {
+                "cond": "has_food"
+              }
+            },
+            {
+              "not": {
+                "any": [
+                  {
+                    "cond": "has_item",
+                    "item": "cooked_beef",
+                    "count": 1
+                  },
+                  {
+                    "cond": "has_item",
+                    "item": "cooked_mutton",
+                    "count": 1
+                  },
+                  {
+                    "cond": "has_item",
+                    "item": "cooked_porkchop",
+                    "count": 1
+                  },
+                  {
+                    "cond": "has_item",
+                    "item": "cooked_chicken",
+                    "count": 1
+                  },
+                  {
+                    "cond": "has_item",
+                    "item": "cooked_rabbit",
+                    "count": 1
+                  }
+                ]
+              }
+            },
+            {
+              "not": {
+                "cond": "animal_nearby",
+                "range": 24
+              }
+            },
+            {
+              "not": {
+                "cond": "block_nearby",
+                "name": "sweet_berry_bush",
+                "range": 24
+              }
+            },
+            {
+              "not": {
+                "cond": "block_nearby",
+                "name": "carrots",
+                "range": 24
+              }
+            },
+            {
+              "not": {
+                "cond": "block_nearby",
+                "name": "potatoes",
+                "range": 24
+              }
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "prompt_self",
+            "message": "You are carrying no food at all and there is nothing to forage or hunt within reach. Do not wait for hunger to force this. Go and look, and pick what suits the land you are actually standing in rather than what you wish were here. In a snowy pine forest that means sweet berry bushes and rabbits, not cows and wheat fields. Try in this order: !searchForBlock sweet_berry_bush 128 and !collectBlocks them -- berry bushes regrow, so a patch you find once is food forever, and !rememberHere it. Otherwise !searchForEntity for whatever animal lives here -- rabbit, sheep, chicken, cow, pig, fox -- and !attack it, then !smeltItem the raw meat if a furnace is in reach. If you have string from spiders, 3 sticks and 2 string make a fishing_rod and any open water is then food you can stand still for. Finish one of these before starting anything else, and if a search says it could not travel at all, move somewhere else first -- searching again from a spot you cannot leave will not work."
+          }
+        ],
+        "cooldown": 240
+      }
+    ]
+  }
+}

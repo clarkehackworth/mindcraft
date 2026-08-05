@@ -1,0 +1,309 @@
+{
+  "source": [
+    "Always be climbing the gear ladder: wood, then stone, then iron, then diamond. Whenever the materials for a better sword, pickaxe or piece of armour are in the bag, craft it immediately and wear it.",
+    "Better armour and a better weapon are the difference between surviving a fight and dying in one, so gear upgrades come before hoarding materials -- spend the iron and the diamonds, do not bank them."
+  ],
+  "goal": "Work your way up the gear ladder -- wood to stone to iron to diamond -- and wear and carry the best you have made.",
+  "kind": "attribute",
+  "policy": {
+    "modes": {
+      "item_collecting": true
+    },
+    "rules": [
+      {
+        "name": "craft_diamond_armor",
+        "description": "The top of the ladder. Diamonds in the bag belong on your body, not in a chest. Named actions, not a prompt: the item is known exactly, so spending an LLM turn to ask for it bought nothing but cost and latency.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "has_item",
+              "item": "diamond",
+              "count": 8
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "diamond_chestplate",
+                "count": 1
+              }
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "craft",
+            "item": "diamond_chestplate"
+          },
+          {
+            "act": "craft",
+            "item": "diamond_leggings"
+          },
+          {
+            "act": "craft",
+            "item": "diamond_helmet"
+          },
+          {
+            "act": "craft",
+            "item": "diamond_boots"
+          }
+        ],
+        "cooldown": 180,
+        "pinned": true
+      },
+      {
+        "name": "craft_diamond_weapon",
+        "description": "A diamond sword ends fights before they cost health. Named actions, not a prompt: the item is known exactly, so spending an LLM turn to ask for it bought nothing but cost and latency.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "has_item",
+              "item": "diamond",
+              "count": 2
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "diamond_sword",
+                "count": 1
+              }
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "craft",
+            "item": "diamond_sword"
+          }
+        ],
+        "cooldown": 180,
+        "pinned": true
+      },
+      {
+        "name": "craft_iron_armor",
+        "description": "A full set of iron is what makes the night survivable. Named actions, not a prompt: the item is known exactly, so spending an LLM turn to ask for it bought nothing but cost and latency.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "has_item",
+              "item": "iron_ingot",
+              "count": 8
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "iron_chestplate",
+                "count": 1
+              }
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "craft",
+            "item": "iron_chestplate"
+          },
+          {
+            "act": "craft",
+            "item": "iron_leggings"
+          },
+          {
+            "act": "craft",
+            "item": "iron_helmet"
+          },
+          {
+            "act": "craft",
+            "item": "iron_boots"
+          }
+        ],
+        "cooldown": 180
+      },
+      {
+        "name": "craft_iron_tools",
+        "description": "An iron sword and pickaxe: better fights, and the only way to reach diamond. Named actions, not a prompt: the item is known exactly, so spending an LLM turn to ask for it bought nothing but cost and latency.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "has_item",
+              "item": "iron_ingot",
+              "count": 3
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "iron_pickaxe",
+                "count": 1
+              }
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "craft",
+            "item": "iron_pickaxe"
+          },
+          {
+            "act": "craft",
+            "item": "iron_sword"
+          }
+        ],
+        "cooldown": 120
+      },
+      {
+        "name": "craft_stone_gear",
+        "description": "The first real upgrade. Cobblestone is everywhere, so there is no excuse for wooden tools. Named actions, not a prompt: the item is known exactly, so spending an LLM turn to ask for it bought nothing but cost and latency.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "has_item",
+              "item": "cobblestone",
+              "count": 8
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "stone_pickaxe",
+                "count": 1
+              }
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "craft",
+            "item": "stone_pickaxe"
+          },
+          {
+            "act": "craft",
+            "item": "stone_sword"
+          },
+          {
+            "act": "craft",
+            "item": "stone_axe"
+          }
+        ],
+        "cooldown": 120
+      },
+      {
+        "name": "craft_first_tools",
+        "description": "Nothing at all in hand: wooden tools now, better ones the moment stone shows up. Named actions, not a prompt: the item is known exactly, so spending an LLM turn to ask for it bought nothing but cost and latency.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "has_item",
+              "item": "log",
+              "count": 2
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "wooden_pickaxe",
+                "count": 1
+              }
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "stone_pickaxe",
+                "count": 1
+              }
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "craft",
+            "item": "wooden_pickaxe"
+          },
+          {
+            "act": "craft",
+            "item": "wooden_sword"
+          }
+        ],
+        "cooldown": 120
+      },
+      {
+        "name": "wear_the_armor_you_have",
+        "description": "Armour in the bag protects nothing. Named actions, not a prompt: the item is known exactly, so spending an LLM turn to ask for it bought nothing but cost and latency.",
+        "interrupts": "idle",
+        "when": {
+          "cond": "has_item",
+          "item": "iron_chestplate",
+          "count": 1
+        },
+        "do": [
+          {
+            "act": "equip",
+            "item": "iron_chestplate"
+          },
+          {
+            "act": "equip",
+            "item": "iron_leggings"
+          },
+          {
+            "act": "equip",
+            "item": "iron_helmet"
+          },
+          {
+            "act": "equip",
+            "item": "iron_boots"
+          }
+        ],
+        "cooldown": 600
+      },
+      {
+        "name": "hold_the_best_weapon",
+        "description": "Keep the upgrade in hand, not in the bag.",
+        "interrupts": "idle",
+        "when": {
+          "cond": "has_item",
+          "item": "stone_sword",
+          "count": 1
+        },
+        "do": [
+          {
+            "act": "equip_weapon"
+          }
+        ],
+        "cooldown": 300
+      },
+      {
+        "name": "go_get_the_next_tier",
+        "description": "Idle with a working pickaxe and no iron yet: the next tier is underground, not here.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "is_idle"
+            },
+            {
+              "cond": "has_item",
+              "item": "stone_pickaxe",
+              "count": 1
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "iron_ingot",
+                "count": 3
+              }
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "search_block",
+            "type": "iron_ore",
+            "range": 128
+          }
+        ],
+        "cooldown": 180
+      }
+    ]
+  }
+}

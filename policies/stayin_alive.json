@@ -1,0 +1,769 @@
+{
+  "source": [
+    "Stay alive above all else: get to air when drowning, run and eat when hurt, hold a weapon when something hostile is close, and sleep through the night in a bed.",
+    "Never let hunger become an emergency. Eat well before the hunger bar starts draining health, and go looking for food while there is still time to find it.",
+    "Keep a home base: gather wood, craft and place a room of chests, remember where it is, and use it to store surplus food, ore and building blocks.",
+    "Stay out of water you cannot see the bottom of. Getting to air when drowning is already a rule; this is the half that stops it happening -- only enter shallow, open water, never enclosed or underground water, and never swim far from shore.",
+    "Do not fight without a weapon in hand, and do not go back to where you last died until it is daylight and you are armed."
+  ],
+  "goal": "Stay alive indefinitely and make yourself harder to kill: keep a home base with a bed and stocked chests, and keep food, shelter and a weapon between you and every way this world can end you.",
+  "policy": {
+    "modes": {
+      "self_preservation": true,
+      "cowardice": true,
+      "self_defense": false,
+      "hunting": true,
+      "item_collecting": true,
+      "torch_placing": true,
+      "unstuck": true
+    },
+    "rules": [
+      {
+        "name": "surface_when_drowning",
+        "description": "Out of air is the one emergency that beats everything else.",
+        "interrupts": "all",
+        "when": {
+          "cond": "drowning",
+          "air": 12
+        },
+        "do": [
+          {
+            "act": "go_to_surface"
+          }
+        ],
+        "cooldown": 5,
+        "pinned": true
+      },
+      {
+        "name": "eat_when_starving",
+        "description": "Below 7 hunger the health bar is next. Drop everything and eat.",
+        "interrupts": "all",
+        "when": {
+          "all": [
+            {
+              "cond": "hunger_below",
+              "value": 7
+            },
+            {
+              "cond": "has_food"
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "consume"
+          }
+        ],
+        "cooldown": 8,
+        "pinned": true
+      },
+      {
+        "name": "flee_when_hurt",
+        "description": "Get clear and eat back the health lost. Gated on actually having food: fleeing and failing to eat does not raise health, so without this it re-fires every cooldown and cancels every other action forever.",
+        "interrupts": "all",
+        "when": {
+          "all": [
+            {
+              "cond": "health_below",
+              "value": 8
+            },
+            {
+              "cond": "has_food"
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "flee",
+            "distance": 32
+          },
+          {
+            "act": "consume"
+          }
+        ],
+        "cooldown": 10,
+        "pinned": true
+      },
+      {
+        "name": "hold_weapon_when_threatened",
+        "description": "Something hostile is close, you own a weapon, and it is not in your hand. All three clauses earn their place: without \"not holding\" every fire after the first is a no-op that still cancels whatever was running, and without \"has_item weapon\" the rule fires forever at an empty inventory with nothing it could possibly equip -- observed live, every few seconds, for an hour. Do not write this as \"has_item sword\": sword is not a family name and matches nothing.",
+        "interrupts": "all",
+        "when": {
+          "all": [
+            {
+              "cond": "hostile_nearby",
+              "range": 12
+            },
+            {
+              "cond": "has_item",
+              "item": "weapon"
+            },
+            {
+              "not": {
+                "cond": "holding",
+                "item": "weapon"
+              }
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "equip_weapon"
+          }
+        ],
+        "cooldown": 6,
+        "pinned": true
+      },
+      {
+        "name": "flee_chillager",
+        "description": "The chillager is this modpack's ranged snow-biome mob and it kills from further away than cowardice reacts to, which is why it needs its own rule at 32 rather than the mode's radius. Carried back from the live agent's own generated policy, where it had never once fired: it named the mob \"entity.frostiful.chillager\", which is the translation key. The entity is \"frostiful:chillager\", and entity_nearby compares against that. The stay is a no-op in daylight (\"not is_night\" is already true, so it ends the tick it begins) and holds position through the night if the sighting was after dusk.",
+        "interrupts": "all",
+        "when": {
+          "cond": "entity_nearby",
+          "name": "frostiful:chillager",
+          "range": 32
+        },
+        "do": [
+          {
+            "act": "flee",
+            "distance": 40
+          },
+          {
+            "act": "stay",
+            "until": "not is_night 1500"
+          }
+        ],
+        "cooldown": 6,
+        "pinned": true
+      },
+      {
+        "name": "leave_your_death_spot",
+        "description": "Whatever killed you is probably still standing there and your gear is on the ground next to it, so walking back in unarmed is how you die twice. This was previously inexpressible: the compiler wanted it, had no condition for \"where I died\", and wrote at_position 0,0,0 -- a placeholder matching only the world origin, so the rule never fired once. Gated on not holding a weapon, because armed and in daylight is exactly when going back to collect your things is the right call.",
+        "interrupts": "all",
+        "when": {
+          "all": [
+            {
+              "cond": "at_death_position",
+              "range": 12
+            },
+            {
+              "not": {
+                "cond": "holding",
+                "item": "weapon"
+              }
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "move_away",
+            "distance": 24
+          }
+        ],
+        "cooldown": 15,
+        "pinned": true
+      },
+      {
+        "name": "sleep_at_night",
+        "description": "Head for a bed at dusk and stay put until morning -- but break off if something hostile closes in, instead of standing still while it hits you.",
+        "interrupts": "all",
+        "when": {
+          "all": [
+            {
+              "cond": "is_night",
+              "lead": 1500
+            },
+            {
+              "any": [
+                {
+                  "cond": "block_nearby",
+                  "name": "bed",
+                  "range": 16
+                },
+                {
+                  "cond": "has_item",
+                  "item": "bed",
+                  "count": 1
+                }
+              ]
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "go_to_bed"
+          },
+          {
+            "act": "stay",
+            "until": "not is_night 1500 or hostile_nearby 8"
+          }
+        ],
+        "cooldown": 60
+      },
+      {
+        "name": "shelter_when_night_and_no_bed",
+        "description": "Nightfall with no bed anywhere. Without this the bot stands in the open until something kills it. But the old wording -- 'seal the hole, leaving no opening a mob can path through' -- is what made it entomb itself: its own memory records building 3x3 shelters around itself repeatedly and then being unable to travel, which is the 'every attempt to travel failed' loop that burned a whole session. A shelter you cannot leave is a grave. Long cooldown on purpose: a prompt does not change the world, so re-issuing it every minute only cancels the digging it asked for.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "is_night",
+              "lead": 1500
+            },
+            {
+              "not": {
+                "cond": "block_nearby",
+                "name": "bed",
+                "range": 16
+              }
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "bed",
+                "count": 1
+              }
+            },
+            {
+              "cond": "is_idle"
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "prompt_self",
+            "message": "It is night and you have no bed, so you cannot sleep through it -- you have to survive it instead. Do NOT stand in the open. Dig two blocks into the nearest hillside, or straight down two, and cover the opening above you with dirt, cobblestone or planks. Place a torch inside so nothing spawns in with you.\nREAD THIS PART CAREFULLY, YOU HAVE GOT IT WRONG BEFORE. You have repeatedly walled yourself in on all sides and then been unable to travel at all for the rest of the night and the whole next day. Do not build a box around yourself. You need exactly enough cover to stop a mob reaching you and NOT ONE BLOCK MORE:\n- Cover yourself with blocks YOU CAN BREAK -- dirt, planks, cobblestone. Never seal yourself behind anything you have no tool for.\n- Do not place blocks on all four sides plus the roof. A two-deep hole with the entrance covered is enough.\n- Before you settle, know which single block you will break to get out, and make sure it is one you can reach and break from where you are standing.\nAT FIRST LIGHT, LEAVE. Break your way out and get back to work -- do not sit in the hole through the day. If you ever find that you cannot travel anywhere, the first thing to suspect is that you are still inside one of these shelters: break out sideways at your own feet level before trying to go anywhere."
+          }
+        ],
+        "cooldown": 600
+      },
+      {
+        "name": "craft_a_weapon",
+        "description": "Unarmed with wood in the bag. craftRecipe already crafts the planks and sticks on the way, so this needs no reasoning -- and the LLM turn it replaced was the difference between having a sword at dusk and not.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "any": [
+                {
+                  "cond": "has_item",
+                  "item": "log",
+                  "count": 1
+                },
+                {
+                  "cond": "has_item",
+                  "item": "planks",
+                  "count": 2
+                }
+              ]
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "wooden_sword",
+                "count": 1
+              }
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "stone_sword",
+                "count": 1
+              }
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "iron_sword",
+                "count": 1
+              }
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "golden_sword",
+                "count": 1
+              }
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "diamond_sword",
+                "count": 1
+              }
+            },
+            {
+              "cond": "is_idle"
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "craft",
+            "item": "wooden_sword"
+          }
+        ],
+        "cooldown": 90
+      },
+      {
+        "name": "craft_shovel_for_snow",
+        "description": "Snow underfoot and nothing to dig it with. A named craft; there was never a decision here.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "block_nearby",
+              "name": "snow_block",
+              "range": 8
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "wooden_shovel",
+                "count": 1
+              }
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "stone_shovel",
+                "count": 1
+              }
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "iron_shovel",
+                "count": 1
+              }
+            },
+            {
+              "cond": "is_idle"
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "craft",
+            "item": "wooden_shovel"
+          }
+        ],
+        "cooldown": 300
+      },
+      {
+        "name": "get_a_bed",
+        "description": "Animals to shear, or a base with no bed in it: either way the night problem is solvable right now. Daytime only -- this rule walks a 500-block spiral looking for sheep, and doing that after dark is what got the bot killed by a zombie. The message no longer forbids doing anything else: in a frozen taiga where the pathfinder could not move at all, that clause pinned the bot in an unwinnable sheep search for the whole session.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "any": [
+                {
+                  "cond": "animal_nearby",
+                  "range": 48
+                },
+                {
+                  "cond": "block_nearby",
+                  "name": "crafting_table",
+                  "range": 16
+                },
+                {
+                  "cond": "block_nearby",
+                  "name": "chest",
+                  "range": 16
+                }
+              ]
+            },
+            {
+              "not": {
+                "cond": "block_nearby",
+                "name": "bed",
+                "range": 16
+              }
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "bed",
+                "count": 1
+              }
+            },
+            {
+              "not": {
+                "cond": "is_night",
+                "lead": 1500
+              }
+            },
+            {
+              "any": [
+                {
+                  "cond": "has_item",
+                  "item": "wooden_sword",
+                  "count": 1
+                },
+                {
+                  "cond": "has_item",
+                  "item": "stone_sword",
+                  "count": 1
+                },
+                {
+                  "cond": "has_item",
+                  "item": "iron_sword",
+                  "count": 1
+                },
+                {
+                  "cond": "has_item",
+                  "item": "golden_sword",
+                  "count": 1
+                },
+                {
+                  "cond": "has_item",
+                  "item": "diamond_sword",
+                  "count": 1
+                }
+              ]
+            },
+            {
+              "cond": "is_idle"
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "prompt_self",
+            "message": "You have no bed, and without one every night is spent standing in the open where zombies kill you. Get one now. A bed needs 3 wool OF THE SAME COLOUR plus 3 planks -- 2 white and 1 light_gray will NOT craft, which is why every previous attempt failed. Sheep are only on the surface, so if you are underground !goToSurface FIRST. Then !searchForEntity sheep 500, and !attack or shear them until !inventory shows 3 of one colour, then !craftRecipe white_bed (match the name to the colour you have: red_wool -> red_bed). Then go to your base, !placeHere the bed, and !rememberHere base.\nREAD THE FAILURE BEFORE YOU RETRY. If the search says it covered ground and found nothing, run it again from where you now stand, or with pattern \"random\" if the spiral keeps getting blocked. But if it says every attempt to TRAVEL failed, then this is not about sheep -- you cannot move, and searching again cannot possibly work. In that case stop searching entirely. Digging straight UP does not fix it and usually leaves you standing in a tree canopy, which is not open ground: dig SIDEWAYS at your own feet level for at least 10 blocks to reach real terrain, then try once more from there. If travel still fails, give up on the bed for now, say so, and go do something you can actually do where you stand -- mine, craft, or wall yourself in before dark. A bed you cannot reach is worth less than surviving the night."
+          }
+        ],
+        "cooldown": 360,
+        "pinned": true
+      },
+      {
+        "name": "eat_before_hungry",
+        "description": "Top up long before hunger is a problem, while eating is still free.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "hunger_below",
+              "value": 17
+            },
+            {
+              "cond": "has_food"
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "consume"
+          }
+        ],
+        "cooldown": 30
+      },
+      {
+        "name": "take_food_from_storage",
+        "description": "Hungry with a chest in reach: restock from it. One withdraw per staple -- a withdraw for food you do not have is a cheap no-op, where asking the LLM which food is in the chest costs a full turn and it cannot see inside either. It deliberately does NOT eat: filling the bag makes has_food true, and eat_before_hungry/eat_when_starving take it from there on the next tick. Adding a consume here would make this an eating rule that fires with no food and re-triggers forever.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "hunger_below",
+              "value": 14
+            },
+            {
+              "cond": "block_nearby",
+              "name": "chest",
+              "range": 32
+            },
+            {
+              "cond": "is_idle"
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "withdraw",
+            "item": "bread",
+            "num": 8
+          },
+          {
+            "act": "withdraw",
+            "item": "cooked_beef",
+            "num": 8
+          },
+          {
+            "act": "withdraw",
+            "item": "cooked_mutton",
+            "num": 8
+          },
+          {
+            "act": "withdraw",
+            "item": "cooked_porkchop",
+            "num": 8
+          }
+        ],
+        "cooldown": 120
+      },
+      {
+        "name": "find_food_when_low",
+        "description": "No food in the bag and none in reach: go get some while there is still time. Kept as a prompt on purpose: what is edible here depends on the biome, the season and the modpack, and no fixed list of collect steps answers it. Cooldown raised to 300s so it costs one turn every five minutes at worst.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "hunger_below",
+              "value": 15
+            },
+            {
+              "cond": "is_idle"
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "prompt_self",
+            "message": "You are running low on food and have nothing to eat. Get food NOW, before hunger starts costing health. In order of preference: !searchForBlock for carrots, potatoes or sweet_berry_bush and !collectBlocks them; !searchForEntity for a cow, pig, sheep or chicken and !attack it, then !smeltItem the raw meat if you have a furnace; or !goToRememberedPlace your base and !takeFromChest. Pick one and finish it."
+          }
+        ],
+        "cooldown": 300
+      },
+      {
+        "name": "gather_wood_for_base",
+        "description": "Wood is tools, chests and shelter. Never be without a few logs.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "block_nearby",
+              "name": "log",
+              "range": 24
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "log",
+                "count": 16
+              }
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "collect",
+            "type": "log",
+            "num": 16
+          }
+        ],
+        "cooldown": 60
+      },
+      {
+        "name": "build_storage_chests",
+        "description": "Wood in the bag and nowhere to put anything. Craft and place; remembering where it is stays the reasoning loop's job, which it does from the behavior log without being asked.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "has_item",
+              "item": "log",
+              "count": 8
+            },
+            {
+              "not": {
+                "cond": "block_nearby",
+                "name": "chest",
+                "range": 24
+              }
+            },
+            {
+              "any": [
+                {
+                  "cond": "has_item",
+                  "item": "wooden_sword",
+                  "count": 1
+                },
+                {
+                  "cond": "has_item",
+                  "item": "stone_sword",
+                  "count": 1
+                },
+                {
+                  "cond": "has_item",
+                  "item": "iron_sword",
+                  "count": 1
+                },
+                {
+                  "cond": "has_item",
+                  "item": "golden_sword",
+                  "count": 1
+                },
+                {
+                  "cond": "has_item",
+                  "item": "diamond_sword",
+                  "count": 1
+                }
+              ]
+            },
+            {
+              "cond": "is_idle"
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "craft",
+            "item": "chest",
+            "num": 2
+          },
+          {
+            "act": "place",
+            "block": "chest"
+          }
+        ],
+        "cooldown": 420
+      },
+      {
+        "name": "expand_storage_room",
+        "description": "A base with chests and plenty of spare wood: add more. Same two named actions as building the first one.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "block_nearby",
+              "name": "chest",
+              "range": 24
+            },
+            {
+              "cond": "has_item",
+              "item": "log",
+              "count": 24
+            },
+            {
+              "cond": "is_idle"
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "craft",
+            "item": "chest",
+            "num": 2
+          },
+          {
+            "act": "place",
+            "block": "chest"
+          }
+        ],
+        "cooldown": 600
+      },
+      {
+        "name": "stow_bulk_at_base",
+        "description": "Dump the heavy junk in the chest so there is room for what matters.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "block_nearby",
+              "name": "chest",
+              "range": 24
+            },
+            {
+              "cond": "has_item",
+              "item": "cobblestone",
+              "count": 128
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "deposit",
+            "item": "cobblestone"
+          },
+          {
+            "act": "deposit",
+            "item": "dirt"
+          },
+          {
+            "act": "deposit",
+            "item": "gravel"
+          },
+          {
+            "act": "deposit",
+            "item": "cobbled_deepslate"
+          }
+        ],
+        "cooldown": 60
+      },
+      {
+        "name": "stow_surplus_food",
+        "description": "Bank the extra food at the base, keeping a working stack on hand.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "block_nearby",
+              "name": "chest",
+              "range": 24
+            },
+            {
+              "any": [
+                {
+                  "cond": "has_item",
+                  "item": "cooked_beef",
+                  "count": 24
+                },
+                {
+                  "cond": "has_item",
+                  "item": "cooked_mutton",
+                  "count": 24
+                },
+                {
+                  "cond": "has_item",
+                  "item": "cooked_porkchop",
+                  "count": 24
+                },
+                {
+                  "cond": "has_item",
+                  "item": "cooked_chicken",
+                  "count": 24
+                },
+                {
+                  "cond": "has_item",
+                  "item": "cooked_rabbit",
+                  "count": 24
+                }
+              ]
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "deposit",
+            "item": "cooked_beef",
+            "num": 12
+          },
+          {
+            "act": "deposit",
+            "item": "cooked_mutton",
+            "num": 12
+          },
+          {
+            "act": "deposit",
+            "item": "cooked_porkchop",
+            "num": 12
+          },
+          {
+            "act": "deposit",
+            "item": "cooked_chicken",
+            "num": 12
+          },
+          {
+            "act": "deposit",
+            "item": "cooked_rabbit",
+            "num": 12
+          }
+        ],
+        "cooldown": 120
+      }
+    ]
+  },
+  "kind": "base"
+}

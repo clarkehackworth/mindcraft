@@ -24,6 +24,14 @@ import { writeFileSync, readFileSync, readdirSync, mkdirSync, existsSync, unlink
 // constructing Blocks -- worth doing if world scanning stays this hot.
 const MAX_COND_SCAN = 16;
 
+// What counts as a weapon, in one place. equipHighestAttack picks from exactly
+// this set, so the condition that gates an equip_weapon rule and the action
+// that satisfies it can never disagree -- which is how
+// hold_weapon_when_threatened ended up firing every few seconds at an empty
+// inventory, with nothing it could possibly equip.
+export const isWeaponName = (name) =>
+    !!name && (name.includes('sword') || (name.includes('axe') && !name.includes('pickaxe')));
+
 export const CONDITIONS = {
     hostile_nearby: {
         args: { range: 'number (blocks, default 16)' },
@@ -66,10 +74,53 @@ export const CONDITIONS = {
     },
     has_item: {
         args: { item: 'string item name', count: 'number (default 1)' },
-        desc: 'Bot inventory contains at least count of item. Family names count all variants: "log" is every wood\'s log, "planks" every plank.',
+        desc: 'Bot inventory contains at least count of item. Family names count all variants: "log" is every wood\'s log, "planks" every plank, and "weapon" is any sword or axe. Note that "sword" alone is NOT a family and matches nothing -- use "weapon".',
         fn: (agent, a) => {
             const counts = world.getInventoryCounts(agent.bot);
+            // "sword" is not a family name, so expandBlockName returns it
+            // unchanged and it matches no real item -- a rule written as
+            // "not has_item sword" was therefore true even holding five of
+            // them. "weapon" is the spelling that works.
+            if (a.item === 'weapon')
+                return Object.entries(counts).reduce((sum, [n, c]) => sum + (isWeaponName(n) ? c : 0), 0) >= (a.count ?? 1);
             return mc.expandBlockName(a.item).reduce((sum, name) => sum + (counts[name] ?? 0), 0) >= (a.count ?? 1);
+        }
+    },
+    has_food: {
+        args: {},
+        desc: 'Bot is carrying something it can actually eat. Use it to gate any rule whose action is "consume" -- a rule that fires on hunger or low health but has no food to eat cannot fix its own trigger, so it re-fires forever and starves every other rule.',
+        // Same predicate consume() uses to pick an item, so the gate and the
+        // remedy can never disagree about what counts as food.
+        fn: (agent) => agent.bot.inventory.items().some(i => agent.bot.registry.foods?.[i.type])
+    },
+    holding: {
+        args: { item: 'string item name, or "weapon" for any sword/axe' },
+        desc: 'The named item is in the bot\'s hand. Use "weapon" to gate an equip_weapon rule: without it the rule re-fires forever, because equipping a weapon you already hold changes nothing but still cancels whatever was running.',
+        // hold_weapon_when_threatened was interrupts:all on hostile_nearby, so
+        // it re-fired for as long as the mob was there -- and every fire after
+        // the first was a no-op that still killed a running action. The trigger
+        // it wanted was "a mob is near AND my hands are empty".
+        // Same predicate equipHighestAttack picks from, so the gate and the
+        // remedy cannot disagree about what counts as a weapon.
+        fn: (agent, a) => {
+            const held = agent.bot.heldItem?.name;
+            if (!held) return false;
+            if (a.item === 'weapon') return isWeaponName(held);
+            return mc.expandBlockName(a.item).includes(held);
+        }
+    },
+    at_death_position: {
+        args: { range: 'number (default 8)' },
+        desc: 'Bot is near where it last died. False until it has died at least once. Use it to keep away from whatever killed you -- the mob is usually still there and your gear is on the ground beside it.',
+        // The death handler already writes last_death_position into the memory bank,
+        // so the condition just reads it. Without this the compiler had no way
+        // to express "do not go back there" and wrote at_position 0,0,0 --
+        // a placeholder that only matches the world origin, which is why
+        // never_return_to_death_position never once fired.
+        fn: (agent, a) => {
+            const p = agent.memory_bank?.recallPlace('last_death_position');
+            if (!p || p[0] === undefined) return false;
+            return agent.bot.entity.position.distanceTo({ x: p[0], y: p[1], z: p[2] }) <= (a.range ?? 8);
         }
     },
     at_position: {
@@ -81,7 +132,19 @@ export const CONDITIONS = {
     drowning: {
         args: { air: 'number (default 12), oxygen out of 20 below which this is true' },
         desc: 'Bot is underwater and losing air. Use this for "underwater"/"drowning", not block_nearby water, which is also true standing on the shore.',
-        fn: (agent, a) => agent.bot.oxygenLevel !== undefined && agent.bot.oxygenLevel <= (a.air ?? 12)
+        // The air number alone is not enough. This modpack reports 52/20 health,
+        // and something in it drops oxygenLevel while the bot is standing in a
+        // dry mineshaft -- Andy re-fired the drowning reflex every 5 seconds at
+        // y=71 with air blocks at his legs and head, surfacing "successfully"
+        // each time because he had never left the surface. A head in air cannot
+        // be drowning whatever the number says. Names are only used to rule
+        // drowning OUT, never in: kelp, seagrass and waterlogged slabs all drown
+        // you without being called water, and all of them fail the air test.
+        fn: (agent, a) => {
+            if (agent.bot.oxygenLevel === undefined || agent.bot.oxygenLevel > (a.air ?? 12)) return false;
+            const head = agent.bot.blockAt(agent.bot.entity.position.offset(0, agent.bot.entity.eyeHeight ?? 1.62, 0));
+            return !!head && head.name !== 'air' && head.name !== 'cave_air';
+        }
     },
     is_night: {
         args: { lead: 'number of ticks before nightfall to start saying yes (default 0). ~1500 gives the bot time to walk home before mobs are out.' },
@@ -105,41 +168,49 @@ export const CONDITIONS = {
 
 export const ACTIONS = {
     flee: {
+        cost: 'blocking', clears: ['hostile_nearby', 'entity_nearby', 'animal_nearby', 'player_nearby', 'at_position', 'at_death_position'],
         args: { distance: 'number (default 24)' },
         desc: 'Run away from all nearby enemies.',
         fn: async (agent, a) => await skills.avoidEnemies(agent.bot, a.distance ?? 24)
     },
     fight_back: {
+        cost: 'blocking', clears: ['hostile_nearby', 'entity_nearby'],
         args: {},
         desc: 'Attack nearby hostile mobs until they are dead or gone.',
         fn: async (agent) => await skills.defendSelf(agent.bot, 8)
     },
     attack: {
+        cost: 'blocking', clears: ['hostile_nearby', 'entity_nearby', 'animal_nearby'],
         args: { type: 'string mob type' },
         desc: 'Attack the nearest entity of the given type.',
         fn: async (agent, a) => await skills.attackNearest(agent.bot, a.type, true)
     },
     goto: {
+        cost: 'blocking', clears: ['at_position', 'block_nearby', 'at_death_position'],
         args: { x: 'number', y: 'number', z: 'number', closeness: 'number (default 2)' },
         desc: 'Navigate to a position.',
         fn: async (agent, a) => await skills.goToPosition(agent.bot, a.x, a.y, a.z, a.closeness ?? 2)
     },
     goto_player: {
+        cost: 'blocking', clears: ['player_nearby', 'at_position', 'at_death_position'],
         args: { name: 'string player name', closeness: 'number (default 3)' },
         desc: 'Go to a player.',
         fn: async (agent, a) => await skills.goToPlayer(agent.bot, a.name, a.closeness ?? 3)
     },
     follow_player: {
+        cost: 'blocking', clears: ['player_nearby', 'at_position', 'at_death_position'],
         args: { name: 'string player name' },
         desc: 'Follow a player until interrupted.',
         fn: async (agent, a) => await skills.followPlayer(agent.bot, a.name, 4)
     },
     move_away: {
+        cost: 'blocking', clears: ['hostile_nearby', 'entity_nearby', 'animal_nearby', 'player_nearby', 'at_position', 'block_nearby', 'at_death_position'],
         args: { distance: 'number (default 8)' },
         desc: 'Move away from the current position in any direction.',
         fn: async (agent, a) => await skills.moveAway(agent.bot, a.distance ?? 8)
     },
     stay: {
+        cost: 'blocking', clears: ['is_night', 'is_idle'],
         args: { until: 'string flat condition, e.g. "not is_night" or "hunger_below 10 or hostile_nearby 8"', seconds: 'number, give up after (default -1: only the condition ends it)' },
         desc: 'Stay in place until the condition becomes true. Same conditions as "when", written flat with positional args. The cheap way to wait something out.',
         fn: async (agent, a) => {
@@ -149,26 +220,36 @@ export const ACTIONS = {
         }
     },
     go_to_surface: {
+        cost: 'blocking', clears: ['drowning', 'at_position', 'block_nearby'],
         args: {},
         desc: 'Swim or climb up to the surface. Use for drowning or being stuck underground; never prompt_self for this.',
-        fn: async (agent) => await skills.goToSurface(agent.bot)
+        // skills.goToSurface pathfinds to the highest block at x,z, which is the
+        // wrong tool for a reflex: Andy sat in a one-block water hole for hours
+        // logging "Unable to reach 2,71,-11, you are 1 blocks away" because the
+        // non-destructive path out did not exist. skills.surface just holds jump
+        // and digs the ceiling, which is what getting out of water actually is.
+        fn: async (agent) => await skills.surface(agent.bot)
     },
     search_block: {
+        cost: 'blocking', clears: ['block_nearby', 'at_position', 'at_death_position'],
         args: { type: 'string block name', range: 'number (default 64, max 512)' },
         desc: 'Find and go to the nearest block of a type, searching farther than collect. Family names ("log", "<x>_ore") match every variant.',
         fn: async (agent, a) => await skills.goToNearestBlock(agent.bot, a.type, 2, Math.min(a.range ?? 64, MAX_BLOCK_SEARCH))
     },
     search_entity: {
+        cost: 'blocking', clears: ['entity_nearby', 'animal_nearby', 'at_position', 'at_death_position'],
         args: { type: 'string entity name, e.g. "cow"', range: 'number (default 64, max 512)' },
         desc: 'Find and go to the nearest entity of a type.',
         fn: async (agent, a) => await skills.goToNearestEntity(agent.bot, a.type, 2, Math.min(a.range ?? 64, 512))
     },
     collect: {
+        cost: 'blocking', clears: ['has_item', 'block_nearby'],
         args: { type: 'string block name', num: 'number (default 1)' },
         desc: 'Collect blocks of a type within 64 blocks. Family names ("log", "<x>_ore") collect any variant. If none are that close, the rule simply collects nothing -- gate it on block_nearby so it does not retry forever.',
         fn: async (agent, a) => await skills.collectBlock(agent.bot, a.type, a.num ?? 1)
     },
     deposit: {
+        cost: 'blocking', clears: ['has_item'],
         args: { item: 'string item name', num: 'number (default all)' },
         desc: 'Put items into the nearest chest (within 32 blocks). Use goto first to reach a specific chest. Family names deposit all variants: "log" is every wood\'s log.',
         fn: async (agent, a) => {
@@ -178,17 +259,57 @@ export const ACTIONS = {
                     await skills.putInChest(agent.bot, name, a.num ?? -1);
         }
     },
+    // Crafting, smelting, placing and withdrawing had no action leaf, so every
+    // rule that needed one had to spend an LLM turn asking itself to do a thing
+    // it could already name exactly. That was 15 of the 23 prompt_self rules
+    // across the shipped profiles -- each one a full generation, at a cooldown,
+    // forever. The skills behind them are the same ones !craftRecipe,
+    // !smeltItem, !placeHere and !takeFromChest call.
+    craft: {
+        cost: 'blocking', clears: ['has_item'],
+        args: { item: 'string item name', num: 'number (default 1)' },
+        desc: 'Craft an item, gathering intermediate crafts (planks, sticks) and using a nearby table if the recipe needs one. Prefer this over prompt_self for anything you can name: it costs nothing and cannot forget what it was doing.',
+        fn: async (agent, a) => await skills.craftRecipe(agent.bot, a.item, a.num ?? 1)
+    },
+    smelt: {
+        cost: 'blocking', clears: ['has_item'],
+        args: { item: 'string item name, ores spelled "raw_iron" not "iron_ore"', num: 'number (default 1)' },
+        desc: 'Smelt or cook an item in a nearby furnace. Gate on block_nearby furnace, and on having fuel.',
+        fn: async (agent, a) => await skills.smeltItem(agent.bot, a.item, a.num ?? 1)
+    },
+    place: {
+        cost: 'blocking', clears: ['block_nearby'],
+        args: { block: 'string block name' },
+        desc: 'Place one block where you are standing. Single blocks only -- a furnace, a chest, a torch, a crafting table.',
+        fn: async (agent, a) => {
+            const pos = agent.bot.entity.position;
+            return await skills.placeBlock(agent.bot, a.block, pos.x, pos.y, pos.z);
+        }
+    },
+    withdraw: {
+        cost: 'blocking', clears: ['has_item', 'has_food'],
+        args: { item: 'string item name', num: 'number (default all)' },
+        desc: 'Take items out of the nearest chest (within 32 blocks). The mirror of deposit. Family names take all variants.',
+        fn: async (agent, a) => {
+            for (const name of mc.expandBlockName(a.item))
+                if (await skills.takeFromChest(agent.bot, name, a.num ?? -1)) return true;
+            return false;
+        }
+    },
     consume: {
+        cost: 'cheap', clears: ['hunger_below', 'health_below', 'has_food', 'has_item'],
         args: { item: 'string item name, or omit to eat whatever food is in the bag' },
         desc: 'Eat or drink an inventory item.',
         fn: async (agent, a) => await skills.consume(agent.bot, a.item ?? '')
     },
     equip: {
+        cost: 'cheap', clears: ['holding'],
         args: { item: 'string item name' },
         desc: 'Equip an inventory item.',
         fn: async (agent, a) => await skills.equip(agent.bot, a.item)
     },
     equip_weapon: {
+        cost: 'cheap', clears: ['holding'],
         args: {},
         desc: 'Hold the best weapon in the inventory. Does nothing if it is already held, or if there is no weapon.',
         // "equip a weapon" spelled with the equip action needs the rule to name
@@ -199,23 +320,34 @@ export const ACTIONS = {
         fn: async (agent) => await skills.equipHighestAttack(agent.bot)
     },
     go_to_bed: {
+        cost: 'blocking', clears: ['is_night', 'at_position', 'at_death_position'],
         args: {},
         desc: 'Go to the nearest bed and sleep.',
         fn: async (agent) => await skills.goToBed(agent.bot)
     },
     say: {
+        cost: 'cheap', clears: [],
         args: { message: 'string' },
         desc: 'Say a message in chat.',
         fn: async (agent, a) => agent.openChat(a.message)
     },
     set_mode: {
+        cost: 'cheap', clears: [],
         args: { mode: 'string mode name', on: 'boolean' },
         desc: 'Turn a built-in mode on or off.',
         fn: async (agent, a) => { if (agent.bot.modes.exists(a.mode)) agent.bot.modes.setOn(a.mode, a.on); }
     },
     prompt_self: {
+        // NOT clears:'*'. Treating a prompt as able to resolve anything was an
+        // escape hatch that let exactly the bug back in: self:shelter_build_if_needed
+        // fired every 10s on is_night, and night lasts ~7 minutes, so it cancelled
+        // the agent ~40 times a night to re-issue the same instruction -- including
+        // interrupting its own attempts to dig out of the shelter it had just been
+        // told to build. Asking the LLM to handle something does not change the
+        // world; only what the LLM then does can, and the rule cannot promise that.
+        cost: 'blocking', clears: [],
         args: { message: 'string instruction to yourself' },
-        desc: 'Ask your own LLM reasoning to handle a situation the other actions cannot express. Expensive; use sparingly.',
+        desc: 'LAST RESORT. Ask your own LLM reasoning to handle a situation no other action can express. Every fire costs a full generation in money and ~30 seconds of latency during which the agent does nothing else, so a rule that fires this on a cooldown is a standing bill. If you can name the item, the block or the place, use craft / smelt / place / collect / goto / withdraw instead -- those cost nothing and cannot forget what they were doing. Use it only where the answer genuinely depends on looking around and deciding: improvising a shelter, working out what is edible in this biome.',
         fn: null // dispatched outside the action wrapper; see Rule.run
     },
 };
@@ -224,7 +356,15 @@ export const ACTIONS = {
 
 // Actions that leave the world exactly as they found it. Fine as a reaction to
 // something, useless as a standing habit.
-const AIMLESS_ACTIONS = ['move_away', 'prompt_self', 'say'];
+// set_mode belongs here too. Modes are configuration, not behaviour: the policy
+// has a "modes" block that sets them once, so a RULE that turns one on is a
+// no-op repeated forever. Deleting the agent's one always-true set_mode rule
+// taught it nothing -- it wrote eight separate ones to replace it, each
+// {"when": {"cond": "always"}, "do": [{"act": "set_mode"}]}, and together they
+// kept the arbiter executing something every tick. Sub-20ms actions
+// back-to-back look exactly like a runaway loop to the ActionManager, which
+// shut the agent down four times in twenty minutes.
+const AIMLESS_ACTIONS = ['move_away', 'prompt_self', 'say', 'set_mode'];
 
 // Does the trigger say anything about the world, or does it just mean "nothing
 // is going on"? Idleness and the *absence* of something are the resting state,
@@ -233,7 +373,11 @@ const AIMLESS_ACTIONS = ['move_away', 'prompt_self', 'say'];
 // the bot in circles and stomped every action it tried to start.
 function hasPositiveTrigger(when, negated = false) {
     if (!when) return false;
-    if (when.all || when.any) return (when.all ?? when.any).some(c => hasPositiveTrigger(c, negated));
+    // Runs before validation now, so a malformed branch must not throw.
+    if (when.all || when.any) {
+        const branches = when.all ?? when.any;
+        return Array.isArray(branches) && branches.some(c => hasPositiveTrigger(c, negated));
+    }
     if (when.not) return hasPositiveTrigger(when.not, !negated);
     return !negated && !['is_idle', 'always'].includes(when.cond);
 }
@@ -254,12 +398,18 @@ function hasPositiveTrigger(when, negated = false) {
 // ponytail: still a hard cap. Chunk the scan across ticks before going wider.
 const MAX_BLOCK_SEARCH = 128;
 
+// The fastest cooldown any hand-written rule uses is the drowning reflex at 5s.
+const MIN_INTERRUPT_COOLDOWN = 5;
 const RETREAT_ACTIONS = ['move_away', 'flee'];
 const PROXIMITY_CONDS = ['hostile_nearby', 'entity_nearby'];
 
 function triggersOnProximity(when) {
     if (!when) return false;
-    if (when.all || when.any) return (when.all ?? when.any).some(triggersOnProximity);
+    // Runs before validation now, so a malformed branch must not throw.
+    if (when.all || when.any) {
+        const branches = when.all ?? when.any;
+        return Array.isArray(branches) && branches.some(triggersOnProximity);
+    }
     if (when.not) return false; // "no mob nearby" is handled by hasPositiveTrigger
     return PROXIMITY_CONDS.includes(when.cond);
 }
@@ -285,8 +435,53 @@ function nightLead(spec) {
     return spec.cond === 'is_night' ? (spec.lead ?? 0) : -1;
 }
 
+
+// Args that name something the world has to actually contain. A rule naming a
+// thing the registry has never heard of does not error -- it silently never
+// matches -- so this is the one class of mistake the validator has to catch by
+// looking things up rather than by reasoning about shape.
+// "weapon" is a family this module defines rather than a registry entry, and
+// entity names are not items, so both are exempt.
+const NAMED_THINGS = {
+    has_item: 'item', block_nearby: 'name',
+    collect: 'type', deposit: 'item', withdraw: 'item',
+    craft: 'item', smelt: 'item', place: 'block', equip: 'item',
+    search_block: 'type',
+};
+const NAME_EXEMPT = new Set(['weapon']);
+
+// Walks a condition tree and a do-list, returning a complaint about the first
+// name that means nothing here.
+function unknownName(rule) {
+    const check = (kind, name) => {
+        if (typeof name !== 'string' || NAME_EXEMPT.has(name) || mc.isKnownName(name)) return null;
+        return `Rule "${rule.name}": ${kind} names "${name}", which does not exist in this world -- ` +
+            'no item or block matches it, so the rule can never fire. Check the spelling against what ' +
+            'the server actually calls it (modded names are namespaced, like "frostiful:chillager"), ' +
+            'and remember that "sword" is not a family name: use "weapon" for any sword or axe.';
+    };
+    const walkCond = (spec) => {
+        if (!spec || typeof spec !== 'object') return null;
+        if (Array.isArray(spec.all)) return spec.all.map(walkCond).find(Boolean) ?? null;
+        if (Array.isArray(spec.any)) return spec.any.map(walkCond).find(Boolean) ?? null;
+        if (spec.not) return walkCond(spec.not);
+        const arg = NAMED_THINGS[spec.cond];
+        return arg ? check(spec.cond, spec[arg]) : null;
+    };
+    const cond_err = walkCond(rule.when);
+    if (cond_err) return cond_err;
+    for (const step of rule.do ?? []) {
+        const arg = NAMED_THINGS[step?.act];
+        const err = arg ? check(step.act, step[arg]) : null;
+        if (err) return err;
+    }
+    return null;
+}
+
 export function validatePolicy(policy) {
     if (!policy || typeof policy !== 'object') return 'Policy must be a JSON object.';
+    if (policy.goal !== undefined && (typeof policy.goal !== 'string' || !policy.goal.trim()))
+        return 'A policy "goal" must be a non-empty string.';
     if (policy.modes) {
         for (let m in policy.modes)
             if (typeof policy.modes[m] !== 'boolean') return `modes.${m} must be boolean.`;
@@ -328,19 +523,242 @@ export function validatePolicy(policy) {
         if (!hasPositiveTrigger(rule.when) && rule.do.every(step => AIMLESS_ACTIONS.includes(step.act)))
             return `Rule "${rule.name}" fires whenever nothing is happening but only does ${rule.do.map(s => s.act).join('/')}. ` +
                 'Doing nothing is the agent\'s resting state, so this rule would fire forever and starve every real action. ' +
-                'Give it a trigger that is actually about the world, or an action that makes progress.';
+                'Give it a trigger that is actually about the world, or an action that makes progress.' +
+                (rule.do.every(s => s.act === 'set_mode')
+                    ? ' Modes are configuration, not a reflex: put them in the policy\'s "modes" block, which sets them once.'
+                    : '');
         if (triggersOnNight(rule.when) && rule.do.every(step => step.act === 'goto'))
             return `Rule "${rule.name}" walks somewhere every time it fires and it fires all night, because ` +
                 'arriving does not make it stop being night. The agent will re-path to the same spot every ' +
                 `${rule.cooldown ?? 3} seconds until morning. Add {"act": "stay", "until": "not is_night"} after ` +
                 'the goto so it parks there instead.';
+        // "Shelter" that is really standing still in the open until the mob leaves.
+        // Waiting cannot make a mob go away, so the stay only ends when the mob
+        // wanders off on its own -- and the rule fires again the moment it returns.
+        for (const step of rule.do) {
+            if (step.act !== 'stay' || typeof step.until !== 'string') continue;
+            const waits_out_mobs = /\bnot\s+(hostile_nearby|entity_nearby)\b/.test(step.until);
+            if (waits_out_mobs && !rule.do.some(s => RETREAT_ACTIONS.includes(s.act)))
+                return `Rule "${rule.name}" waits until no mob is nearby but never moves, so it stands still ` +
+                    'in the open until the mob happens to wander off. Standing still does not make a mob leave. ' +
+                    'Either add {"act": "flee"} before the stay, or end the stay on something the agent can ' +
+                    'actually reach, like "not is_night".';
+        }
+        // Checked after the more specific diagnoses above, so a rule that is really
+        // the cowardice mode is told that rather than being told to slow down.
+        // Andy wrote himself a pinned interrupts:all rule with cooldown 1: its
+        // trigger was "night OR a mob within 16", so it re-fired every second in
+        // broad daylight and cancelled every action he started, the sheep search
+        // included. A rule that cancels everything must give what it cancelled time
+        // to make progress. 5s is the fastest any hand-written rule here uses --
+        // the drowning reflex -- so this rejects runaway rules, not urgent ones.
         if (triggersOnProximity(rule.when) && rule.do.every(step => RETREAT_ACTIONS.includes(step.act)))
             return `Rule "${rule.name}" retreats whenever a mob is nearby, which is exactly what the built-in ` +
                 'cowardice mode does, and it does it better: move_away picks a random direction, so the bot can ' +
                 'land back inside the same radius and retreat again forever. Set {"cowardice": true} in "modes" ' +
                 'instead, and only write a rule here if it does something cowardice cannot.';
+        if (rule.interrupts === 'all' && (rule.cooldown ?? 3) < MIN_INTERRUPT_COOLDOWN)
+            return `Rule "${rule.name}" cancels whatever the agent is doing and does it every ` +
+                `${rule.cooldown ?? 3} seconds. Nothing else can ever finish. An "interrupts": "all" rule needs ` +
+                `a cooldown of at least ${MIN_INTERRUPT_COOLDOWN} seconds; use "idle" if it is not urgent enough for that.`;
+    }
+    for (const rule of policy.rules) {
+        const loop = livelockRisk(rule);
+        if (loop) return loop;
+        const unknown = unknownName(rule);
+        if (unknown) return unknown;
+    }
+    const dupe = findDuplicateRule(policy.rules);
+    if (dupe) return dupe;
+    return null;
+}
+
+// The livelock that kept reappearing, in three disguises: flee+consume with no
+// food, go_to_bed with no bed, stay-until-the-mob-leaves. Every one was a rule
+// that cancels everything (interrupts: all), runs something long, and cannot
+// change the thing that set it off -- so it fires, destroys whatever was running,
+// achieves nothing, and fires again on the next cooldown.
+//
+// Cheap actions are exempt, and that exemption is the whole reason the actions
+// carry a "cost". hold_weapon_when_threatened triggers on hostile_nearby and
+// equips a weapon, which does not make the mob leave either -- but equipping
+// finishes in a tick and re-running it when the weapon is already held does
+// nothing, so firing it every 6 seconds costs nothing and interrupts nothing
+// real. go_to_bed is a journey: cancelled halfway it has achieved nothing, and a
+// journey that restarts every cooldown never arrives.
+function livelockRisk(rule) {
+    if (rule.interrupts !== 'all') return null;          // idle rules wait their turn by definition
+    const blocking = rule.do.filter(s => ACTIONS[s.act]?.cost === 'blocking');
+    if (blocking.length === 0) return null;              // cheap prep is free to repeat
+    const clears = new Set();
+    for (const step of rule.do) {
+        const c = ACTIONS[step.act]?.clears;
+        if (c === '*') return null;                      // prompt_self delegates to general reasoning
+        for (const cond of c ?? []) clears.add(cond);
+    }
+    const unclearable = [...new Set(unstoppable(rule.when, clears))];
+    if (unclearable.length === 0) return null;
+    const acts = blocking.map(s => s.act).join(', ');
+    return `Rule "${rule.name}" fires on ${unclearable.join(' / ')}, cancels whatever the agent is doing, and ` +
+        `runs ${acts} -- none of which can change ${unclearable.length > 1 ? 'those conditions' : 'that condition'}. ` +
+        'So it interrupts, achieves nothing, and fires again next cooldown, forever. Either add an action that ' +
+        `actually resolves ${unclearable.join(' / ')}, gate the rule on being able to (has_food, has_item), or ` +
+        'make it "interrupts": "idle" so it waits for a gap instead of taking one.';
+}
+
+// Conditions that can keep this rule firing no matter what it does. Empty means
+// the rule can stop itself.
+//   any: any single branch re-fires it, so EVERY branch must be answerable.
+//   all: needs every branch true, so clearing ONE branch is enough to stop it.
+function unstoppable(when, clears) {
+    if (!when || typeof when !== 'object') return [];
+    if (when.not) return unstoppable(when.not, clears);
+    if (Array.isArray(when.any)) return when.any.flatMap(w => unstoppable(w, clears));
+    if (Array.isArray(when.all)) {
+        const branches = when.all.map(w => unstoppable(w, clears));
+        return branches.some(b => b.length === 0) ? [] : branches.flat();
+    }
+    // is_idle stops the moment the rule acts; always is caught by its own check.
+    if (['is_idle', 'always'].includes(when.cond)) return [];
+    return clears.has(when.cond) ? [] : [when.cond];
+}
+
+// Numbers are tuning, names are meaning. Two rules that watch the same conditions
+// and take the same actions are the same rule whether the range is 16 or 20, but
+// "deposit cobblestone when you have 128" and "deposit cooked_beef when you have
+// 24" are genuinely different jobs. So the signature keeps strings and drops
+// numbers -- and keeps "interrupts", which is what separates the emergency
+// version of a rule from the opportunistic one (eat_when_starving vs
+// eat_before_hungry are both hunger_below -> consume, and both belong).
+function ruleShape(node) {
+    if (Array.isArray(node)) return node.map(ruleShape);
+    if (!node || typeof node !== 'object') return node;
+    const out = {};
+    for (const k of Object.keys(node).sort()) {
+        const v = node[k];
+        if (typeof v === 'number' || typeof v === 'boolean') continue;
+        out[k] = ruleShape(v);
+    }
+    return out;
+}
+
+// Told to shelter at night, the policy compiler wrote night_mobs_go_to_bed_or_shelter
+// AND low_light_shelter_priority: same trigger, same action, ranges 20 and 16.
+// Both fired, both cancelled whatever was running, and neither did anything the
+// other did not. Rejecting the pair is also the honest answer to "the name says
+// night but it fired at noon" -- one rule can be named for what it does.
+function findDuplicateRule(rules) {
+    const seen = new Map();
+    for (const rule of rules) {
+        const sig = JSON.stringify({
+            interrupts: rule.interrupts ?? 'idle',
+            when: ruleShape(rule.when),
+            do: ruleShape(rule.do),
+        });
+        const first = seen.get(sig);
+        if (first)
+            return `Rules "${first}" and "${rule.name}" are the same rule: same trigger, same actions, ` +
+                'differing only in numbers. Both will fire and both will interrupt whatever is running, ' +
+                'for no extra effect. Keep one, with whichever thresholds you meant, and delete the other.';
+        seen.set(sig, rule.name);
     }
     return null;
+}
+
+// "a mob is near, so retreat" is the cowardice mode written out longhand, and
+// the compiler kept writing it: a third of every failed compile, three LLM
+// attempts each, because the instruction that prompted it ("keep away from
+// zombies") really does mean cowardice and the model has nowhere else to put
+// it. The rewrite is mechanical and the validator already knows it, so do it
+// here rather than spend three round trips asking.
+// A third of the compiler's failures were the model losing count of its own
+// braces mid-rule -- never truncation, always a stray "}" or an array element
+// with nothing opening it. Asking again fixed it only sometimes, because it is
+// a sampling accident, not a reasoning error. Handing the backend a schema
+// makes the malformed token unreachable instead of merely unwelcome. This
+// covers shape only; which conditions and actions exist is validatePolicy's
+// job, and keeping that out of here keeps the grammar small.
+export const POLICY_SCHEMA = {
+    type: 'object',
+    properties: {
+        modes: { type: 'object' },
+        goal: { type: 'string' },
+        rules: {
+            type: 'array',
+            items: {
+                type: 'object',
+                properties: {
+                    name: { type: 'string' },
+                    description: { type: 'string' },
+                    when: { type: 'object' },
+                    do: { type: 'array', items: { type: 'object' } },
+                    interrupts: { type: 'string', enum: ['all', 'idle'] },
+                    cooldown: { type: 'number' },
+                    pinned: { type: 'boolean' }
+                },
+                required: ['name', 'description', 'when', 'do']
+            }
+        }
+    },
+    required: ['rules']
+};
+
+export function repairPolicy(policy) {
+    if (!Array.isArray(policy?.rules)) return policy;
+    const isCowardice = (r) => triggersOnProximity(r?.when)
+        && Array.isArray(r.do) && r.do.length > 0
+        && r.do.every(step => RETREAT_ACTIONS.includes(step?.act));
+    const isAimless = (r) => Array.isArray(r?.do) && r.do.length > 0
+        && !hasPositiveTrigger(r.when)
+        && r.do.every(step => AIMLESS_ACTIONS.includes(step?.act));
+    let cowardice = false, changed = false;
+    const rules = [];
+    for (let rule of policy.rules) {
+        if (isCowardice(rule)) { cowardice = changed = true; continue; }
+        // Nothing here can invent the world-facing trigger this rule needs, and
+        // a rule that fires forever on "nothing is happening" starves every real
+        // action. Dropping it costs one instruction; keeping it cost the whole
+        // policy, since one such rule rejected all the others with it. The agent
+        // is told what it ended up with, so the loss is visible rather than silent.
+        if (isAimless(rule)) { changed = true; continue; }
+        // A rule that cancels everything to run something which cannot end its
+        // own trigger is the livelock livelockRisk() describes, and the third
+        // fix it offers is the one that needs no judgement: let the rule wait
+        // for a gap instead of taking one. That keeps the rule the instruction
+        // asked for, where rejecting the policy kept nothing.
+        if (Array.isArray(rule.do) && livelockRisk(rule)) {
+            rule = { ...rule, interrupts: 'idle' };
+            changed = true;
+        }
+        // An interrupting rule that repeats faster than the floor never lets
+        // what it cancelled finish. The floor is the fix and the whole fix.
+        if (rule.interrupts === 'all' && (rule.cooldown ?? 3) < MIN_INTERRUPT_COOLDOWN) {
+            rule = { ...rule, cooldown: MIN_INTERRUPT_COOLDOWN };
+            changed = true;
+        }
+        rules.push(rule);
+    }
+    // Same trigger, same actions, different numbers: the second one adds nothing
+    // and interrupts as much as the first. Keeping the earlier one matches what
+    // findDuplicateRule asks for, and is done last so the repairs above (which
+    // can change "interrupts") settle before anything is compared.
+    const seen = new Set();
+    const deduped = rules.filter(rule => {
+        const sig = JSON.stringify({
+            interrupts: rule.interrupts ?? 'idle',
+            when: ruleShape(rule.when),
+            do: ruleShape(rule.do),
+        });
+        if (seen.has(sig)) { changed = true; return false; }
+        seen.add(sig);
+        return true;
+    });
+    if (!changed) return policy;
+    return {
+        ...policy,
+        modes: cowardice ? { ...policy.modes, cowardice: true } : policy.modes,
+        rules: deduped,
+    };
 }
 
 export function validateCondition(spec) {
@@ -407,6 +825,13 @@ export function evalCondition(spec, agent) {
 
 // ---------- rule runtime ----------
 
+// A prompt_self costs a whole LLM turn, and six rules could dispatch one in the
+// same arbiter pass -- each of them a "new message" that discarded the previous
+// one's half-finished answer. The arbiter walks rules in priority order (pinned
+// first, then layer), so the first one to ask in a pass gets it and the rest
+// wait for their own cooldown to bring them back.
+const PROMPT_TICK_MS = 300; // the arbiter's update interval
+
 export class Rule {
     constructor(spec) {
         this.spec = spec;
@@ -435,7 +860,17 @@ export class Rule {
         // the cooldown gates evaluation too.
         if (now - this.last_eval < this.cooldown * this.backoff) return false;
         this.last_eval = now;
-        return evalCondition(this.spec.when, agent);
+        const fires = evalCondition(this.spec.when, agent);
+        // Decay, not reset. Resetting to 1 on a single false evaluation looked
+        // right -- the situation is over, start fresh -- but it silently undid
+        // the backoff for exactly the rules that need it most: the ones whose
+        // trigger flaps. hold_weapon_when_threatened fires on a mob being
+        // nearby, so the mob stepping out of range for one tick wiped the
+        // penalty, and it went on firing every few seconds at an inventory with
+        // no weapon in it. Halving recovers a genuinely resolved situation in a
+        // few evaluations while a flapping one keeps most of what it earned.
+        if (!fires) this.backoff = Math.max(1, this.backoff / 2);
+        return fires;
     }
 
     // Called by the ModeController arbiter via the same execute() path as
@@ -444,10 +879,21 @@ export class Rule {
     // don't re-enter the ActionManager while it is executing.
     async update(agent, execute) {
         if (!this.eligible(agent)) return;
-        this.last_fire = Date.now();
         const prompts = [];
         const steps = this.spec.do.filter(s => s.act !== 'prompt_self');
         this.spec.do.filter(s => s.act === 'prompt_self').forEach(s => prompts.push(s.message));
+        // Only steps go through execute(), the arbiter that honours "interrupts".
+        // A rule whose whole "do" is prompt_self has no steps, so its prompts
+        // used to dispatch straight into whatever was running -- every one of
+        // the 12 prompt-only rules declared "interrupts": "idle" and none of
+        // them meant it. Honour it here, where the arbiter cannot.
+        if (steps.length === 0 && this.interrupts.length === 0 && !agent.isIdle()) return;
+        if (prompts.length > 0) {
+            const now = Date.now();
+            if (now - (agent._last_prompt_dispatch ?? 0) < PROMPT_TICK_MS) return;
+            agent._last_prompt_dispatch = now;
+        }
+        this.last_fire = Date.now();
         if (steps.length > 0) {
             // A rule whose condition it cannot change and whose action always
             // fails re-fires forever and keeps the agent busy, which starves the
@@ -458,6 +904,12 @@ export class Rule {
             // Skills return false when they accomplish nothing, so double the
             // rule's cooldown each time that happens and reset on any success.
             let progress = false;
+            // A "stay until dawn" that the 2-minute watchdog kills at 120s is
+            // not a night's shelter -- it is a nap. sleep_at_night timed out 431
+            // times in one log, re-firing every 60s cooldown, so the bot bounced
+            // awake in the open all night. A stay carries its own exit condition,
+            // so the rule that contains one gets no watchdog.
+            const has_exit = steps.some(s => s.act === 'stay' && s.until);
             await execute(this, agent, async () => {
                 for (let step of steps) {
                     if (agent.bot.interrupt_code) return;
@@ -474,11 +926,18 @@ export class Rule {
                         skills.log(agent.bot, `Rule '${this.spec.name}' step ${step.act} failed: ${err.message}`);
                     }
                 }
-            });
+            }, has_exit ? 0 : undefined);
             // ponytail: capped at ~17 min so a rule that starts working again is
             // not dead forever. Per-step backoff if one bad step ever masks a
             // good one in the same rule.
             this.backoff = progress ? 1 : Math.min(this.backoff * 2, 200);
+        } else {
+            // Nothing here reports progress, so the step backoff above never
+            // applies and a prompt-only rule repeats at its cooldown forever --
+            // one fired 959 times in a session. Asking again while the trigger
+            // is still true means the last ask did not work, so slow down.
+            // eligible() resets this the moment the trigger goes false.
+            this.backoff = Math.min(this.backoff * 2, 200);
         }
         for (let message of prompts)
             agent.handleMessage('system', `(POLICY RULE '${this.spec.name}') ${message}`);
@@ -491,25 +950,44 @@ function policyPath(agentName) {
     return `./bots/${agentName}/policy.json`;
 }
 
-// Standing instructions live in three layers so the agent's own notes can never
-// wipe out a person's. It replaced its survival policy with a note about
+// Standing instructions live in two runtime layers so the agent's own notes can
+// never wipe out a person's. It replaced its survival policy with a note about
 // preferred planks twice in one hour; the second time it died 26 times in 6
 // minutes, respawning into zombies with no rule left telling it to flee or
-// shelter. Self-issued writes are confined to the "self" layer, which is
-// composed at the lowest priority and never touches "base" or "active", so
-// there is nothing for a note-to-self to overwrite.
-export const LAYERS = ['base', 'active', 'self'];
+// shelter. Self-issued writes are still confined to the "self" layer and never
+// touch "active", so there is nothing for a note-to-self to overwrite.
+//
+// "active" is what a person set: one policy generated by merging a base profile
+// with any number of attribute profiles (see generatePolicy). "self" is what the
+// agent worked out for itself, and it now sits on TOP -- the agent watching its
+// own deaths knows things the profile author did not. A person still has the
+// last word through pinning: pinned rules outrank unpinned ones from any layer.
+// Among pinned rules RULE_ORDER decides, which now means a self pin outranks a
+// person's pin; that is accepted, since only survival rules should be pinned.
+export const LAYERS = ['active', 'self'];
 
 // Modes later in this list win; rules earlier in the composed list win.
-const MODE_ORDER = ['self', 'base', 'active'];
-const RULE_ORDER = ['active', 'base', 'self'];
+const MODE_ORDER = ['active', 'self'];
+const RULE_ORDER = ['self', 'active'];
 
 // The agent appends to its own layer unprompted. Without a cap the joined
 // source grows until the compile prompt is mostly stale notes.
 export const SELF_SOURCE_CAP = 8;
 
 function emptyState() {
-    return { layers: {}, locked: false };
+    return { layers: {}, locked: false, compose: null };
+}
+
+// The active layer is generated, so remember what it was generated from:
+// {base, attributes, generated_at}. Without it "regenerate with one more
+// attribute" would mean retyping the whole recipe every time.
+function migrateBaseLayer(layers) {
+    if (!layers?.base) return layers ?? {};
+    const { base, ...rest } = layers;
+    // Three layers became two. The old active outranked base, so when both
+    // exist the base is what loses; alone, it simply becomes the active policy.
+    if (!rest.active) rest.active = base;
+    return rest;
 }
 
 // Old flat files were {source, policy, user_set}. A person's went to what is
@@ -530,7 +1008,12 @@ export function loadPolicyState(agentName) {
     try {
         if (!existsSync(policyPath(agentName))) return emptyState();
         const saved = JSON.parse(readFileSync(policyPath(agentName), 'utf8'));
-        if (saved?.layers) return { layers: saved.layers ?? {}, locked: !!saved.locked };
+        if (saved?.layers) {
+            const layers = migrateBaseLayer(saved.layers);
+            for (const layer of Object.keys(layers))
+                if (!LAYERS.includes(layer)) delete layers[layer];
+            return { layers, locked: !!saved.locked, compose: saved.compose ?? null };
+        }
         if (saved?.policy) return migrateFlat(saved);
         return emptyState();
     } catch (err) {
@@ -544,6 +1027,7 @@ export function savePolicyState(agentName, state) {
     writeFileSync(policyPath(agentName), JSON.stringify({
         layers: state.layers ?? {},
         locked: !!state.locked,
+        compose: state.compose ?? null,
     }, null, 2));
 }
 
@@ -586,7 +1070,38 @@ export function composePolicy(state) {
         for (let rule of state.layers?.[layer]?.policy?.rules ?? [])
             rules.push({ ...rule, name: `${layer}:${rule.name}`, _rank: RULE_ORDER.indexOf(layer) });
     rules.sort((a, b) => (!!b.pinned - !!a.pinned) || (a._rank - b._rank));
-    return { modes, rules: rules.map(({ _rank, ...rule }) => rule) };
+    return { modes, rules: dedupeRules(rules).map(({ _rank, ...rule }) => rule) };
+}
+
+// The agent re-states the same standing instruction in different words, and each
+// recompile names the result something new. Andy accumulated pinned_night_hostile_shelter,
+// night_or_hostile_hold_position, hostile_night_safe_hold, cold_night_shelter_hold...
+// all triggered by "night or a mob", all "interrupts": "all". Every one of them
+// preempted the others (and the model's own !stayUntil) on its own cooldown, so
+// the bot spent the night restarting the same reflex instead of performing it.
+//
+// Rules are already in priority order here, so of two rules that do the same
+// thing on the same trigger the first one keeps it and the rest are dropped --
+// including across layers, since a self rule restating an active one is the same
+// waste.
+// ponytail: signature match only. A reworded trigger ("is_night" vs "is_night
+// lead 1500") or a reworded action still slips through; catching those needs the
+// compiler to reconcile meaning, which it already tries to do from the joined
+// source. Rules that share a trigger but act differently are left alone -- they
+// still preempt each other, but that is the arbiter's problem, and deleting a
+// person's pinned rule on a guess is worse than the thrash.
+function dedupeRules(rules) {
+    const seen = new Map(); // signature -> the rule that claimed it
+    return rules.filter(rule => {
+        const signature = JSON.stringify([rule.when ?? null, rule.do ?? []]);
+        const winner = seen.get(signature);
+        if (winner) {
+            console.log(`policy: dropped rule "${rule.name}" -- identical to "${winner.name}"`);
+            return false;
+        }
+        seen.set(signature, rule);
+        return true;
+    });
 }
 
 export function describePolicyState(state) {
@@ -620,15 +1135,21 @@ function profilePath(profileName) {
     return `./policies/${profileName}.json`;
 }
 
-export function saveProfile(profileName, { source, policy, layer_hint }) {
+// A profile is either the "base" of a policy -- a whole compiled stance the
+// agent can run on its own -- or an "attribute" layered on top of one. An
+// attribute may be nothing but a sentence ("never dig straight down"); it is
+// the merge that turns it into rules, so it does not need a policy of its own.
+export function saveProfile(profileName, { source, policy, kind, goal }) {
     const path = profilePath(profileName);
     if (!path) throw new Error(`Invalid profile name "${profileName}". Use letters, numbers, - and _ only.`);
     mkdirSync('./policies', { recursive: true });
-    writeFileSync(path, JSON.stringify({
+    const data = {
         source: Array.isArray(source) ? source : [source],
         policy,
-        ...(layer_hint ? { layer_hint } : {}),
-    }, null, 2));
+        kind: kind === 'attribute' ? 'attribute' : 'base',
+    };
+    if (typeof goal === 'string' && goal.trim()) data.goal = goal.trim();
+    writeFileSync(path, JSON.stringify(data, null, 2));
 }
 
 export function loadProfile(profileName) {
@@ -636,7 +1157,9 @@ export function loadProfile(profileName) {
         const path = profilePath(profileName);
         if (!path || !existsSync(path)) return null;
         const data = JSON.parse(readFileSync(path, 'utf8'));
-        if (!data?.policy) return null;
+        // Only a profile with neither rules nor words is nothing at all.
+        if (!data?.policy && !data?.source?.length) return null;
+        data.kind = data.kind === 'attribute' ? 'attribute' : 'base';
         if (typeof data.source === 'string') data.source = [data.source];
         data.source = data.source ?? [];
         return data;
@@ -653,7 +1176,7 @@ export function listProfiles() {
             const name = f.slice(0, -5);
             const data = loadProfile(name);
             if (!data) return null;
-            return { name, layer_hint: data.layer_hint ?? 'active', summary: profileSummary(data) };
+            return { name, kind: data.kind, summary: profileSummary(data) };
         }).filter(Boolean);
     } catch (err) {
         console.error('Failed to list policy profiles:', err);
@@ -663,7 +1186,7 @@ export function listProfiles() {
 
 function profileSummary(data) {
     const text = data.source.join('; ')
-        || (data.policy.rules ?? []).map(r => r.description ?? r.name).join('; ');
+        || (data.policy?.rules ?? []).map(r => r.description ?? r.name).join('; ');
     return text.length > 120 ? text.slice(0, 117) + '...' : text;
 }
 
@@ -690,18 +1213,25 @@ Rule format:
 {"name": "snake_case_id", "description": "short human summary", "when": <condition>, "do": [<actions>], "interrupts": "all"|"idle", "cooldown": <seconds, default 3>, "pinned": <true only for rules that keep the agent alive>}
 - "interrupts": "all" = rule fires even while the agent is busy (reflexes: fleeing, eating when dying). "idle" = only fires when the agent has nothing to do (opportunistic: collecting, exploring).
 - "pinned": true lifts a rule above every unpinned rule, including ones from higher-priority layers, so a job the agent is given cannot crowd out the reflex that keeps it alive. Pin ONLY rules that prevent death (fleeing a losing fight, eating before starving, surfacing when drowning, avoiding a mob that killed it). Never pin gathering, building, exploring or anything else that is merely useful: pinning everything ranks nothing.
-- Use "prompt_self" only for situations no other action can express.
+- prompt_self is the most expensive thing you can write. Every fire is a paid LLM generation and ~30 seconds during which the agent does nothing else, repeating on its cooldown for as long as the trigger holds. Before you write one, check whether the instruction names a thing: "craft a sword", "cook the meat", "put down a furnace", "get bread from the chest" are craft / smelt / place / withdraw, and cost nothing. A profile that had 23 prompt_self rules came down to 4 this way with no behaviour lost. Reach for it only when the answer depends on looking around and judging -- improvising a shelter out of whatever is underfoot, working out what is edible in this biome -- and give it the longest cooldown the situation tolerates.
+- Do not write a rule whose only trigger is is_idle and whose only action is prompt_self ("take stock", "review your situation", "plan ahead"). It has no world trigger, so it fires forever on a timer, and the agent already reasons on its own between actions. That is a bill for nothing.
 - A rule must react to something in the world. "when the agent is idle" and "when nothing bad is nearby" are its resting state, so a rule gated only on those fires forever: if it just wanders (move_away) or re-prompts (prompt_self), the agent walks in circles and every real action it starts is interrupted. Vague instructions like "move freely when safe" or "keep a low profile" are not rules -- either drop them or express them as a mode toggle.
 - Do NOT write a rule that answers "a mob is nearby" with only flee/move_away. That is the cowardice mode -- set {"cowardice": true} in "modes". A rule that retreats on proximity re-triggers from wherever it lands and loops forever.
 - Policies are STANDING behavior only (reflexes, safety, recurring habits). Recurring, condition-gated routines ("at night do X", "keep food stocked") ARE standing behavior; one-off tasks (e.g. "build Y", "go do Z once") are not — those are handled by the separate goal system and would go stale here. If the instructions mix standing behavior with a one-off task, compile only the standing behavior.
 - Waiting something out ("stay until morning", "hide until safe") is the "stay" action with an "until" condition, not prompt_self. A rule gated on is_night whose only action is goto is wrong: arriving does not end the night, so it re-paths every cooldown until morning. Follow the goto with a stay.
+- A stay's "until" is NOT the JSON condition format. It is a flat string: condition names with positional arguments, joined by a single "and" or "or" (never both), each optionally prefixed with "not". No parentheses, no JSON, no braces. Valid: "not is_night 1500", "hunger_below 10 or hostile_nearby 8", "not is_night 1500 or hostile_nearby 8". Invalid and rejected: parenthesised expressions, a nested JSON condition object, and the empty string (a stay with no exit parks the agent forever).
+- An "interrupts": "all" rule must be able to END what set it off. Actions are marked cheap or blocking. A blocking action (goto, go_to_bed, collect, flee, stay, search_*) takes seconds to minutes and achieves nothing if cancelled halfway, so a rule that runs one on a trigger it cannot clear interrupts everything, achieves nothing, and fires again next cooldown forever. Answering "a mob is nearby" with go_to_bed is the mistake; answering it with flee is not. Cheap actions (equip_weapon, say, set_mode, consume) are exempt: they finish in a tick and re-running them changes nothing, which is why "hostile_nearby -> equip_weapon" is fine even though equipping does not remove the mob. With an "any" trigger EVERY branch must be answerable, since any one of them fires the rule alone; with "all", answering one branch is enough. If you cannot answer the trigger, gate the rule (has_food, has_item) or make it "idle".
+- An "interrupts": "all" rule cancels whatever the agent is doing every time it fires, so its cooldown must be at least 5 seconds or nothing else ever finishes. A rule written as "night OR a mob nearby", pinned, interrupts all, cooldown 1 fired every second in daylight and cancelled every action the agent started. If it is not urgent enough for a 5 second cooldown, it is an "idle" rule.
+- Never end a stay on "not hostile_nearby". Standing still does not make a mob leave, so the agent waits in the open until it wanders off and the rule fires again the moment it comes back. Flee first, then stay on something the agent's own actions can reach ("not is_night"), or break the stay ON the mob ("... or hostile_nearby 8") so it stops waiting and deals with it.
+- Name a rule after everything that triggers it. A rule called night_shelter whose trigger is "night OR a mob within 16" fires at noon, and whoever reads the name cannot tell why. If the name only fits half the trigger, either split it into two rules or rename it.
 - Storing items in a chest is goto the chest position followed by deposit — goto alone walks there and does nothing.
-- Negation wraps a condition, it is not a condition itself: {"not": {"cond": "is_night"}} is correct, {"cond": "not", ...} is not valid and will be rejected. Same for {"all": [...]} and {"any": [...]}.
+- "not", "all" and "any" are not conditions, they are the key that does the grouping. Correct: {"not": {"cond": "is_night"}}, {"any": [{"cond": "hostile_nearby", "range": 12}, {"cond": "is_night"}]}, {"all": [...]}. Rejected every time: {"cond": "not", ...}, {"cond": "any", ...}, {"cond": "all", ...}. The word after "cond" is always one of the condition names listed above and never one of these three.
 - Resources are often not right next to the agent. A bare collect only reaches 64 blocks, so on empty terrain it harvests nothing every time it fires and the agent looks frozen. Block searches cannot reach past 64 blocks, so a gathering rule for something that is not in this biome will simply collect nothing every time it fires. Gate gathering rules on block_nearby or animal_nearby so they only run when the resource is actually there, and prefer resources you can see over ones you hope exist.
 - "underwater" or "drowning" is the "drowning" condition paired with the "go_to_surface" action. Do not use block_nearby water for this: it is also true when standing safely on the shore, so the rule fires over and over.
 - "consume" only works on food the player can actually eat (bread, cooked_beef, cooked_porkchop, cooked_chicken, apple, carrot, potato, sweet_berries). Raw materials like wheat, seeds or grass are not edible — do not list them.
 
 Respond ONLY with a JSON object: {"modes": {...}, "rules": [...]}. No explanation, no markdown fences.
+Emit it as compact JSON on a single line: no indentation, no line breaks, no space after ":" or ",". A merged policy pretty-printed runs about 40% longer than the same thing minified, which is the difference between fitting in the reply and being truncated mid-rule.
 
 User instructions: $INSTRUCTIONS`;
 
@@ -710,15 +1240,21 @@ export async function compilePolicy(agent, instructions, activeGoal = null) {
         .replace('$REGISTRY', registryDocs())
         .replace('$INSTRUCTIONS', instructions);
     if (activeGoal)
-        prompt += `\n\nThe agent also has this active goal, currently driven by an expensive LLM loop: "${activeGoal}". If your rules fully express the goal as standing behavior, add "covers_goal": true to the JSON so the loop can be stopped; if the goal needs ongoing reasoning the rules cannot provide, add "covers_goal": false.`;
+        prompt += `\n\nThe agent also has this active goal, which keeps running alongside these rules: "${activeGoal}". Write rules that support it and stay out of its way -- do not try to replace it with standing behavior.`;
     let lastErr = null;
-    for (let attempt = 0; attempt < 2; attempt++) {
+    // 3, not 2: a truncated reply ("Expected double-quoted property name at
+    // position 298") is a coin flip, not a reasoning error, and burning the
+    // agent's turn on it sent it back to retype the same !policy eight times
+    // until the repeated-command blocker cut it off.
+    for (let attempt = 0; attempt < 3; attempt++) {
         await agent.prompter.checkCooldown();
         const req = lastErr ? prompt + `\n\nYour previous attempt was invalid: ${lastErr}\nFix it and respond with only the corrected JSON.` : prompt;
-        let res = await agent.prompter.chat_model.sendRequest([], req);
+        let res = await agent.prompter.chat_model.sendRequest([], req, '***', {
+            response_format: { type: 'json_schema', json_schema: { name: 'policy', schema: POLICY_SCHEMA } }
+        });
         try {
             const cleaned = res.replace(/```json|```/g, '').trim();
-            const policy = JSON.parse(cleaned.substring(cleaned.indexOf('{'), cleaned.lastIndexOf('}') + 1));
+            const policy = repairPolicy(JSON.parse(cleaned.substring(cleaned.indexOf('{'), cleaned.lastIndexOf('}') + 1)));
             const err = validatePolicy(policy);
             if (!err) return policy;
             lastErr = err;
@@ -730,8 +1266,117 @@ export async function compilePolicy(agent, instructions, activeGoal = null) {
     throw new Error('Could not compile instructions into a valid policy: ' + lastErr);
 }
 
+// A stack of layers evaluated at runtime only ever gets one thing right: which
+// rule wins a tie. It cannot notice that "never fight" and "hunt cows for food"
+// are the same disagreement said twice, so both stay installed and the agent
+// oscillates. Merging is where that gets resolved -- once, by the model, into a
+// single policy -- so the runtime only has to run rules, not referee them.
+export function buildMergeInstructions(base, attributes) {
+    let text = 'You are combining one base policy with attribute policies layered on top of it.\n\n';
+    text += `BASE ("${base.name}"):\n`;
+    if (base.source?.length) text += base.source.map(s => `- ${s}`).join('\n') + '\n';
+    if (base.goal) text += `Its goal: ${base.goal}\n`;
+    if (base.policy) text += `Its existing rules as JSON:\n${JSON.stringify(base.policy)}\n`;
+    for (let i = 0; i < attributes.length; i++) {
+        const attr = attributes[i];
+        text += `\nATTRIBUTE ${i + 1} ("${attr.name}"):\n`;
+        if (attr.source?.length) text += attr.source.map(s => `- ${s}`).join('\n') + '\n';
+        if (attr.goal) text += `Its goal: ${attr.goal}\n`;
+        if (attr.policy) text += `Its existing rules as JSON:\n${JSON.stringify(attr.policy)}\n`;
+    }
+    text += '\nProduce ONE combined policy. The attributes are layered on top of the base and'
+        + ' take priority wherever they conflict with it, and a later attribute takes priority'
+        + ' over an earlier one. Preserve every base rule (including its "pinned" flag) that'
+        + ' nothing above it conflicts with. Do not emit two rules that do the same thing:'
+        + ' where they overlap, write the single rule the winning layer wants.';
+    // Rules only fire when the world pokes them, so a policy made entirely of
+    // rules is a policy that does nothing in an empty field: Andy stood in a
+    // snowfield at full hunger with every food rule waiting for a carrot within
+    // 24 blocks. The goal is the half that goes looking. Each profile says what
+    // it is ultimately for, and the merge is where those become one sentence --
+    // the agent can only pursue one thing at a time, and handing it "survive"
+    // and "gather food" and "mine ores" separately is how it ends up thrashing
+    // between them.
+    if (base.goal || attributes.some(a => a.goal))
+        text += '\n\nThese profiles also declare goals: what the agent should be actively working'
+            + ' towards, as opposed to the rules, which only react. Combine them into ONE goal'
+            + ' and return it as a "goal" string in the JSON, alongside "modes" and "rules".'
+            + ' It must be a single continuing objective written as an instruction to the agent,'
+            + ' serving every goal above rather than picking one -- where they compete, the base'
+            + ' says what the agent is for and the attributes say how it should go about it.'
+            + ' Keep it to a sentence or two: it is re-sent to the agent on every step of an'
+            + ' expensive reasoning loop.';
+    else
+        text += '\n\nNone of these profiles declares a goal, so do not invent one: omit the "goal" field.';
+    return text;
+}
+
+// Returns the state with a freshly generated "active" layer. It does NOT
+// install it -- every caller already has its own install-and-save path, and
+// installing here would mean a failed save still changed the running agent.
+export async function generatePolicy(agent, baseName, attributeNames = []) {
+    const base = loadProfile(baseName);
+    if (!base) throw new Error(`There is no policy profile named "${baseName}".`);
+    if (base.kind !== 'base') throw new Error(`Profile "${baseName}" is an attribute, not a base policy.`);
+    if (!base.policy && !base.source?.length) throw new Error(`Profile "${baseName}" is empty.`);
+
+    const attributes = attributeNames.map(name => {
+        const data = loadProfile(name);
+        if (!data) throw new Error(`There is no policy profile named "${name}".`);
+        return { ...data, name };
+    });
+
+    let policy;
+    if (attributes.length === 0 && base.policy) {
+        // Nothing to reconcile, so nothing to pay an LLM call for.
+        policy = { ...base.policy };
+        if (base.goal) policy.goal = base.goal;
+    } else {
+        policy = await compilePolicy(agent, buildMergeInstructions({ ...base, name: baseName }, attributes));
+        const err = validatePolicy(policy);
+        if (err) throw new Error(`The merged policy is not valid: ${err}`);
+        // A goal starts an endless LLM loop, so it takes a profile asking for
+        // one. Without this the compiler happily reads "goal" out of the prompt
+        // wording and gives an agent an objective nobody chose for it.
+        if (!base.goal && !attributes.some(a => a.goal)) delete policy.goal;
+    }
+
+    const state = loadPolicyState(agent.name);
+    const summary = attributes.length
+        ? `generated from base "${baseName}" + attributes: ${attributeNames.join(', ')}`
+        : `generated from base "${baseName}"`;
+    state.layers.active = { profile: null, source: [summary], policy };
+    state.compose = { base: baseName, attributes: [...attributeNames], generated_at: Date.now() };
+    return state;
+}
+
+// The goal comes from the "active" layer only, never from "self". A person
+// choosing a base and its attributes is a person choosing what the agent is for;
+// letting the agent's own !policy layer reach this would be letting it rewrite
+// its own objective, which is the trick that already cost it four hours of
+// standing in a hole (see the removed covers_goal in commands/actions.js).
+export function policyGoal(state) {
+    const goal = state?.layers?.active?.policy?.goal;
+    return typeof goal === 'string' && goal.trim() ? goal.trim() : null;
+}
+
+// Applied on install. Only ever STARTS a goal: a policy with no goal leaves a
+// running one alone, because a person's !goal outlives a policy regen and a
+// silent stop is how an agent ends up idle with nothing driving it.
+export async function applyPolicyGoal(agent, state) {
+    const goal = policyGoal(state);
+    if (!goal) return null;
+    // Record it as the standing goal even when it is already running, so a
+    // !goal detour started later has somewhere to come back to via !endGoal.
+    if (agent.self_prompter) agent.self_prompter.standing_prompt = goal;
+    if (agent.self_prompter?.prompt === goal) return null;
+    await agent.self_prompter.start(goal, true);
+    return goal;
+}
+
 export function describePolicy(policy) {
     let res = '';
+    if (policy.goal) res += `Goal: ${policy.goal}\n`;
     if (policy.modes && Object.keys(policy.modes).length > 0)
         res += 'Mode overrides: ' + Object.entries(policy.modes).map(([m, on]) => `${m}=${on ? 'on' : 'off'}`).join(', ') + '\n';
     for (let rule of policy.rules)
