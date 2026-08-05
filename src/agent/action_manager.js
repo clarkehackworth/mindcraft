@@ -12,6 +12,7 @@ export class ActionManager {
         this.resume_name = '';
         this.last_action_time = 0;
         this.recent_action_counter = 0;
+        this.last_action_label = null;
         // Bumped for every action. An action that was interrupted and later
         // returns anyway sees a newer generation and skips its own cleanup,
         // so it cannot clobber the state of whatever replaced it.
@@ -66,7 +67,10 @@ export class ActionManager {
             assert(actionLabel != null, 'actionLabel is required for new resume');
             this.resume_name = actionLabel;
         }
-        if (this.resume_func != null && (this.agent.isIdle() || new_resume) && (!this.agent.self_prompter.isActive() || new_resume)) {
+        // executing, not isIdle(): resuming is about the action slot being free.
+        // isIdle() is also false while the LLM is generating, and a resume that
+        // waits for that is a resume that never happens -- nothing retries it.
+        if (this.resume_func != null && (!this.executing || new_resume) && (!this.agent.self_prompter.isActive() || new_resume)) {
             this.currentActionLabel = this.resume_name;
             let res = await this._executeAction(this.resume_name, this.resume_func, timeout);
             this.currentActionLabel = '';
@@ -82,12 +86,21 @@ export class ActionManager {
         try {
             if (this.last_action_time > 0) {
                 let time_diff = Date.now() - this.last_action_time;
-                if (time_diff < 20) {
+                // A loop is the SAME action repeating, not different actions
+                // happening quickly. Counting any two fast actions together
+                // meant a burst of distinct cheap rules -- set_mode, equip,
+                // consume, each finishing in well under 20ms -- read as a
+                // runaway loop and shut the agent down: four kills in twenty
+                // minutes, none of them an actual loop. Comparing the label
+                // keeps the guard aimed at what it was written for, a resume
+                // re-triggering itself forever.
+                if (time_diff < 20 && actionLabel === this.last_action_label) {
                     this.recent_action_counter++;
                 }
                 else {
                     this.recent_action_counter = 0;
                 }
+                this.last_action_label = actionLabel;
                 if (this.recent_action_counter > 3) {
                     console.warn('Fast action loop detected, cancelling resume.');
                     this.cancelResume(); // likely cause of repetition
@@ -116,6 +129,7 @@ export class ActionManager {
             this.timedout = false;
             this.currentActionLabel = actionLabel;
             this.currentActionFn = actionFn;
+            this.start_pos = this.agent.bot.entity?.position?.clone?.() ?? null;
 
             // timeout in minutes
             if (timeout > 0) {
@@ -196,7 +210,33 @@ export class ActionManager {
 
     getBotOutputSummary() {
         const { bot } = this.agent;
-        if (bot.interrupt_code && !this.timedout) return '';
+        // An interrupted action used to report nothing at all, which reached the
+        // model as the literal string "undefined". It read that as the command
+        // being broken rather than cut short: a sheep search cancelled by a
+        // shelter rule looked identical to a sheep search that found nothing, so
+        // it stopped searching and went mining. Hand back what did happen, and
+        // say plainly that it is partial.
+        const interrupted = bot.interrupt_code && !this.timedout;
+        if (interrupted && !bot.output?.trim()) {
+            return 'Action was interrupted before it could do anything. Nothing was ruled out -- ' +
+                'deal with whatever interrupted you, then try again.';
+        }
+        // Generated code that never calls skills.log finishes with an empty
+        // output, and "Action output:" followed by nothing reads to the model as
+        // success. It announced "Great, I'm out" three times in a row without
+        // having moved a block. Nothing observed the code, but the world can
+        // still be described, so describe it and say plainly that it is not a
+        // report of success.
+        if (!bot.output?.trim()) {
+            const p = bot.entity?.position;
+            const moved = p && this.start_pos ? this.start_pos.distanceTo(p) : null;
+            bot.output = '';
+            return 'The code ran and reported nothing, so nothing here says it worked. Observed instead: ' +
+                (p ? `you are at ${p.x.toFixed(0)}, ${p.y.toFixed(0)}, ${p.z.toFixed(0)}` : 'position unknown') +
+                (moved === null ? '' : `, ${moved < 1 ? 'which is where you started' : `${moved.toFixed(0)} blocks from where you started`}`) +
+                `, health ${bot.health?.toFixed(0) ?? '?'}, holding ${bot.heldItem?.name ?? 'nothing'}. ` +
+                'Check whether the thing you meant to do actually happened before saying it did.';
+        }
         let output = bot.output;
         const MAX_OUT = 500;
         if (output.length > MAX_OUT) {
@@ -206,6 +246,8 @@ export class ActionManager {
         else {
             output = 'Action output:\n' + output.toString();
         }
+        if (interrupted)
+            output = 'Action was interrupted and did not finish. What it managed before being cut short:\n' + output;
         bot.output = '';
         return output;
     }
