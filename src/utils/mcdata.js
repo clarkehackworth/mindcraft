@@ -12,7 +12,7 @@ let mc_version = settings.minecraft_version;
 let mcdata = null;
 
 // Normally set from bot.registry on login; tests inject a bare registry here.
-export function useRegistry(registry) { mcdata = registry; minable_items = null; parsed_recipes = new Map(); recipe_ingredients = new Map(); }
+export function useRegistry(registry) { mcdata = registry; WOOD_TYPES = deriveWoodTypes(registry); minable_items = null; parsed_recipes = new Map(); recipe_ingredients = new Map(); }
 let Item = null;
 
 // How often "summary" packet_error_logging emits a rollup count.
@@ -57,7 +57,37 @@ function remapModdedWindow(bot, packet) {
  * @typedef {string} BlockName
 */
 
-export const WOOD_TYPES = ['oak', 'spruce', 'birch', 'jungle', 'acacia', 'dark_oak', 'mangrove', 'cherry'];
+export const VANILLA_WOOD_TYPES = ['oak', 'spruce', 'birch', 'jungle', 'acacia', 'dark_oak', 'mangrove', 'cherry'];
+
+// A modpack's woods are not the vanilla eight, and hardcoding them made every
+// wood-family rule blind to the rest: Andy stood in a frozen pine taiga holding
+// pine_log and pine_planks with "has_item log" false, so the rules that gather
+// wood, build the base and craft the first tools never fired at all. Derived
+// from the registry at login instead; the vanilla list is the fallback for
+// tests and anything that runs before there is a registry to ask.
+export let WOOD_TYPES = [...VANILLA_WOOD_TYPES];
+
+// Every wood in this world, named the way the family suffixes expect. "_log" is
+// the marker because it is the one wood block every tree has; nether stems are
+// deliberately left out, since expandBlockName has never covered them.
+// "stripped" is checked anywhere in the name, not just as a prefix: vanilla says
+// stripped_oak_log but the mod packs say willow_stripped_log, and treating those
+// as woods in their own right would make "log" count stripped logs and double
+// the list. Namespaced and bare spellings ("betternether:willow", "willow") are
+// both kept, because either can come back on an inventory slot.
+// A real wood has planks. Requiring them cut 315 derived names to the woods
+// that actually exist: the "chipped:" decoration mod alone contributed ~11
+// cosmetic blocks ending in _log with nothing to craft from them, and ~300 of
+// the expanded plank names matched no block at all. block_nearby {name:"log"}
+// scans every one of them, at range 24, on a timer.
+function deriveWoodTypes(registry) {
+    const blocks = registry?.blocksByName ?? {};
+    const woods = Object.keys(blocks)
+        .filter(name => name.endsWith('_log') && !name.includes('stripped'))
+        .map(name => name.slice(0, -'_log'.length))
+        .filter(wood => blocks[`${wood}_planks`]);
+    return woods.length ? woods : [...VANILLA_WOOD_TYPES];
+}
 export const MATCHING_WOOD_BLOCKS = [
     'log',
     'planks',
@@ -83,8 +113,11 @@ export function expandBlockName(name) {
     const stripped = name.startsWith('stripped_') && name.slice(9);
     if (stripped && wood_families.includes(stripped))
         return WOOD_TYPES.map(wood => `stripped_${wood}_${stripped}`);
-    if (name === 'wool')
-        return WOOL_COLORS.map(color => `${color}_wool`);
+    // Beds are dyed the same 16 ways wool is, and "is there a bed here" is a
+    // question about sleeping, not about decor. Without this, block_nearby "bed"
+    // never matched the white_bed sitting next to it.
+    if (name === 'wool' || name === 'bed')
+        return WOOL_COLORS.map(color => `${color}_${name}`);
     if (name.endsWith('_ore') && !name.startsWith('deepslate_'))
         return [name, 'deepslate_' + name];
     return [name];
@@ -299,10 +332,10 @@ export function initBot(username) {
         // data packs added, so everything asking mcdata about blocks and items
         // (nearby block listings, collect targets, crafting lookups) sees the
         // modded registry instead of a vanilla-only one.
-        mcdata = bot.registry;
-        minable_items = null; // rebuild from the modded drop tables, not vanilla's
-        parsed_recipes = new Map(); // the mod pack just rewrote the recipe table
-        recipe_ingredients = new Map();
+        // Same rebuild the tests drive through useRegistry: drop the caches built
+        // from vanilla data (minable items, recipes) and re-derive the wood list,
+        // which the mod packs above have just widened past the vanilla eight.
+        useRegistry(bot.registry);
         Item = prismarine_items(bot.registry);
     });
 
@@ -382,11 +415,32 @@ const BUILD_RESCAN_MS = 5000;
 // How often to recheck which blocks the bot has a tool for; only changes when
 // it gains or loses a tool.
 const HARVEST_RECHECK_MS = 5000;
+// Slow-but-worth-it vs never: snow 1s, dirt 2.5s, stone 7.5s by hand -- all fine
+// when the alternative is being unable to move. Deepslate 15s and obsidian 250s
+// are not. Above this, the planner routes around and the dig watchdog aborts.
+export const MAX_HAND_DIG_MS = 12000;
 // Must stay under 100: pathfinder treats >=100 as unbreakable, and a bot shut
 // inside a room with the door closed behind it would then have no path at all.
 const BUILD_DIG_PENALTY = 99;
 
-export function tameMovements(bot) {
+// NOT bot.findBlocks. On a modpack that sends direct-palette chunk sections,
+// findBlocks materializes a Block object for all 4096 blocks of every section in
+// range just to read its type -- 56.9% of all agent CPU in one profile. At
+// maxDistance 64 that is a 128-block cube, and the door scan runs from inside A*
+// every 5 seconds. world.getNearestBlocks compares raw state ids and builds
+// Blocks only for the handful of hits.
+let _world = null;
+function defaultDoorScan(bot, names, distance) {
+    if (!_world) {
+        // Runs inside A*, so it cannot await. Kick the load off and skip this one
+        // scan; the module lands in milliseconds and the 5s rescan picks it up.
+        import('../agent/library/world.js').then(m => { _world = m; }, () => {});
+        return [];
+    }
+    return _world.getNearestBlocks(bot, names, distance, 16).map(b => b.position);
+}
+
+export function tameMovements(bot, scanDoors = null) {
     if (!bot.pathfinder?.setMovements) {
         console.warn('[mcdata] pathfinder missing at spawn, movement taming disabled');
         return;
@@ -394,7 +448,11 @@ export function tameMovements(bot) {
 
     let doors = [];
     let scannedAt = -Infinity;
-    let doorIds = null;
+    let doorNames = null;
+    // world.js imports this module, so importing it back at module scope is a
+    // cycle. Take the scanner as an argument instead -- the caller has no cycle,
+    // and it makes the scan mockable without stubbing a whole bot.
+    const scan = scanDoors ?? defaultDoorScan;
     // Called from inside A*, so the scan is cached and the check is plain
     // arithmetic over a handful of doors.
     const buildPenalty = (block) => {
@@ -402,13 +460,17 @@ export function tameMovements(bot) {
         const now = Date.now();
         if (now - scannedAt > BUILD_RESCAN_MS) {
             scannedAt = now;
-            doorIds ??= (bot.registry?.blocksArray ?? [])
+            doorNames ??= (bot.registry?.blocksArray ?? [])
                 .filter(b => b.name.endsWith('_door'))
-                .map(b => b.id);
+                .map(b => b.name);
             try {
-                doors = doorIds.length
-                    ? bot.findBlocks({ matching: doorIds, maxDistance: BUILD_SCAN_DISTANCE, count: 16 })
-                    : [];
+                // NOT bot.findBlocks. On a modpack that sends direct-palette chunk
+                // sections, findBlocks materializes a Block object for all 4096
+                // blocks of every section in range just to read its type -- 56.9% of
+                // all agent CPU in one profile. At maxDistance 64 that is a 128-cube
+                // region, and this runs from inside A* every 5 seconds. world's
+                // version compares raw state ids and builds Blocks only for hits.
+                doors = doorNames.length ? scan(bot, doorNames, BUILD_SCAN_DISTANCE) : [];
             } catch (err) {
                 doors = [];  // world not loaded yet; the next path will try again
             }
@@ -429,7 +491,13 @@ export function tameMovements(bot) {
     // half an hour, plus the pathfinding timeouts it caused).
     // safeToBreak treats an exclusion cost of 100 as "cannot break", so this
     // makes A* route around the snow instead of into it.
-    let harvestable = new Map();
+    // ...but "no tool for it" was the wrong test. canHarvest asks whether a block
+    // DROPS anything, not whether it can be broken: snow_block yields no snowball
+    // without a shovel yet breaks by hand in one second. Excluding it made A*
+    // route around every snow block in a biome made of snow, so no path existed
+    // anywhere, every goal timed out, and Andy sat in one spot and died 7 times.
+    // What is actually worth refusing is TIME -- snow 1s, stone 7s, obsidian 250s.
+    let digCost = new Map();
     let harvestStamp = -Infinity;
     const harvestCheck = (block) => {
         if (!block?.type) return 0;
@@ -437,18 +505,20 @@ export function tameMovements(bot) {
         // Cached per block type and rechecked periodically, because this runs
         // inside A* for every candidate dig and the answer only changes when
         // the bot picks up or loses a tool.
-        if (now - harvestStamp > HARVEST_RECHECK_MS) { harvestable.clear(); harvestStamp = now; }
-        let ok = harvestable.get(block.type);
-        if (ok === undefined) {
+        if (now - harvestStamp > HARVEST_RECHECK_MS) { digCost.clear(); harvestStamp = now; }
+        let cost = digCost.get(block.type);
+        if (cost === undefined) {
             try {
-                ok = block.harvestTools === undefined || block.canHarvest(null) ||
-                    bot.inventory.items().some(item => block.canHarvest(item.type));
+                // digTime reflects the tool actually held, which is what the bot
+                // will be holding when the planner's route reaches this block.
+                const ms = bot.digTime(block);
+                cost = ms > MAX_HAND_DIG_MS ? 100 : 0;
             } catch {
-                ok = true;  // unknown block: let the old behaviour handle it
+                cost = 0;  // unknown block: let the old behaviour handle it
             }
-            harvestable.set(block.type, ok);
+            digCost.set(block.type, cost);
         }
-        return ok ? 0 : 100;
+        return cost;
     };
 
     // A* runs synchronously on the event loop. The default budgets (40s total,
@@ -458,7 +528,57 @@ export function tameMovements(bot) {
     // connection ("lost connection: Timed out"). A failed path is recoverable;
     // a disconnect is not, so give up early and think in smaller slices.
     bot.pathfinder.thinkTimeout = 5000;
-    bot.pathfinder.tickTimeout = 10;
+    // 10ms left A* about a second of compute per goto, and on this modpack that
+    // lost roughly 12 goals to "Took to long to decide path" for every one it
+    // found. 20ms doubles the budget and is still well under the 50ms tick, so
+    // there is headroom before keepalives start slipping -- which is the failure
+    // this was originally lowered to prevent, and the reason not to go to 40.
+    bot.pathfinder.tickTimeout = 20;
+
+    // pathfinder stores whatever it is handed and only calls goal.isValid() on
+    // the next physics tick -- inside an EventEmitter, outside any promise
+    // chain. So generated code doing goto(new Vec3(x,y,z)) instead of
+    // goto(new GoalNear(...)) does not fail the await, it throws
+    // "stateGoal.isValid is not a function" where nothing can catch it and the
+    // whole agent process exits 1. Reject it here, synchronously, where the
+    // caller's try/catch still works and the model gets told what it did wrong.
+    // Every pathfinder entry point that takes a Goal, guarded the same way.
+    // Guarding goto and setGoal alone was not enough: goToGoal calls getPathTo
+    // FIRST, so passing it a Vec3 died on "goal.heuristic is not a function"
+    // before either wrapper saw anything. These are the three methods
+    // pathfinder calls on a goal, so anything missing one is not a Goal.
+    const isGoal = (g) => !!g && typeof g.isEnd === 'function'
+        && typeof g.isValid === 'function' && typeof g.heuristic === 'function';
+    const notAGoal = (method) => `bot.pathfinder.${method} needs a pathfinder Goal, not coordinates or a Vec3. ` +
+        'Use skills.goToPosition(bot, x, y, z), or build a goal first: ' +
+        'new pf.goals.GoalNear(x, y, z, range).';
+
+    const originalGoto = bot.pathfinder.goto?.bind(bot.pathfinder);
+    if (originalGoto) bot.pathfinder.goto = function (goal, ...rest) {
+        if (!isGoal(goal)) return Promise.reject(new Error(notAGoal('goto')));
+        return originalGoto(goal, ...rest);
+    };
+
+    // getPathTo is synchronous and returns a result object, so a bad goal here
+    // throws straight out of whatever skill called it.
+    const originalGetPathTo = bot.pathfinder.getPathTo?.bind(bot.pathfinder);
+    if (originalGetPathTo) bot.pathfinder.getPathTo = function (movements, goal, ...rest) {
+        if (!isGoal(goal)) throw new Error(notAGoal('getPathTo'));
+        return originalGetPathTo(movements, goal, ...rest);
+    };
+
+    // setGoal is the worse half of the same hazard: goto at least returns a
+    // promise something can reject, while setGoal just stores the object and
+    // returns, so the TypeError surfaces on the next physics tick with no
+    // caller left to catch it and the process exits 1. Throwing synchronously
+    // puts the failure back where the try/catch is. A null goal is how you
+    // clear one, so that stays legal.
+    const originalSetGoal = bot.pathfinder.setGoal?.bind(bot.pathfinder);
+    if (originalSetGoal) bot.pathfinder.setGoal = function (goal, ...rest) {
+        // A null goal is how you clear one, so that stays legal.
+        if (goal != null && !isGoal(goal)) throw new Error(notAGoal('setGoal'));
+        return originalSetGoal(goal, ...rest);
+    };
 
     const originalSetMovements = bot.pathfinder.setMovements.bind(bot.pathfinder);
     bot.pathfinder.setMovements = function (movements) {
@@ -572,6 +692,22 @@ export function mustCollectManually(blockName) {
     return full_names.includes(blockName.toLowerCase()) || partial_names.some(partial => blockName.toLowerCase().includes(partial));
 }
 
+// Does this name mean anything in this world? A rule naming something the
+// registry has never heard of does not fail -- it silently never matches, which
+// is far worse. Two of those in one session: "has_item sword" (not a family, so
+// it stayed exactly "sword" and matched no item on earth) and a chillager rule
+// that used the translation key instead of the entity id. Both looked correct
+// and both had never once fired.
+//
+// Returns true when there is no registry to ask, so validation before login and
+// in tests stays permissive rather than rejecting everything.
+export function isKnownName(name) {
+    if (typeof name !== 'string' || !name) return true;
+    if (!mcdata?.itemsByName && !mcdata?.blocksByName) return true;
+    return expandBlockName(name).some(n =>
+        mcdata.itemsByName?.[n] || mcdata.blocksByName?.[n]);
+}
+
 export function getItemId(itemName) {
     let item = mcdata.itemsByName[itemName];
     if (item) {
@@ -636,6 +772,32 @@ export function getAllItemIds(ignore) {
         itemIds.push(item.id);
     }
     return itemIds;
+}
+
+// "bed", "wool" and "planks" are all categories, not items -- the real names are
+// white_bed, red_wool, oak_planks. Rejecting them with a bare "invalid item type"
+// tells the model nothing, so it retries the same category name or gives up on
+// the goal. Point it at the real names instead.
+export function suggestNames(name, kind='item') {
+    const all = kind === 'block' ? getAllBlocks() : getAllItems();
+    const needle = String(name).toLowerCase().replace(/^minecraft:/, '');
+    const hits = all.filter(e => e.name !== needle && (e.name.endsWith('_' + needle) || e.name.startsWith(needle + '_')));
+    if (hits.length === 0) return '';
+    // Vanilla first: this modpack has 365 blocks ending in _log, and a plain
+    // alphabetical list was 16 mod woods from anchor_tree to bundled_cherry --
+    // none of them anywhere near the bot, and oak_log nowhere in sight.
+    // ponytail: vanilla-vs-modded, not distance-ranked. Ranking by what is
+    // actually nearby needs bot state this has no access to; worth threading
+    // through only if the vanilla shortlist turns out to be the wrong one.
+    const names = hits.filter(e => !e.mod).map(e => e.name).sort();
+    const modded = hits.filter(e => e.mod).map(e => e.name).sort();
+    // Alphabetical would cut white_bed -- the one the bot almost always wants --
+    // off the end of a truncated list, so show the whole dyed set. 16 colours is
+    // cheap; only a modpack's hundred-variant category needs truncating.
+    const MAX = 16;
+    const shown = (names.length ? names : modded).slice(0, MAX);
+    const rest = hits.length - shown.length;
+    return ` Did you mean one of: ${shown.join(', ')}${rest > 0 ? `, ... (${rest} more, mostly modded variants)` : ''}?`;
 }
 
 export function getAllBlocks(ignore) {

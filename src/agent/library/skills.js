@@ -63,6 +63,23 @@ export async function equipHighestAttack(bot) {
 // Works identically on vanilla servers. Returns the number of completed
 // crafts. ponytail: assumes 1 item per grid slot, true of every vanilla-style
 // recipe; teach it counts if a mod recipe ever needs stacks in the grid.
+// mineflayer waits 20 seconds for the server's windowOpen packet and then
+// throws; 23 of those in one session, each a 20-second stall ending in a stack
+// trace whose real cause is mundane -- the block drifted out of reach after the
+// pathfind, or a mod replaced its menu. One retry covers the race; after that,
+// say something the model can act on instead of throwing.
+async function openWithRetry(bot, block, open) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+        try { return await open(block); }
+        catch (err) {
+            if (!/windowOpen/i.test(String(err?.message ?? err))) throw err;
+            await sleep(500);
+        }
+    }
+    log(bot, `The ${block.name} never opened. Stand right next to it and try again; if a mod replaced its menu it cannot be used this way.`);
+    return null;
+}
+
 export async function tableCraft(bot, recipe, count, craftingTable) {
     const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
     const gridSlot = (x, y) => 1 + x + 3 * y;
@@ -86,20 +103,28 @@ export async function tableCraft(bot, recipe, count, craftingTable) {
         }
     }
 
-    const window = await bot.openBlock(craftingTable);
+    const window = await openWithRetry(bot, craftingTable, b => bot.openBlock(b));
+    if (!window) return 0;
     let done = 0;
+    let missing = null;
     try {
         await sleep(300); // authoritative window_items, plus a VW sync tick
         for (let i = 0; i < count && !bot.interrupt_code; i++) {
             for (const [dest, id] of placements) {
                 if (window.slots[dest]?.type === id) continue; // already there (left by an earlier attempt)
                 const source = window.findInventoryItem(id, null);
-                if (!source) throw new Error('missing ingredient');
+                // Running out of an ingredient partway through a batch is a
+                // normal outcome, not an exception. Thrown, it escaped as
+                // "Error: Error: missing ingredient" 51 times in one session
+                // and told the model nothing it could act on; returning the
+                // count made so far does, and the grid still gets emptied below.
+                if (!source) { missing = bot.registry.items[id]?.name ?? `item ${id}`; break; }
                 await bot.clickWindow(source.slot, 0, 0); // pick up the stack
                 await bot.clickWindow(dest, 1, 0);        // drop one in the grid
                 if (window.selectedItem)
                     await bot.clickWindow(source.slot, 0, 0); // put the rest back
             }
+            if (missing) break;
             // The result slot filling is the server's word that it recognizes
             // the recipe; the client never predicts it.
             let offered = false;
@@ -126,6 +151,7 @@ export async function tableCraft(bot, recipe, count, craftingTable) {
     } finally {
         bot.closeWindow(window);
     }
+    if (missing && done === 0) log(bot, `Ran out of ${missing} before crafting anything.`);
     return done;
 }
 
@@ -158,10 +184,13 @@ export async function craftRecipe(bot, itemName, num=1) {
     }
 
     // get recipes that don't require a crafting table
-    let recipes = bot.recipesFor(mc.getItemId(itemName), null, 1, null); 
+    let recipes = bot.recipesFor(mc.getItemId(itemName), null, 1, null);
     let craftingTable = null;
+    let needsTable = false;
     const craftingTableRange = 16;
     placeTable: if (!recipes || recipes.length === 0) {
+        // Nothing craftable in the 2x2 grid: from here on, a table is mandatory.
+        needsTable = true;
         recipes = bot.recipesFor(mc.getItemId(itemName), null, 1, true);
         if(!recipes || recipes.length === 0) break placeTable; //Don't bother going to the table if we don't have the required resources.
 
@@ -176,7 +205,14 @@ export async function craftRecipe(bot, itemName, num=1) {
             if (hasTable) {
                 let pos = world.getNearestFreeSpace(bot, 1, 6);
                 await placeBlock(bot, 'crafting_table', pos.x, pos.y, pos.z);
-                craftingTable = world.getNearestBlock(bot, 'crafting_table', craftingTableRange);
+                // placeBlock returns before the block reliably shows up in the
+                // world cache, so a single lookup here reads null on a table the
+                // bot just watched itself place. Seen live at (9,52,5): placed,
+                // not found, fell through to a table-less craft, threw.
+                for (let i = 0; i < 10 && !craftingTable; i++) {
+                    craftingTable = world.getNearestBlock(bot, 'crafting_table', craftingTableRange);
+                    if (!craftingTable) await new Promise(r => setTimeout(r, 200));
+                }
                 if (craftingTable) {
                     recipes = bot.recipesFor(mc.getItemId(itemName), null, 1, craftingTable);
                     placedTable = true;
@@ -217,6 +253,16 @@ export async function craftRecipe(bot, itemName, num=1) {
         return false;
     }
     
+    // The recipe needs a table and we never got hold of one. Falling through
+    // here calls bot.craft(recipe, n, null), which throws a raw mineflayer
+    // "Recipe requires craftingTable, but one was not supplied" -- the agent
+    // sees a stack trace, retries the identical command, and grinds into the
+    // repeated-command blocker. Say what is wrong instead.
+    if (needsTable && !craftingTable) {
+        log(bot, `Crafting ${itemName} needs a crafting table and none was found within ${craftingTableRange} blocks. Place one where you are standing, then craft again.`);
+        return false;
+    }
+
     if (craftingTable && bot.entity.position.distanceTo(craftingTable.position) > 4) {
         await goToNearestBlock(bot, 'crafting_table', 4, craftingTableRange);
     }
@@ -994,14 +1040,27 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
         let goal = new pf.goals.GoalNear(targetBlock.position.x, targetBlock.position.y, targetBlock.position.z, 2);
         let inverted_goal = new pf.goals.GoalInvert(goal);
         bot.pathfinder.setMovements(new pf.Movements(bot));
-        await bot.pathfinder.goto(inverted_goal);
+        // Every other failure in this function logs a sentence and returns false.
+        // These two threw the raw mineflayer NoPath instead, so !placeHere("furnace")
+        // handed the agent a pathfinder stack trace it could do nothing with.
+        try {
+            await bot.pathfinder.goto(inverted_goal);
+        } catch (err) {
+            log(bot, `Cannot place ${blockType} at ${targetBlock.position}: you are standing on the spot and there is nowhere to step back to. Move somewhere more open and try again.`);
+            return false;
+        }
     }
     if (bot.entity.position.distanceTo(targetBlock.position) > 4.5) {
         // too far
         let pos = targetBlock.position;
         let movements = new pf.Movements(bot);
         bot.pathfinder.setMovements(movements);
-        await goToGoal(bot, new pf.goals.GoalNear(pos.x, pos.y, pos.z, 4));
+        try {
+            await goToGoal(bot, new pf.goals.GoalNear(pos.x, pos.y, pos.z, 4));
+        } catch (err) {
+            log(bot, `Cannot place ${blockType} at ${targetBlock.position}: no path to get within reach of it. Pick a spot closer to you.`);
+            return false;
+        }
     }
 
     // will throw error if an entity is in the way, and sometimes even if the block was placed
@@ -1123,7 +1182,8 @@ export async function putInChest(bot, itemName, num=-1) {
     }
     let to_put = num === -1 ? item.count : Math.min(num, item.count);
     await goToPosition(bot, chest.position.x, chest.position.y, chest.position.z, 2);
-    const chestContainer = await bot.openContainer(chest);
+    const chestContainer = await openWithRetry(bot, chest, b => bot.openContainer(b));
+    if (!chestContainer) return false;
     await chestContainer.deposit(item.type, null, to_put);
     await chestContainer.close();
     log(bot, `Successfully put ${to_put} ${itemName} in the chest.`);
@@ -1146,7 +1206,8 @@ export async function takeFromChest(bot, itemName, num=-1) {
         return false;
     }
     await goToPosition(bot, chest.position.x, chest.position.y, chest.position.z, 2);
-    const chestContainer = await bot.openContainer(chest);
+    const chestContainer = await openWithRetry(bot, chest, b => bot.openContainer(b));
+    if (!chestContainer) return false;
     
     // Find all matching items in the chest
     let matchingItems = chestContainer.containerItems().filter(item => item.name === itemName);
@@ -1190,7 +1251,8 @@ export async function viewChest(bot) {
         return false;
     }
     await goToPosition(bot, chest.position.x, chest.position.y, chest.position.z, 2);
-    const chestContainer = await bot.openContainer(chest);
+    const chestContainer = await openWithRetry(bot, chest, b => bot.openContainer(b));
+    if (!chestContainer) return false;
     let items = chestContainer.containerItems();
     if (items.length === 0) {
         log(bot, `The chest is empty.`);
@@ -1314,8 +1376,11 @@ export async function giveToPlayer(bot, itemType, username, num=1) {
 export async function goToGoal(bot, goal) {
     /**
      * Navigate to the given goal. Use doors and attempt minimally destructive movements.
+     * Takes a pathfinder Goal OBJECT, not a position -- passing a Vec3 dies inside
+     * getPathTo on "goal.heuristic is not a function". If you have coordinates,
+     * call goToPosition(bot, x, y, z) instead; it builds the goal for you.
      * @param {MinecraftBot} bot, reference to the minecraft bot.
-     * @param {pf.goals.Goal} goal, the goal to navigate to.
+     * @param {pf.goals.Goal} goal, e.g. new pf.goals.GoalNear(x, y, z, range).
      **/
 
     const nonDestructiveMovements = new pf.Movements(bot);
@@ -1474,9 +1539,16 @@ export async function goToPosition(bot, x, y, z, min_distance=2) {
     const checkDigProgress = () => {
         if (bot.targetDigBlock) {
             const targetBlock = bot.targetDigBlock;
-            const itemId = bot.heldItem ? bot.heldItem.type : null;
-            if (!targetBlock.canHarvest(itemId)) {
-                log(bot, `Pathfinding stopped: Cannot break ${targetBlock.name} with current tools.`);
+            // canHarvest asks whether the block DROPS anything, not whether it can
+            // be broken -- mineflayer's own canDigBlock does not consult tools at
+            // all. Aborting on it stopped the bot digging snow, which takes a
+            // second by hand and merely yields no snowball. That abort caused
+            // replanning loops, the fix for those made the planner treat all snow
+            // as impassable, and in a frozen taiga that left no route anywhere.
+            // Time is the thing worth refusing: snow is 1s by hand, obsidian 250s.
+            const ms = bot.digTime?.(targetBlock) ?? 0;
+            if (ms > mc.MAX_HAND_DIG_MS) {
+                log(bot, `Pathfinding stopped: ${targetBlock.name} would take ${Math.round(ms / 1000)}s to break with what you are holding.`);
                 bot.pathfinder.stop();
                 bot.stopDigging();
             }
@@ -1559,6 +1631,161 @@ export async function goToNearestEntity(bot, entityType, min_distance=2, range=6
     log(bot, `Found ${entityType} ${distance} blocks away.`);
     await goToPosition(bot, entity.position.x, entity.position.y, entity.position.z, min_distance);
     return true;
+}
+
+// The server only sends entities inside its tracking range, so bot.entities can
+// never answer "is there a sheep 400 blocks away". Saying "could not find any
+// sheep in 500 blocks" told the LLM a 500-block radius was verified empty, and
+// it correctly concluded travelling was pointless and went mining instead.
+export const ENTITY_VIEW_RANGE = 96;
+
+const HOP = 64;
+const MAX_STOPS = 16;
+
+/**
+ * Waypoints along an Archimedean spiral out from the origin, one HOP of arc apart
+ * and gaining one HOP of radius per turn. Every leg is a HOP, because a goal 200
+ * blocks out just makes the pathfinder time out ("Took to long to decide path")
+ * and the bot never leaves the spot it started from.
+ * @returns {{x: number, z: number}[]} waypoints, nearest first.
+ */
+export function spiralWaypoints(origin, radius, stops, step=HOP) {
+    const pts = [];
+    let r = step, theta = 0;
+    for (let k = 0; k < stops && r <= radius; k++) {
+        pts.push({ x: Math.round(origin.x + r * Math.cos(theta)), z: Math.round(origin.z + r * Math.sin(theta)) });
+        const dtheta = step / r;
+        theta += dtheta;
+        r += step * dtheta / (2 * Math.PI);
+    }
+    return pts;
+}
+
+export async function goToXZ(bot, x, z, closeness=8) {
+    /**
+     * Travel to a column, at whatever height the ground happens to be.
+     * @returns {Promise<boolean>} true if it arrived.
+     **/
+    // A sweep waypoint is "go over there and look around", which has no business
+    // naming a Y. Passing the starting Y made every waypoint on hilly taiga a
+    // point buried in a hillside or hanging in mid-air, and A* spent its whole
+    // budget failing to reach it -- "Took to long to decide path to goal!" on a
+    // 64-block hop across open snow. GoalNearXZ asks for the column instead.
+    if (!Number.isFinite(x) || !Number.isFinite(z)) return false;
+    if (!withinExplorationRadius(bot, x, z)) {
+        log(bot, `${Math.round(Math.hypot(x - bot.spawn_point.x, z - bot.spawn_point.z))} blocks from spawn is outside the ${settings.exploration_radius} block exploration radius. Work closer to home.`);
+        return false;
+    }
+    try {
+        await goToGoal(bot, new pf.goals.GoalNearXZ(x, z, closeness));
+        return true;
+    } catch (err) {
+        log(bot, `Could not reach ${x}, ${z}: ${err.message}`);
+        return false;
+    }
+}
+
+export async function searchForEntity(bot, entityType, range=64, opts={}) {
+    /**
+     * Look for the nearest entity of the given type, travelling further out when the
+     * loaded area has none, and navigate to it.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @param {string} entityType, the type of entity to find.
+     * @param {number} range, how far to be willing to travel looking for it.
+     * @param {object} opts, {pattern: 'spiral'|'random'}. Spiral sweeps a disc around
+     *   the start and covers new ground; random hops blindly but never gets stuck on
+     *   terrain a straight line cannot cross.
+     * @returns {Promise<boolean>} true if the entity was reached, false otherwise.
+     **/
+    const pattern = opts.pattern ?? 'spiral';
+    const travel = opts.travel ?? moveAway;
+    const goTo = opts.goTo ?? ((b, x, _y, z, close) => goToXZ(b, x, z, close));
+    const seen = () => world.getNearestEntityWhere(bot, e => e.name === entityType, ENTITY_VIEW_RANGE);
+
+    if (seen()) return await goToNearestEntity(bot, entityType, 4, ENTITY_VIEW_RANGE);
+
+    // Enough stops to sweep the disc at one view-radius per stop, capped so a big
+    // range is a long walk rather than an unbounded one.
+    const stops = Math.min(Math.max(Math.ceil((range - ENTITY_VIEW_RANGE) / HOP), 0), MAX_STOPS);
+    const origin = bot.entity.position.clone ? bot.entity.position.clone() : { ...bot.entity.position };
+    const route = pattern === 'spiral' ? spiralWaypoints(origin, range, stops) : null;
+    // Biomes are only readable where the bot has been, so this steers as it goes:
+    // arriving somewhere that looks like the last place means the sweep has not
+    // reached new terrain, and the next waypoint gets skipped to break out faster.
+    const biomes = new Set();
+    let last_biome = null;
+    // One unreachable waypoint is a wall in one direction, not a failed search --
+    // the next waypoint points ~137 degrees elsewhere. Only give up once several
+    // in a row fail, which means the bot cannot go anywhere at all.
+    const MAX_BLOCKED = 3;
+    let blocked = 0, arrived = 0;
+
+    for (let i = 0; i < (route ? route.length : stops); i++) {
+        // Returning silently here reported as "undefined", which the model read as
+        // the search being broken -- it gave up on sheep and went back to mining.
+        // An interrupted search is unfinished, not a negative result.
+        if (bot.interrupt_code) {
+            log(bot, `Search for ${entityType} was interrupted after ${arrived} stop(s), before it could cover any ground. Nothing was ruled out -- deal with whatever interrupted you, then search again.`);
+            return false;
+        }
+        const here = bot.entity.position.clone ? bot.entity.position.clone() : { ...bot.entity.position };
+        let moved;
+        if (route) {
+            const wp = route[i];
+            log(bot, `No ${entityType} in sight; sweeping outward to ${wp.x}, ${wp.z}.`);
+            moved = await goTo(bot, wp.x, origin.y, wp.z, 8);
+            if (!moved) {
+                // A* is superlinear in distance and this terrain is expensive to
+                // search: in a frozen taiga every snow block costs a shovel the bot
+                // does not have, so the planner has to route around all of it and
+                // runs out of budget. Half as far is far less than half the search,
+                // and it keeps the same heading -- better than giving up on the
+                // direction entirely, and better than a random hop.
+                const half = { x: Math.round((here.x + wp.x) / 2), z: Math.round((here.z + wp.z) / 2) };
+                moved = await goTo(bot, half.x, origin.y, half.z, 8);
+            }
+            if (!moved) moved = await travel(bot, HOP);  // blocked: hop and rejoin the spiral
+        }
+        else {
+            log(bot, `No ${entityType} in sight; travelling to look further.`);
+            moved = await travel(bot, HOP);
+        }
+        // Ground covered is the only thing that matters here, so judge on distance,
+        // not on what the call returned. Both directions of that are load-bearing:
+        // moveAway reports success for a shuffle of one block, and pathfinder.goto
+        // walks while it replans, so a goal that ends in "Took to long to decide
+        // path" has often carried the bot most of the way there first. Counting
+        // that as a failure is what kept reporting "you never left where you are
+        // standing" after the bot had crossed 40 blocks of taiga.
+        const travelled = here.distanceTo ? here.distanceTo(bot.entity.position) : Math.hypot(bot.entity.position.x - here.x, bot.entity.position.z - here.z);
+        if (travelled < HOP / 4) {
+            if (++blocked >= MAX_BLOCKED) break;
+            continue;
+        }
+        blocked = 0;
+        arrived++;
+        if (seen()) return await goToNearestEntity(bot, entityType, 4, ENTITY_VIEW_RANGE);
+
+        const biome = safeBiome(bot);
+        if (biome) biomes.add(biome);
+        if (route && biome && biome === last_biome) i++;
+        last_biome = biome;
+    }
+
+    // "No sheep here" and "could not walk anywhere" are opposite conclusions. Saying
+    // the first when the second happened is what sent the bot off to mine instead.
+    if (arrived === 0) {
+        log(bot, `Could not search for ${entityType}: every attempt to travel failed, so you never left where you are standing. You are probably walled in or on terrain the pathfinder cannot cross -- dig or build your way out to open ground first, then search again.`);
+        return false;
+    }
+    const covered = biomes.size ? ` Terrain covered: ${[...biomes].join(', ')}.` : '';
+    log(bot, `Could not find any ${entityType} within ${ENTITY_VIEW_RANGE} blocks of the ${arrived} place(s) reached.${covered} Only entities near you are visible, so keep travelling and searching -- an empty result does not mean this world has no ${entityType}.`);
+    return false;
+}
+
+function safeBiome(bot) {
+    try { return world.getBiomeName(bot); }
+    catch { return null; }  // unloaded chunk or a modded biome id: not worth failing a search over
 }
 
 export async function goToPlayer(bot, username, distance=3) {
@@ -2425,23 +2652,120 @@ export async function escapeLiquid(bot) {
     return escaped;
 }
 
+// Things that sit on top of the ground rather than being it. Taking the first
+// solid block down from the sky put the surface goal on top of a pine tree, and
+// "stand exactly here, 20 blocks up a trunk" is a search that fails -- which is
+// how a bot sealed under stone in a taiga concluded there was no surface at all.
+const NOT_GROUND = ['leaves', 'log', '_wood', 'sapling', 'vine', 'snow', 'bamboo', 'sugar_cane', 'cactus', 'mushroom'];
+
+// How far sideways to look for a dry column when the shaft runs into an
+// aquifer. Cave pools are usually a few blocks across, and every block of
+// detour is a block to tunnel through. ponytail: a flat square scan of the two
+// blocks we are about to break, not a survey of the whole water body -- if
+// bots start ping-ponging along the edge of a lake, follow the shoreline
+// instead of picking the nearest dry spot.
+const DETOUR_RADIUS = 4;
+
+function isLiquid(block) {
+    return !!block && (block.name.includes('water') || block.name.includes('lava'));
+}
+
+// The nearest column we have not already stood in whose next two blocks up are
+// dry, or null if we are under open water in every direction.
+function dryColumnNear(bot, from, visited) {
+    let best = null;
+    for (let dx = -DETOUR_RADIUS; dx <= DETOUR_RADIUS; dx++) {
+        for (let dz = -DETOUR_RADIUS; dz <= DETOUR_RADIUS; dz++) {
+            if (dx === 0 && dz === 0) continue;
+            const x = from.x + dx, z = from.z + dz;
+            if (visited.has(`${x},${z}`)) continue;
+            if (isLiquid(bot.blockAt(new Vec3(x, from.y + 2, z)))) continue;
+            if (isLiquid(bot.blockAt(new Vec3(x, from.y + 3, z)))) continue;
+            const dist = dx * dx + dz * dz;
+            if (!best || dist < best.dist) best = { x, z, dist };
+        }
+    }
+    return best;
+}
+
 export async function goToSurface(bot) {
     /**
-     * Navigate to the surface (highest non-air block at current x,z).
+     * Navigate to the surface (highest ground block at current x,z), digging up if walled in.
      * @param {MinecraftBot} bot, reference to the minecraft bot.
      * @returns {Promise<boolean>} true if the surface was reached, false otherwise.
      **/
     const pos = bot.entity.position;
+    let ground = null;
     for (let y = 360; y > -64; y--) { // probably not the best way to find the surface but it works
         const block = bot.blockAt(new Vec3(pos.x, y, pos.z));
-        if (!block || block.name === 'air' || block.name === 'cave_air') {
-            continue;
-        }
-        await goToPosition(bot, block.position.x, block.position.y + 1, block.position.z, 0); // this will probably work most of the time but a custom mining and towering up implementation could be added if needed
-        log(bot, `Going to the surface at y=${y+1}.`);``
+        if (!block || block.name === 'air' || block.name === 'cave_air') continue;
+        if (NOT_GROUND.some(n => block.name.includes(n))) continue;
+        ground = block.position;
+        break;
+    }
+    if (!ground) return false;
+    const surface_y = ground.y + 1;
+    if (Math.floor(pos.y) >= surface_y) {
+        log(bot, `Already at the surface at y=${Math.floor(pos.y)}.`);
         return true;
     }
-    return false;
+
+    // Report whether we actually got there. Swallowing the failure made a
+    // pinned "interrupts: all" drowning rule look like it was making
+    // progress, so it never backed off and re-fired every cooldown for
+    // hours, starving every other rule and the unstuck mode with it.
+    if (await goToPosition(bot, ground.x, surface_y, ground.z, 1)) {
+        log(bot, `Going to the surface at y=${surface_y}.`);
+        return true;
+    }
+
+    // Sealed in. Pathfinder digs and pillars perfectly well, but only along a
+    // route it can see end to end, and under a deep roof that search comes back
+    // noPath -- which is how a bot holding 75 cobblestone and a pickaxe spent
+    // hours reporting it could not climb. A one-block-up goal is a search it
+    // always solves, so take the roof off a layer at a time.
+    log(bot, `No path to the surface; digging straight up from y=${Math.floor(bot.entity.position.y)}.`);
+    const flooded = new Set();
+    while (bot.entity.position.y < surface_y) {
+        if (bot.interrupt_code) return false;
+        const from = bot.entity.position.floored();
+        // Breaking into an aquifer floods the shaft you are standing in the
+        // bottom of, and the first climb out of a cave ended in drowning. Slide
+        // the shaft over to a dry column and keep climbing from there. Every
+        // wet column is remembered, so a detour can never pick its way back
+        // into one it already fled and loop.
+        const ceiling = bot.blockAt(from.offset(0, 2, 0));
+        if (isLiquid(ceiling)) {
+            flooded.add(`${from.x},${from.z}`);
+            const dry = dryColumnNear(bot, from, flooded);
+            if (!dry) {
+                log(bot, `There is ${ceiling.name} above y=${from.y} and no dry column within ${DETOUR_RADIUS} blocks. Move somewhere else and try again.`);
+                return false;
+            }
+            log(bot, `There is ${ceiling.name} above y=${from.y}; moving the shaft to ${dry.x}, ${dry.z}.`);
+            try {
+                await goToGoal(bot, new pf.goals.GoalBlock(dry.x, from.y, dry.z));
+            } catch (err) {
+                log(bot, `Could not dig sideways clear of the ${ceiling.name}: ${err.message}.`);
+                return false;
+            }
+            continue;
+        }
+        try {
+            await goToGoal(bot, new pf.goals.GoalBlock(from.x, from.y + 1, from.z));
+        } catch (err) {
+            log(bot, `Could not dig up past y=${from.y}: ${err.message}.`);
+            return false;
+        }
+        // No height gained means the next attempt will not fare better either:
+        // out of blocks to pillar with, or out of pickaxe.
+        if (bot.entity.position.y <= from.y) {
+            log(bot, `Stuck at y=${from.y}, cannot climb any higher. Check that you have a pickaxe and blocks to build with.`);
+            return false;
+        }
+    }
+    log(bot, `Dug up to the surface at y=${Math.floor(bot.entity.position.y)}.`);
+    return true;
 }
 
 export async function useToolOn(bot, toolName, targetName) {
