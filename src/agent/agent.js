@@ -3,6 +3,7 @@ import { Coder } from './coder.js';
 import { VisionInterpreter } from './vision/vision_interpreter.js';
 import { Prompter } from '../models/prompter.js';
 import { initModes } from './modes.js';
+import { applyPolicyGoal, loadPolicyState, policyGoal } from './behavior/policy.js';
 import { initBot } from '../utils/mcdata.js';
 import { containsCommand, commandExists, executeCommand, truncCommandMessage, isAction, blacklistCommands } from './commands/index.js';
 import { ActionManager } from './action_manager.js';
@@ -17,6 +18,31 @@ import settings from './settings.js';
 import { Task } from './tasks/tasks.js';
 import { speak } from './speak.js';
 import { log, validateNameFormat, handleDisconnection } from './connection_handler.js';
+
+// sysexits EX_TEMPFAIL: "try again shortly, and do not hold it against me".
+// agent_process restarts on this without counting it as a crash. Keep in sync
+// with the copy there -- one small number, versus importing child_process and
+// the mindserver into every agent to share it.
+const TEMPFAIL_EXIT = 75;
+
+// In-process reconnects before giving up and letting the supervisor start a
+// fresh process. Bounded because a reconnect only rebuilds what we know about:
+// if something subtler is wrong -- a leaked handler, a wedged pathfinder, a
+// corrupt registry -- a new process is the only thing that clears it, and
+// retrying forever in here would hide that instead of surfacing it.
+const MAX_INPROC_RECONNECTS = 5;
+const RECONNECT_DELAY_MS = 5000;
+// A connection has to have been genuinely working before a drop counts as a
+// blip worth retrying in place. Anything that dies faster than this never got
+// going, and repeating it in-process would just spin.
+// Spawning IS the evidence that the connection worked -- it means login,
+// registry sync and the world handshake all completed -- so this only has to be
+// long enough to exclude a connection that spawns and immediately dies. 60s was
+// far too generous: measured drops on this server run 59s to 1426s, so the
+// threshold sat in the middle of the real distribution and kept rejecting
+// sessions that had plainly been playing. Two in a row were refused at 57-59s
+// and paid for a whole process restart each.
+const HEALTHY_SESSION_MS = 15 * 1000;
 
 export class Agent {
     async start(load_mem=false, init_message=null, count_id=0) {
@@ -62,26 +88,59 @@ export class Agent {
         this.blocked_actions = settings.blocked_actions.concat(this.task.blocked_actions || []);
         blacklistCommands(this.blocked_actions);
 
+        // Everything above is built once per process. Everything below belongs
+        // to one connection and is rebuilt each time we reconnect, so it lives
+        // in _connect().
+        this._save_data = save_data;
+        this._init_message = init_message;
+        this._count_id = count_id;
+        this._load_mem = load_mem;
+        this._reconnects = 0;
+        this._connected_once = false;
+        await this._connect();
+    }
+
+    // One connection's worth of setup: a fresh bot object and every handler
+    // bound to it. Safe to run more than once -- the pieces that must happen
+    // exactly once per process (the browser viewer's port, the NPC controller,
+    // the update loop, the greeting) guard themselves on _connected_once.
+    async _connect() {
+        const save_data = this._save_data;
+        const init_message = this._init_message;
+        const count_id = this._count_id;
+        this._disconnectHandled = false;
+
+        // Not ready until the new bot SPAWNS. _connect returns as soon as the
+        // handlers are bound, which is many seconds before bot.entity exists --
+        // and every piece of this agent that asks where it is reads
+        // bot.entity.position. See _awaitReady.
+        this._ready = false;
+
         console.log(this.name, 'logging into minecraft...');
         this.bot = initBot(this.name);
-        
-        // Connection Handler
-        const onDisconnect = (event, reason) => {
-            if (this._disconnectHandled) return;
-            this._disconnectHandled = true;
 
-            // Log and Analyze
-            // handleDisconnection handles logging to console and server
-            const { type } = handleDisconnection(this.name, reason);
-     
-            process.exit(1);
-        };
+        const onDisconnect = (event, reason, code = 1) => this._handleDisconnect(reason, code);
         
         // Bind events
         this.bot.once('kicked', (reason) => onDisconnect('Kicked', reason));
         this.bot.once('end', (reason) => onDisconnect('Disconnected', reason));
+        // Mojang's auth API fails transiently, and it accounted for 45 of 194
+        // agent crashes in one log. It is not a real "the account does not own
+        // minecraft" -- the next attempt logs in fine. Left unrecognised, the
+        // connection just never spawns and the agent sits idle for the full
+        // spawn_timeout (30s) before exiting anyway, so treat it as the
+        // disconnect it is: exit now and let agent_process retry on its
+        // existing exponential backoff instead of burning half a minute first.
+        const isTransientAuthError = (err) => /Failed to obtain profile data|does the account own minecraft/i.test(String(err));
         this.bot.on('error', (err) => {
-            if (String(err).includes('Duplicate') || String(err).includes('ECONNREFUSED')) {
+            if (isTransientAuthError(err)) {
+                // 45 of 194 crashes in one log. It is Mojang's API having a
+                // moment, not a broken agent, so exit EX_TEMPFAIL: the parent
+                // retries promptly and does not count it toward the crash
+                // backoff, which would otherwise stretch a 5-second outage into
+                // 5-minute waits.
+                onDisconnect('Error', err, TEMPFAIL_EXIT);
+            } else if (String(err).includes('Duplicate') || String(err).includes('ECONNREFUSED')) {
                  onDisconnect('Error', err);
             } else {
                  log(this.name, `[LoginGuard] Connection Error: ${String(err)}`);
@@ -92,6 +151,7 @@ export class Agent {
 
         this.bot.on('login', () => {
             console.log(this.name, 'logged in!');
+            this.login_time = Date.now();
             serverProxy.login();
             
             // Set skin for profile, requires Fabric Tailor. (https://modrinth.com/mod/fabrictailor)
@@ -101,15 +161,43 @@ export class Agent {
                 this.bot.chat(`/skin clear`);
         });
 		const spawnTimeoutDuration = settings.spawn_timeout;
-        const spawnTimeout = setTimeout(() => {
+        // Both timers belong to the connection, and both used to be cleared by
+        // a handler on the bot -- which _reconnect's removeAllListeners strips.
+        // Held on `this` and cleared here instead, or every reconnect leaks a
+        // watchdog that later kills a perfectly healthy connection.
+        clearTimeout(this._spawn_timeout);
+        clearInterval(this._liveness);
+        this._spawn_timeout = setTimeout(() => {
             const msg = `Bot has not spawned after ${spawnTimeoutDuration} seconds. Exiting.`;
             log(this.name, msg);
             process.exit(1);
         }, spawnTimeoutDuration * 1000);
+        // Liveness watchdog. The game connection can die half-open: the server
+        // drops the bot ("lost connection: Timed out") but no 'end' or 'error'
+        // ever fires client-side, and the agent sat as a zombie for 2.5 hours.
+        // Server time-sync packets arrive every second while the connection is
+        // real, so their silence is connection death regardless of what the
+        // socket thinks. It routes through the disconnect handler like any
+        // other drop, so a half-open socket is now a reconnect rather than a
+        // guaranteed process death.
+        let last_time_update = Date.now();
+        this.bot.on('time', () => { last_time_update = Date.now(); });
+        this._liveness = setInterval(() => {
+            if (Date.now() - last_time_update > 180000) {
+                clearInterval(this._liveness);
+                this._handleDisconnect('No server time updates for 3 minutes: connection is dead but no end event fired.');
+            }
+        }, 60000);
+
         this.bot.once('spawn', async () => {
             try {
-                clearTimeout(spawnTimeout);
-                addBrowserViewer(this.bot, count_id, this.name);
+                clearTimeout(this._spawn_timeout);
+                this._spawn_time = Date.now();
+                this._ready = true;
+                // Binds port 3000+count_id. A reconnect keeps the viewer it
+                // already has; calling this twice is EADDRINUSE.
+                if (!this._connected_once)
+                    addBrowserViewer(this.bot, count_id, this.name);
                 console.log('Initializing vision intepreter...');
                 this.vision_interpreter = new VisionInterpreter(this, settings.allow_vision);
 
@@ -122,17 +210,23 @@ export class Agent {
                 this._setupEventHandlers(save_data, init_message);
                 this.startEvents();
               
-                if (!load_mem) {
-                    if (settings.task) {
-                        this.task.initBotTask();
-                        this.task.setAgentGoal();
-                    }
-                } else {
-                    // set the goal without initializing the rest of the task
-                    if (settings.task) {
-                        this.task.setAgentGoal();
+                // Task setup is per-process, not per-connection: re-running
+                // initBotTask on a reconnect would reset the task the agent is
+                // partway through.
+                if (!this._connected_once) {
+                    if (!this._load_mem) {
+                        if (settings.task) {
+                            this.task.initBotTask();
+                            this.task.setAgentGoal();
+                        }
+                    } else {
+                        // set the goal without initializing the rest of the task
+                        if (settings.task) {
+                            this.task.setAgentGoal();
+                        }
                     }
                 }
+                this._connected_once = true;
 
                 await new Promise((resolve) => setTimeout(resolve, 10000));
                 this.checkAllPlayersPresent();
@@ -155,7 +249,7 @@ export class Agent {
         ];
         
         const respondFunc = async (username, message) => {
-            if (message === "") return;
+            if (!message) return; // mindserver events can arrive with no message at all
             // Ignore our own chat. this.name is the agent's name, which is not
             // necessarily the name we are logged in as -- with Microsoft auth
             // mineflayer uses the account's username -- so check both.
@@ -197,12 +291,29 @@ export class Agent {
             bannedFood: ["rotten_flesh", "spider_eye", "poisonous_potato", "pufferfish", "chicken"]
         };
 
+        // Everything past here is about starting a session, not about having a
+        // socket: restoring the self-prompt goal, greeting the world, replaying
+        // an init message. A reconnect is the same session continuing, so it
+        // rebinds the handlers above and stops here -- otherwise the agent says
+        // "Hello world!" and re-reads its startup instructions every blip.
+        if (this._connected_once) return;
+
         if (save_data?.self_prompt) {
             if (init_message) {
                 this.history.add('system', init_message);
             }
             await this.self_prompter.handleLoad(save_data.self_prompt, save_data.self_prompting_state);
+            // The restored goal may be a detour; the policy goal is still what to
+            // return to when it is done, so re-establish it without starting it.
+            this.self_prompter.standing_prompt = policyGoal(loadPolicyState(this.name)) ?? '';
         }
+        // A goal declared by the profile library is what the agent is for, so it
+        // outlives a restart the same way its rules do. Only when nothing else
+        // holds the loop: a goal set later, by the agent or a person, is more
+        // current than the one the profiles were merged with.
+        else await applyPolicyGoal(this, loadPolicyState(this.name));
+        if (save_data?.last_death_time)
+            this.last_death_time = save_data.last_death_time;
         if (save_data?.last_sender) {
             this.last_sender = save_data.last_sender;
             if (convoManager.otherAgentInGame(this.last_sender)) {
@@ -218,6 +329,113 @@ export class Agent {
         }
         else {
             this.openChat("Hello world! I am "+this.name);
+        }
+    }
+
+    // Every way the game connection can end funnels through here: the login
+    // guard's error branch, and the runtime 'end'/'kicked' events. They used to
+    // take different exits -- one process.exit, one cleanKill -- which is why
+    // the runtime disconnects never got the save the login path had.
+    _handleDisconnect(reason, code = 1) {
+        if (this._disconnectHandled) return;
+        this._disconnectHandled = true;
+        this._ready = false;
+
+        // handleDisconnection logs to console and the mindserver.
+        handleDisconnection(this.name, reason);
+
+        // Save first, whatever happens next.
+        try { this.history?.save(); } catch {}
+
+        // A dropped socket is not a crash. Measured on a flaky server: ten
+        // drops in forty minutes, uptimes 94s to 1426s, every one a clean
+        // EPIPE/ECONNRESET/disconnect.timeout that the very next login attempt
+        // recovered from. Each one cost a whole process -- examples re-embedded,
+        // 17k blocks and 11.7k recipes of mod data re-parsed, ~25s of dead
+        // agent -- and drove the supervisor's crash backoff up until it was
+        // waiting minutes to retry a server accepting every connection on the
+        // first try.
+        if (this._canReconnect()) {
+            this._reconnect(reason);
+            return;
+        }
+        // Out of in-process attempts, or this connection never became a healthy
+        // session. Hand it back to the supervisor, which can clear state we
+        // cannot see from in here. A session that WAS healthy and then dropped
+        // is still a transient failure even once the in-process budget is
+        // spent, so tell the supervisor that rather than let it read a flaky
+        // link as a crash loop.
+        if (code === 1 && this._healthySession())
+            code = TEMPFAIL_EXIT;
+        process.exit(code);
+    }
+
+    // Wait for the bot to have a body again. Between a disconnect and the next
+    // spawn there is a window -- 5s of backoff plus however long login takes --
+    // in which bot.entity is undefined, and everything here that asks where it
+    // is goes through bot.entity.position. The update loop can just skip a
+    // tick; an LLM turn cannot, because replaceStrings runs the !stats query
+    // while building the prompt. That threw uncaught and killed the process on
+    // the very first live reconnect. Waiting beats dropping: the message is
+    // already in history and deserves its answer.
+    async _awaitReady(timeout_ms = 45000) {
+        const deadline = Date.now() + timeout_ms;
+        while (!this._ready || !this.bot?.entity) {
+            if (Date.now() > deadline) return false;
+            await new Promise(r => setTimeout(r, 250));
+        }
+        return true;
+    }
+
+    // Did this connection actually work before it dropped? Anything shorter
+    // never got going, and repeating it in place would just spin.
+    _healthySession() {
+        return !!this._spawn_time && Date.now() - this._spawn_time >= HEALTHY_SESSION_MS;
+    }
+
+    // Is this drop worth retrying without throwing the process away?
+    _canReconnect() {
+        if (this._reconnects >= MAX_INPROC_RECONNECTS) {
+            console.log(`${this.name}: ${this._reconnects} in-process reconnects already, handing back to the supervisor.`);
+            return false;
+        }
+        if (!this._healthySession()) {
+            const up = this._spawn_time ? Math.round((Date.now() - this._spawn_time) / 1000) : 0;
+            console.log(`${this.name}: connection lasted ${up}s, too short to call a blip.`);
+            return false;
+        }
+        return true;
+    }
+
+    async _reconnect(reason) {
+        this._reconnects++;
+        console.log(`[reconnect] ${this.name} attempt ${this._reconnects}/${MAX_INPROC_RECONNECTS} after: ${reason}`);
+
+        // Whatever was running is running against a dead socket. Tell it to stop
+        // before the bot goes away, or its next await throws into nothing.
+        try {
+            this.bot.interrupt_code = true;
+            this.actions?.cancelResume();
+        } catch (err) {
+            console.warn('reconnect: could not stop the running action:', err.message);
+        }
+        // Drop every handler bound to the old bot. Without this each reconnect
+        // leaves a full set behind and they all keep firing on their captured
+        // `this.bot` -- which is how you get a chat message answered five times.
+        try {
+            this.bot.removeAllListeners();
+            this.bot.end();
+        } catch (err) {
+            console.warn('reconnect: teardown was not clean:', err.message);
+        }
+        this._spawn_time = null;
+
+        await new Promise(r => setTimeout(r, RECONNECT_DELAY_MS));
+        try {
+            await this._connect();
+        } catch (err) {
+            console.error('reconnect failed, handing back to the supervisor:', err);
+            process.exit(1);
         }
     }
 
@@ -259,6 +477,11 @@ export class Agent {
     }
 
     async handleMessage(source, message, max_responses=null) {
+        // Do not build a prompt for a bot that has no body yet; see _awaitReady.
+        if (!await this._awaitReady()) {
+            console.warn(`${this.name}: dropping message from ${source}, never reconnected.`);
+            return false;
+        }
         await this.checkTaskDone();
         if (!source || !message) {
             console.warn('Received empty message from', source);
@@ -331,7 +554,7 @@ export class Agent {
         for (let i=0; i<max_responses; i++) {
             if (checkInterrupt()) break;
             let history = this.history.getHistory();
-            let res = await this.prompter.promptConvo(history);
+            let res = await this.prompter.promptConvo(history, !self_prompt);
 
             console.log(`${this.name} full response to ${source}: ""${res}""`);
 
@@ -469,23 +692,19 @@ export class Agent {
         this.bot.on('error' , (err) => {
             console.error('Error event!', err);
         });
-        // Use connection handler for runtime disconnects
-        this.bot.on('end', (reason) => {
-            if (!this._disconnectHandled) {
-                const { msg } = handleDisconnection(this.name, reason);
-                this.cleanKill(msg);
-            }
-        });
+        // Runtime disconnects. These used to cleanKill straight to a process
+        // exit; now they take the same route as every other disconnect, which
+        // decides between reconnecting in place and handing back to the
+        // supervisor. disconnect.timeout arrives here, and it was the single
+        // most common way this agent died.
+        this.bot.on('end', (reason) => this._handleDisconnect(reason));
         this.bot.on('death', () => {
+            this.last_death_time = Date.now();
+            serverProxy.reportDeath();
             this.actions.cancelResume();
             this.actions.stop();
         });
-        this.bot.on('kicked', (reason) => {
-            if (!this._disconnectHandled) {
-                const { msg } = handleDisconnection(this.name, reason);
-                this.cleanKill(msg);
-            }
-        });
+        this.bot.on('kicked', (reason) => this._handleDisconnect(reason));
         this.bot.on('messagestr', async (message, _, jsonMsg) => {
             // The death message names the account, which is not necessarily the
             // agent's name: under Microsoft auth mineflayer logs in as the
@@ -503,7 +722,7 @@ export class Agent {
                     death_pos_text = `x: ${death_pos.x.toFixed(2)}, y: ${death_pos.y.toFixed(2)}, z: ${death_pos.z.toFixed(2)}`;
                 }
                 let dimention = this.bot.game.dimension;
-                this.handleMessage('system', `You died at position ${death_pos_text || "unknown"} in the ${dimention} dimension with the final message: '${message}'. Your place of death is saved as 'last_death_position' if you want to return. Previous actions were stopped and you have respawned.`);
+                this.handleMessage('system', `You died at position ${death_pos_text || "unknown"} in the ${dimention} dimension with the final message: '${message}'. Your place of death is saved as 'last_death_position'. Whatever killed you is probably still there and your gear is on the ground next to it, so do NOT go back until you are armed and it is daytime -- returning unarmed is how you die twice. Previous actions were stopped and you have respawned. If something about this death will keep happening -- the same mob, the same hazard, running out of food or air -- use !policy to write yourself a standing rule that prevents it, and pin it so the job you are given cannot crowd it out. A rule is worth writing only if it would have saved you here.`);
             }
         });
         this.bot.on('idle', () => {
@@ -511,11 +730,23 @@ export class Agent {
             this.bot.pathfinder.stop(); // clear any lingering pathfinder
             this.bot.modes.unPauseAll();
             setTimeout(() => {
-                if (this.isIdle()) {
+                // Not isIdle(): a paused action should resume when nothing is
+                // running, even if the agent happens to be mid-generation --
+                // otherwise this one-shot timer passes and it never resumes.
+                if (!this.actions.executing) {
                     this.actions.resumeAction();
                 }
             }, 1000);
         });
+
+        this.bot.emit('idle');
+
+        // The handlers above bind to whichever bot object is current, so they
+        // are rebound on every reconnect. The two below are per-process: the
+        // NPC controller builds its goals once, and a second copy of the update
+        // loop would tick every mode and rule twice per interval, forever.
+        if (this._loop_started) return;
+        this._loop_started = true;
 
         // Init NPC controller
         this.npc.init();
@@ -534,26 +765,43 @@ export class Agent {
                 last = start;
             }
         }, INTERVAL);
-
-        this.bot.emit('idle');
     }
 
     async update(delta) {
-        await this.bot.modes.update();
-        this.self_prompter.update(delta);
-        await this.checkTaskDone();
+        // The loop outlives any one connection now, so it can tick while the
+        // bot underneath it is a corpse, or a fresh object that has not spawned
+        // yet. Every mode and rule reads the world; none of them survive that.
+        if (!this._ready || !this.bot?.entity) return;
+        try {
+            await this.bot.modes.update();
+            this.self_prompter.update(delta);
+            await this.checkTaskDone();
+        } catch (err) {
+            // An exception used to end the while(true) that calls this, which
+            // stopped every mode and rule for the life of the process without
+            // stopping the process. One bad tick is not worth that.
+            console.error('update tick failed:', err.message);
+        }
     }
 
+    // Thinking is not idling. A 30s LLM call left this true for its whole
+    // duration, so every is_idle-gated rule and every idle mode fired straight
+    // into the reasoning they were written to wait for. Callers that mean
+    // "nothing is running right now" (resuming a paused action) ask
+    // actions.executing directly.
     isIdle() {
-        return !this.actions.executing;
+        return !this.actions.executing && !this.prompter.isBusy();
     }
     
 
     cleanKill(msg='Killing agent process...', code=1) {
         console.log(`cleanKill (code ${code}): ${msg}\n${new Error().stack}`);
-        this.history.add('system', msg);
-        this.bot.chat(code > 1 ? 'Restarting.': 'Exiting.');
-        this.history.save();
+        // Nothing before process.exit may throw: a chat write on a dead socket
+        // throwing here left the agent as a zombie -- disconnected in-game but
+        // never exiting, so the parent never restarted it.
+        try { this.history.add('system', msg); } catch {}
+        try { this.bot.chat(code > 1 ? 'Restarting.': 'Exiting.'); } catch {}
+        try { this.history.save(); } catch {}
         process.exit(code);
     }
     async checkTaskDone() {
@@ -567,6 +815,12 @@ export class Agent {
                 this.killAll();
             }
         }
+    }
+
+    // ms since the last death we know about (survives restarts via memory.json),
+    // or null if we've never seen one.
+    aliveMs() {
+        return this.last_death_time ? Date.now() - this.last_death_time : null;
     }
 
     killAll() {
