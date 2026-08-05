@@ -211,9 +211,36 @@ export class Prompter {
         this.last_prompt_time = Date.now();
     }
 
-    async promptConvo(messages) {
-        this.most_recent_msg_time = Date.now();
+    // Is a generation in flight? A 30s LLM call is not idleness: every is_idle
+    // rule that fires during one fires into the very reasoning it was waiting
+    // for. See Agent.isIdle.
+    isBusy() {
+        return !!this._convo_inflight || this.awaiting_coding;
+    }
+
+    // external: the turn came from a person or another agent. Only those
+    // supersede an in-flight generation. A policy rule's prompt_self and the
+    // "Recent behaviors log" are context injected into the turn the agent is
+    // already having, and bumping the clock for them discarded completed,
+    // paid-for responses that were still perfectly good answers.
+    async promptConvo(messages, external = true) {
+        if (external || !this.most_recent_msg_time) this.most_recent_msg_time = Date.now();
         let current_msg_time = this.most_recent_msg_time;
+
+        // Messages arrive in bursts -- a mode output, its behavior log, and a
+        // system message land within a second of each other -- and each one
+        // started its own generation only to have the finished response thrown
+        // away by the staleness check below. 1177 discarded (fully paid-for)
+        // completions in one container's logs. Settle out the burst, then wait
+        // for any in-flight generation, so a superseded call exits *before*
+        // paying for the request instead of after.
+        await new Promise(r => setTimeout(r, 300));
+        while (this._convo_inflight) {
+            await this._convo_inflight;
+        }
+        if (current_msg_time !== this.most_recent_msg_time) {
+            return '';
+        }
 
         for (let i = 0; i < 3; i++) { // try 3 times to avoid hallucinations
             await this.checkCooldown();
@@ -226,7 +253,9 @@ export class Prompter {
             let generation;
 
             try {
-                generation = await this.chat_model.sendRequest(messages, prompt);
+                const req = this.chat_model.sendRequest(messages, prompt);
+                this._convo_inflight = req.catch(() => {}); // never rejects for the waiters above
+                generation = await req;
                 if (typeof generation !== 'string') {
                     console.error('Error: Generated response is not a string', generation);
                     throw new Error('Generated response is not a string');
@@ -237,6 +266,8 @@ export class Prompter {
             } catch (error) {
                 console.error('Error during message generation or file writing:', error);
                 continue;
+            } finally {
+                this._convo_inflight = null;
             }
 
             // Check for hallucination or invalid output
@@ -263,18 +294,28 @@ export class Prompter {
 
     async promptCoding(messages) {
         if (this.awaiting_coding) {
+            // NOT a code block. This used to return ```//no response```, which
+            // the coder happily treated as generated code, linted ("async main
+            // has no await"), and retried -- straight back into this branch. All
+            // five attempts burned in milliseconds, 275 times in one log. An
+            // empty string reads as "no code provided", which is what happened.
             console.warn('Already awaiting coding response, returning no response.');
-            return '```//no response```';
+            return '';
         }
         this.awaiting_coding = true;
-        await this.checkCooldown();
-        let prompt = this.profile.coding;
-        prompt = await this.replaceStrings(prompt, messages, this.coding_examples);
+        try {
+            await this.checkCooldown();
+            let prompt = this.profile.coding;
+            prompt = await this.replaceStrings(prompt, messages, this.coding_examples);
 
-        let resp = await this.code_model.sendRequest(messages, prompt);
-        this.awaiting_coding = false;
-        await this._saveLog(prompt, messages, resp, 'coding');
-        return resp;
+            let resp = await this.code_model.sendRequest(messages, prompt);
+            await this._saveLog(prompt, messages, resp, 'coding');
+            return resp;
+        } finally {
+            // A throw from sendRequest used to leave this true forever, and every
+            // !newAction after it fell into the branch above.
+            this.awaiting_coding = false;
+        }
     }
 
     async promptMemSaving(to_summarize) {
