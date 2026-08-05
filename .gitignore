@@ -36,3 +36,6 @@ tools/mod-data-dumper/.gradle/
 
 # serena mcp workspace cache
 .serena/
+
+# Generated code index (9MB+, rebuilt from source on demand)
+.codegraph/
