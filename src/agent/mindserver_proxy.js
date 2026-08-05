@@ -2,7 +2,7 @@ import { io } from 'socket.io-client';
 import convoManager from './conversation.js';
 import { setSettings } from './settings.js';
 import { getFullState } from './library/full_state.js';
-import { validatePolicy, LAYERS, loadPolicyState, savePolicyState, clearPolicyState, composePolicy, describePolicyState, setPolicyLocked, isPolicyLocked } from './behavior/policy.js';
+import { validatePolicy, LAYERS, loadPolicyState, savePolicyState, clearPolicyState, composePolicy, describePolicyState, setPolicyLocked, isPolicyLocked, generatePolicy, applyPolicyGoal } from './behavior/policy.js';
 
 // agent's individual connection to the mindserver
 // always connect to localhost
@@ -59,14 +59,19 @@ class MindServerProxy {
 
         this.socket.on('connect', () => {
             clearTimeout(this.reconnect_timer);
+            // Re-announce on EVERY connect, before the `connected` bookkeeping.
+            // It used to return early when this.connected was still true, which
+            // meant a reconnect the client did not register as a disconnect
+            // never re-announced -- and the server had already dropped the
+            // registration, permanently. Both emits are idempotent (the server
+            // rebinds by name), so announcing twice costs nothing and never
+            // announcing costs the agent its entire control plane.
+            this.socket.emit('connect-agent-process', name);
+            // login_time is only set once the bot is actually in the world.
+            if (this.agent?.login_time) this.socket.emit('login-agent', name, this.agent.aliveMs());
             if (this.connected) return;
             this.connected = true;
             console.log(name, 'reconnected to MindServer');
-            // the mindserver rebinds a connection by agent name, so simply
-            // re-announcing restores it. login_time is only set once the bot
-            // is actually in the world, and the process dies if it leaves.
-            this.socket.emit('connect-agent-process', name);
-            if (this.agent?.login_time) this.socket.emit('login-agent', name);
         });
 
         this.socket.on('chat-message', (agentName, json) => {
@@ -147,10 +152,20 @@ class MindServerProxy {
                     clearPolicyState(this.agent.name);
                     return callback({ success: true });
                 }
-                const state = loadPolicyState(this.agent.name); // keep locked flag
-                state.layers = {};
+                // Keep the locked flag, and keep the compose recipe: hand-editing
+                // the generated policy is not abandoning it, and dropping the
+                // recipe here would make "regenerate" impossible afterwards.
+                const state = loadPolicyState(this.agent.name);
+                // A layer the caller did not mention is a layer the caller was
+                // not editing, so leave it alone. Wiping every layer first and
+                // rebuilding from what arrived meant any client that read the
+                // policy badly -- or not at all -- silently destroyed the rules
+                // the agent had written for itself. Clearing is still possible,
+                // it just has to be said out loud now: send the layer as null.
                 for (const layer of LAYERS) {
+                    if (!(layer in data.layers)) continue;
                     const l = data.layers[layer];
+                    if (l === null) { delete state.layers[layer]; continue; }
                     if (!l?.policy) continue;
                     const err = validatePolicy(l.policy);
                     if (err) return callback({ success: false, error: `${layer}: ${err}` });
@@ -167,9 +182,36 @@ class MindServerProxy {
                     modes?.installPolicy(composed, describePolicyState(state));
                 savePolicyState(this.agent.name, state);
                 this.agent.history.add('system', `Your policy was edited via the web UI. It is now:\n${describePolicyState(state)}`);
+                applyPolicyGoal(this.agent, state).catch(err => console.error('Error starting policy goal:', err));
                 callback({ success: true });
             } catch (error) {
                 console.error('Error setting policy:', error);
+                callback({ success: false, error: error.message });
+            }
+        });
+
+        // Merging a base with its attributes is an LLM call, so this handler can
+        // sit for tens of seconds. The server side waits with a long timeout;
+        // there is nothing to stream back, the answer is one whole policy.
+        this.socket.on('generate-policy', async ({ base, attributes } = {}, callback) => {
+            try {
+                const state = await generatePolicy(this.agent, base, attributes ?? []);
+                const modes = this.agent.bot?.modes;
+                const composed = composePolicy(state);
+                if (composed.rules.length === 0 && Object.keys(composed.modes).length === 0)
+                    modes?.clearPolicy();
+                else
+                    modes?.installPolicy(composed, describePolicyState(state));
+                savePolicyState(this.agent.name, state);
+                this.agent.history.add('system', `Your policy was regenerated from the profile library. It is now:\n${describePolicyState(state)}`);
+                // The merged profiles may carry a goal, which is the only half of
+                // a policy that goes looking for work rather than waiting to be
+                // triggered. Starting it is an LLM loop, so it happens after the
+                // state is saved and never blocks the reply.
+                applyPolicyGoal(this.agent, state).catch(err => console.error('Error starting policy goal:', err));
+                callback({ success: true, state });
+            } catch (error) {
+                console.error('Error generating policy:', error);
                 callback({ success: false, error: error.message });
             }
         });
@@ -221,7 +263,11 @@ class MindServerProxy {
     }
 
     login() {
-        this.socket.emit('login-agent', this.agent.name);
+        this.socket.emit('login-agent', this.agent.name, this.agent.aliveMs());
+    }
+
+    reportDeath() {
+        this.socket.emit('agent-died', this.agent.name);
     }
 
     shutdown() {
