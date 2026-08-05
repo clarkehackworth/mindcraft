@@ -1,4 +1,4 @@
-import { writeFileSync, readFileSync, mkdirSync, existsSync } from 'fs';
+import { writeFileSync, readFileSync, appendFileSync, mkdirSync, existsSync } from 'fs';
 import { NPCData } from './npc/data.js';
 import settings from './settings.js';
 
@@ -61,19 +61,20 @@ export class History {
         console.log("Memory updated to: ", this.memory);
     }
 
+    // Append-only, one JSON object per line. This used to read, parse, push,
+    // pretty-print and rewrite the entire file synchronously on every batch --
+    // quadratic in session length, on the main thread, and the files reached
+    // 562 KB. JSONL is the same data with none of that; read it back with
+    // .split('\n').filter(Boolean).map(JSON.parse).
     async appendFullHistory(to_store) {
         if (this.full_history_fp === undefined) {
             const string_timestamp = new Date().toLocaleString().replace(/[/:]/g, '-').replace(/ /g, '').replace(/,/g, '_');
-            this.full_history_fp = `./bots/${this.name}/histories/${string_timestamp}.json`;
-            writeFileSync(this.full_history_fp, '[]', 'utf8');
+            this.full_history_fp = `./bots/${this.name}/histories/${string_timestamp}.jsonl`;
         }
         try {
-            const data = readFileSync(this.full_history_fp, 'utf8');
-            let full_history = JSON.parse(data);
-            full_history.push(...to_store);
-            writeFileSync(this.full_history_fp, JSON.stringify(full_history, null, 4), 'utf8');
+            appendFileSync(this.full_history_fp, to_store.map(t => JSON.stringify(t) + '\n').join(''), 'utf8');
         } catch (err) {
-            console.error(`Error reading ${this.name}'s full history file: ${err.message}`);
+            console.error(`Error writing ${this.name}'s full history file: ${err.message}`);
         }
     }
 
@@ -106,7 +107,8 @@ export class History {
                 self_prompting_state: this.agent.self_prompter.state,
                 self_prompt: this.agent.self_prompter.isStopped() ? null : this.agent.self_prompter.prompt,
                 taskStart: this.agent.task.taskStartTime,
-                last_sender: this.agent.last_sender
+                last_sender: this.agent.last_sender,
+                last_death_time: this.agent.last_death_time
             };
             writeFileSync(this.memory_fp, JSON.stringify(data, null, 2));
             console.log('Saved memory to:', this.memory_fp);
