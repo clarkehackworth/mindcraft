@@ -221,7 +221,7 @@
           "all": [
             {
               "cond": "health_below",
-              "value": 12
+              "pct": 60
             },
             {
               "cond": "has_food"

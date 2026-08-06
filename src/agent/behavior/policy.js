@@ -62,6 +62,25 @@ export const isWeaponName = (name) =>
 // weather, which is how the agent kept dying before anyone placed a block.
 const COLD_BIOME = /snow|frozen|ice|glacial|frost|freezing/i;
 
+// Max health is 20 in vanilla and 52 on this server -- confirmed against the
+// server itself, not inferred: `attribute clarkhackworth generic.max_health get`
+// answers 52.0. Every health threshold written as an absolute number was
+// therefore calibrated for a bot with a third of the health it actually has, and
+// "flee when health_below 8" meant "flee at 15%", which is not fleeing, it is
+// dying slightly later. Hence the pct form on health_below.
+//
+// The attribute key spelling has changed across protocol versions and mods can
+// add their own, so take the first that answers and fall back to vanilla rather
+// than reporting a max of zero and making every rule fire forever.
+function maxHealth(bot) {
+    const attributes = bot?.entity?.attributes ?? {};
+    for (const key of ['minecraft:generic.max_health', 'generic.maxHealth', 'generic.max_health', 'max_health']) {
+        const value = attributes[key]?.value ?? attributes[key];
+        if (typeof value === 'number' && value > 0) return value;
+    }
+    return 20;
+}
+
 function isFreezing(bot) {
     if (!bot?.entity?.position) return false;
     // Standing in powder snow. Certain, immediate, and the half under test.
@@ -106,9 +125,19 @@ export const CONDITIONS = {
             e => e.type === 'player' && (a.name === 'any' || !a.name || e.username === a.name), a.range ?? 16)
     },
     health_below: {
-        args: { value: 'number 0-20' },
-        desc: 'Bot health is below value (max 20).',
-        fn: (agent, a) => agent.bot.health < (a.value ?? 10)
+        // "value" stays first because parseConditionExpr fills args positionally
+        // from this order, so the flat form "health_below 6" -- used by
+        // !stayUntil and by every stay "until" string -- must keep meaning six
+        // health points. Putting pct first silently reinterpreted those as six
+        // PERCENT, which a test caught and a live agent would not have.
+        args: {
+            value: 'absolute health points. Only correct if you know this server\'s maximum; the flat form "health_below 6" means this.',
+            pct: 'percent of max health, 0-100. PREFER THIS in a rule, where you can name it.',
+        },
+        desc: 'Bot health is low. Give "pct" rather than "value": max health is not 20 everywhere -- it is 52 on this server, where the vanilla-looking "value": 8 meant the bot did not react until it was down to 15% and usually died anyway.',
+        fn: (agent, a) => a.pct != null
+            ? agent.bot.health < maxHealth(agent.bot) * (a.pct / 100)
+            : agent.bot.health < (a.value ?? 10),
     },
     hunger_below: {
         args: { value: 'number 0-20' },
