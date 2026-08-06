@@ -88,10 +88,38 @@ function isFreezing(bot) {
         const block = bot.blockAt?.(bot.entity.position.offset(0, dy, 0));
         if (block?.name === 'powder_snow') return true;
     }
-    // Ambient cold. Requires weather as well as biome, so merely being in a
-    // snowy forest -- which is where this agent lives, permanently -- is not on
-    // its own enough to fire a pinned interrupts:all rule forever.
-    return !!bot.isRaining && COLD_BIOME.test(world.getBiomeName(bot));
+    // Ambient cold: snowfall, in a cold biome, with sky above you.
+    //
+    // The sky check is not decoration, it is what makes this branch honest.
+    // move_away declares that it clears is_freezing, which is true of powder
+    // snow -- you walk out of the block -- and false of weather: walking ten
+    // blocks does not stop it snowing. Without a clearable term this branch
+    // re-fires every cooldown for as long as the storm lasts, which is exactly
+    // the livelock the validator exists to reject, and it got past the validator
+    // on a clear that did not hold for it. Observed doing precisely that,
+    // interrupting a goToCoordinates and a newAction.
+    //
+    // Getting under cover is the thing the rule's own prompt tells the agent to
+    // do, and now it is also the thing that makes the condition false.
+    if (!bot.isRaining || !COLD_BIOME.test(world.getBiomeName(bot))) return false;
+    return hasOpenSky(bot);
+}
+
+// Is there sky directly above, within the height weather can reach through?
+// A bounded upward scan rather than block.skyLight: sky light is dimmed by time
+// of day as well as by cover, so at night it cannot tell a roof from midnight.
+const SKY_SCAN = 12;
+function hasOpenSky(bot) {
+    const base = bot.entity.position;
+    for (let dy = 2; dy <= SKY_SCAN; dy++) {
+        const block = bot.blockAt?.(base.offset(0, dy, 0));
+        // An unloaded chunk reads as null. Treat that as covered rather than
+        // exposed: the failure that matters is a pinned rule firing forever, so
+        // when in doubt this branch stays quiet.
+        if (!block) return false;
+        if (block.name !== 'air' && block.boundingBox !== 'empty') return false;
+    }
+    return true;
 }
 
 export const CONDITIONS = {
