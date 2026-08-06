@@ -9,35 +9,52 @@ import test from 'node:test';
 import fs from 'node:fs';
 import { evalCondition, validatePolicy } from './policy.js';
 
-// Entity metadata key 7 is ticks_frozen in 1.17+.
-const botFrozen = (ticks) => ({ bot: { entity: { metadata: ticks === undefined ? [] : { 7: ticks } } } });
-
-test('is_freezing fires once the freeze meter is filling', () => {
-    assert.equal(evalCondition({ cond: 'is_freezing' }, botFrozen(120)), true);
+// The metadata approach is gone: while the bot was freezing to death on this
+// server, key 7 was never sent at all. is_freezing now reads the cause instead.
+import { Vec3 } from 'vec3';
+const agentIn = ({ foot = 'air', head = 'air', biome = 'plains', raining = false } = {}) => ({
+    bot: {
+        entity: { position: new Vec3(0, 64, 0) },
+        isRaining: raining,
+        blockAt: (p) => ({ name: p.y === 64 ? foot : head }),
+        world: { getBiome: () => 1 },
+        registry: { biomes: { 1: { name: biome } } },
+    },
 });
 
-test('is_freezing is false when the meter is empty or barely started', () => {
-    assert.equal(evalCondition({ cond: 'is_freezing' }, botFrozen(0)), false);
-    assert.equal(evalCondition({ cond: 'is_freezing' }, botFrozen(10)), false);
+test('standing in powder snow is freezing', () => {
+    assert.equal(evalCondition({ cond: 'is_freezing' }, agentIn({ foot: 'powder_snow' })), true);
+    assert.equal(evalCondition({ cond: 'is_freezing' }, agentIn({ head: 'powder_snow' })), true,
+        'sunk in up to the head counts too');
 });
 
-test('it fires before the damage starts, not after', () => {
-    // Vanilla begins dealing freeze damage at 140 ticks. A condition that only
-    // fired then would be telling the agent about a problem it is already losing
-    // health to.
-    assert.equal(evalCondition({ cond: 'is_freezing' }, botFrozen(100)), true,
-        'default threshold is below the 140-tick damage point');
+test('snowfall in a cold biome is freezing', () => {
+    assert.equal(evalCondition({ cond: 'is_freezing' },
+        agentIn({ biome: 'snowy_taiga', raining: true })), true);
+    assert.equal(evalCondition({ cond: 'is_freezing' },
+        agentIn({ biome: 'frozen_peaks', raining: true })), true);
 });
 
-test('the threshold is tunable', () => {
-    assert.equal(evalCondition({ cond: 'is_freezing', ticks: 140 }, botFrozen(120)), false);
-    assert.equal(evalCondition({ cond: 'is_freezing', ticks: 30 }, botFrozen(50)), true);
+test('a cold biome in clear weather is not, and that matters', () => {
+    // This agent lives in a snowy forest permanently. Firing on biome alone
+    // would mean a pinned interrupts:all rule that never stops firing.
+    assert.equal(evalCondition({ cond: 'is_freezing' },
+        agentIn({ biome: 'snowy_taiga', raining: false })), false);
 });
 
-test('a server that never sends the field answers false rather than throwing', () => {
-    assert.equal(evalCondition({ cond: 'is_freezing' }, botFrozen(undefined)), false);
+test('rain somewhere warm is not freezing', () => {
+    assert.equal(evalCondition({ cond: 'is_freezing' },
+        agentIn({ biome: 'plains', raining: true })), false);
+});
+
+test('a modded cold biome name still counts', () => {
+    // getBiomeName reads the server registry, so modded names arrive here.
+    assert.equal(evalCondition({ cond: 'is_freezing' },
+        agentIn({ biome: 'frostiful:glacial_barrens', raining: true })), true);
+});
+
+test('a bot with no position does not throw', () => {
     assert.equal(evalCondition({ cond: 'is_freezing' }, { bot: {} }), false);
-    assert.equal(evalCondition({ cond: 'is_freezing' }, { bot: { entity: {} } }), false);
 });
 
 test('the base policy has a rule that answers freezing, and it is valid', () => {

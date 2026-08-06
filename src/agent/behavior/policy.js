@@ -49,16 +49,30 @@ export const isWeaponName = (name) =>
 // What does prove the wiring is a non-zero reading, so that is what gets logged,
 // once. Until that line appears in a log this condition is correct-by-the-spec
 // but unconfirmed on this server; to force it, stand in powder snow.
-const FROZEN_TICKS_KEY = 7;
-let seen_freezing = false;
-function frozenTicks(bot) {
-    const ticks = bot?.entity?.metadata?.[FROZEN_TICKS_KEY];
-    if (typeof ticks !== 'number') return 0;
-    if (ticks > 0 && !seen_freezing) {
-        seen_freezing = true;
-        console.log(`is_freezing: freeze meter is live on this server (metadata[${FROZEN_TICKS_KEY}] = ${ticks}).`);
+// This first read entity metadata key 7, ticks_frozen in the vanilla 1.17+
+// layout. That is a specification, not an observation, and the observation
+// disagreed: penned in powder snow the bot froze to death three times and the
+// condition never fired once. A metadata probe then showed why -- while the bot
+// was freezing to death, at health 0, the only non-zero numeric slots were
+// 9 (health), 10, 20 and 21. Key 7 is never sent on this server at all.
+//
+// So freezing is detected from what is actually observable. Powder snow is the
+// certain case and the one the pen test can confirm. The biome half is a
+// heuristic and labelled as one: Frostiful does ambient cold damage in snowy
+// weather, which is how the agent kept dying before anyone placed a block.
+const COLD_BIOME = /snow|frozen|ice|glacial|frost|freezing/i;
+
+function isFreezing(bot) {
+    if (!bot?.entity?.position) return false;
+    // Standing in powder snow. Certain, immediate, and the half under test.
+    for (const dy of [0, 1]) {
+        const block = bot.blockAt?.(bot.entity.position.offset(0, dy, 0));
+        if (block?.name === 'powder_snow') return true;
     }
-    return ticks;
+    // Ambient cold. Requires weather as well as biome, so merely being in a
+    // snowy forest -- which is where this agent lives, permanently -- is not on
+    // its own enough to fire a pinned interrupts:all rule forever.
+    return !!bot.isRaining && COLD_BIOME.test(world.getBiomeName(bot));
 }
 
 export const CONDITIONS = {
@@ -181,9 +195,9 @@ export const CONDITIONS = {
         fn: (agent, a) => world.isNight(agent.bot, a.lead ?? 0)
     },
     is_freezing: {
-        args: { ticks: 'frozen ticks to trigger at (default 90). Vanilla starts doing damage at 140, and the meter empties at ~2 ticks per tick once you are warm again.' },
-        desc: 'The bot is freezing: powder snow or a cold biome is filling its freeze meter. Fires before the damage starts, so there is time to do something about it.',
-        fn: (agent, a) => frozenTicks(agent.bot) >= (a.ticks ?? 90)
+        args: {},
+        desc: 'The bot is freezing: standing in powder snow, or out in snowfall in a cold biome. Freezing kills on this server and there is no freeze-meter reading to be had, so this fires on the cause rather than on damage already taken.',
+        fn: (agent) => isFreezing(agent.bot)
     },
     is_idle: {
         args: {},

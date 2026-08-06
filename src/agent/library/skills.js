@@ -15,6 +15,15 @@ const SWEEP_STRIDE = 4;
 // that must agree is how those two drift apart.
 const PICKUP_RADIUS = 8;
 
+// The last-resort sweep reaches further than the in-loop one. Felling a tree
+// leaves the bot up the trunk while the logs land at the bottom, and the
+// diagnostic measured that gap repeatedly: 8.4 away (dy -7), then 14.1 (dy
+// -10.6), both "beyond the sweep's 8-block reach". Widening the in-loop sweep to
+// match would mean walking that far between digs, which is how a dig gets
+// aborted -- but the recovery sweep runs once, after the last block, with
+// nothing left to interrupt.
+const RECOVERY_PICKUP_RADIUS = 24;
+
 const blockPlaceDelay = settings.block_place_delay == null ? 0 : settings.block_place_delay;
 const useDelay = blockPlaceDelay > 0;
 
@@ -880,7 +889,7 @@ export async function bankedAnything(bot, items_before, collected, blockType = '
     // a long collect gets its later blocks swept anyway.
     await new Promise(resolve => setTimeout(resolve, 400));
     if (banked() > items_before) return true;
-    await pickupNearbyItems(bot);
+    await pickupNearbyItems(bot, RECOVERY_PICKUP_RADIUS);
     if (banked() > items_before) return true;
     return describeLostDrops(bot, blockType);
 }
@@ -926,12 +935,12 @@ function describeLostDrops(bot, blockType) {
     // printed a distance of 5.6 -- asserting a cause the number contradicts.
     console.log(`[lost drops] nearest item is ${dist.toFixed(1)} away (dy ${(near.position.y - me.y).toFixed(1)}), `
         + `bot y=${me.y.toFixed(1)}, drop y=${near.position.y.toFixed(1)}. `
-        + (dist >= PICKUP_RADIUS ? `Beyond the sweep's ${PICKUP_RADIUS}-block reach.`
+        + (dist >= RECOVERY_PICKUP_RADIUS ? `Beyond the recovery sweep's ${RECOVERY_PICKUP_RADIUS}-block reach.`
             : 'Within reach, so the sweep saw it and still could not get to it.'));
     return 'unreachable';
 }
 
-export async function pickupNearbyItems(bot) {
+export async function pickupNearbyItems(bot, radius = PICKUP_RADIUS) {
     /**
      * Pick up all nearby items.
      * @param {MinecraftBot} bot, reference to the minecraft bot.
@@ -939,7 +948,7 @@ export async function pickupNearbyItems(bot) {
      * @example
      * await skills.pickupNearbyItems(bot);
      **/
-    let nearestItem = getNearestDrop(bot, PICKUP_RADIUS);
+    let nearestItem = getNearestDrop(bot, radius);
     let pickedUp = 0;
     // Same shape as the sleep loop below: one pathfind per item, and nothing
     // watching the interrupt flag, so a pile of drops holds the action open past
@@ -970,7 +979,7 @@ export async function pickupNearbyItems(bot) {
         }
         await new Promise(resolve => setTimeout(resolve, 200));
         let prev = nearestItem;
-        nearestItem = getNearestDrop(bot, PICKUP_RADIUS);
+        nearestItem = getNearestDrop(bot, radius);
         if (prev === nearestItem) {
             break;
         }

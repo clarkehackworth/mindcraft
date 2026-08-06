@@ -6,8 +6,11 @@ Running log kept while watching Andy on the Prominence 2 server. These are
 **code** problems, not policy ones — the policy changes made the same session
 went out separately (see the bottom of this file).
 
-**Status:** 3 and 3b are fixed and deployed. 1 and 6 are open and are the two
-that matter. 2 is probably not a bug. 4 and 5 are unexamined.
+**Status:** most are fixed and deployed. 1 is the stubborn one and is now split
+into three measured causes, two fixed. 2 is probably not a bug. 4, 5 and 7 are
+unexamined. A companion log covers
+[the test harness](2026-08-05-live-test-harness.md) built partway through, and
+why passive observation alone kept producing wrong answers.
 
 | # | Problem | Status |
 |---|---------|--------|
@@ -23,7 +26,7 @@ that matter. 2 is probably not a bug. 4 and 5 are unexamined.
 | 6b | Interrupted collect logged one abort per remaining block | fixed |
 | 6c | No "nearly finished" grace in the arbiter | fixed |
 | 7 | `!stayUntil` accepts a condition no amount of waiting reaches | open |
-| 8 | No `is_freezing` condition on a server where freezing kills | fixed (unconfirmed live) |
+| 8 | No `is_freezing` condition on a server where freezing kills | fixed, confirmed live |
 
 ## 1. `collectBlocks` on modded logs breaks the block and banks nothing
 
@@ -122,8 +125,14 @@ stays out of the action output the model reads):
 
 - `nearest item is N away (dy -M)` — the drops exist but fell outside
   `pickupNearbyItems`' 8-block reach. Felling a tall pine from the base leaves
-  the bot pillared in the canopy while the logs land on the forest floor. Fix
-  would be to make that radius a parameter for the last-resort sweep.
+  the bot pillared in the canopy while the logs land on the forest floor.
+  Measured repeatedly once the diagnostic was in: 8.4 away (dy -7), 14.1
+  (dy -10.6), 13.9 (dy -8.4), all with the bot up at y=71-73 and the drops at
+  y=62-64. The recovery sweep now reaches `RECOVERY_PICKUP_RADIUS` (24) while the
+  in-loop sweep stays at 8 — widening the in-loop one would mean walking that far
+  between digs, which is how a dig gets aborted, but the recovery sweep runs once
+  with nothing left to interrupt. One sample since measured 46 away, so this is
+  reduced rather than eliminated.
 - `no item entity within 64 blocks` — the block broke and dropped nothing at
   all. A server/mod behaviour, and no amount of sweeping will ever help.
 
@@ -558,42 +567,57 @@ Collected 14 log.
 Before, that `craftRecipe` would have cancelled the trip at block 14 and the
 agent would have been told it collected nothing.
 
-## 8. `is_freezing` — **fixed**, with one caveat
+## 8. `is_freezing` — **fixed on the second attempt**
 
-Added `is_freezing` to `CONDITIONS`, reading entity metadata key 7
-(`ticks_frozen`, vanilla 1.17+), with a tunable threshold defaulting to 90 — the
-meter starts doing damage at 140, so the rule fires with a couple of seconds in
-hand.
+Freezing kills here, the agent knows it, and it kept writing itself cold-weather
+rules that the compiler had no vocabulary for — so the model substituted
+`is_night` or `hostile_nearby` and landed on `{"act": "stay"}`, the worst shape
+available. It arrived there because nothing could express what it meant.
 
-`move_away` now declares that it clears `is_freezing`, which is what let the base
-rule pass the livelock check honestly rather than by exemption: walking out of
-the powder snow you are standing in, or out from under the blizzard, is the thing
-that actually empties the meter. It is a partial clear, exactly as `flee`
-clearing `hostile_nearby` is partial — you can flee into a second zombie — but it
-is progress rather than waiting, and waiting is the shape this vocabulary exists
-to steer the model away from.
-
-`stayin_alive` gained `get_out_of_the_cold` (pinned, `interrupts: all`):
-`move_away` first, then a prompt naming the four things that actually work
-(get out of powder snow, dig in, heat source, leather armour). The rule exists so
-the agent stops trying to invent one.
-
-**The caveat, and a note on how not to check this.** The first version warned
-when `metadata[7]` was absent, reasoning that a condition which can never fire is
-worse than none. It fired within a minute of deploying — and it was wrong. A
-server only sends a metadata field once it *changes from its default*, so an
-absent slot means "not currently freezing", which is the normal state. Absence
-proves nothing.
-
-It now logs once on the first **non-zero** reading instead, since that is the
-observation that actually proves the wiring. Until
+**The first attempt read entity metadata key 7 (`ticks_frozen`) and did not
+work.** Penned in powder snow by `tools/live_test.sh freeze`, the bot froze to
+death three times in a row and the condition never fired once. A bounded metadata
+probe then showed why, including a sample taken as the bot died:
 
 ```
-is_freezing: freeze meter is live on this server (metadata[7] = N).
+[freeze probe 1/40] health=52 non-zero numeric metadata: 9=52 10=4802351 20=915 21=127
+[freeze probe 6/40] health=0  non-zero numeric metadata: 9=2  10=4802351 20=915 21=127
 ```
 
-appears in a log, this condition is correct by the spec but unconfirmed on
-Prominence 2. To force it: stand in powder snow.
+Key 7 never appears, not even mid-death. This server does not send it. Key 7 is
+correct for the vanilla 1.17+ layout; that is a specification, and the
+specification is not what is on the wire.
+
+(Key 9 is health and reads **52**. The modded maximum is not 20, so anything
+assuming vanilla health ranges — including any policy rule using `health_below`
+with vanilla numbers in mind — is wrong here. Worth its own look.)
+
+**The second attempt reads the cause, and is confirmed.** `is_freezing` is now
+true when the bot stands in powder snow (certain), or when it is snowing in a
+cold biome — via `world.getBiomeName`, which reads the server registry and so
+knows modded biome names. The biome half deliberately requires weather as well:
+this agent lives in a snowy forest permanently, and firing on biome alone would
+mean a pinned `interrupts: all` rule that never stops firing.
+
+Re-run against the pen:
+
+```
+FOUND: (POLICY RULE 'active:get_out_of_the_cold') YOU ARE FREEZING...
+-- agent side: mineflayer sees it, is_freezing is live
+```
+
+`move_away` declares that it clears `is_freezing`, which is what lets the base
+rule `get_out_of_the_cold` pass the livelock check honestly rather than by
+exemption: walking out of the powder snow is what actually stops it. Partial,
+exactly as `flee` clearing `hostile_nearby` is partial, but progress rather than
+waiting.
+
+**The general lesson, which is why the harness exists.** No amount of watching
+would have caught the first version. A condition that never fires looks exactly
+like a condition whose situation never arose, and I had already written it up as
+"correct by the spec, unconfirmed" and moved on. It took deliberately causing the
+situation to find out it was simply broken. See
+[the harness log](2026-08-05-live-test-harness.md).
 
 ## 6. Long-running collects are cancelled faster than they can finish
 
