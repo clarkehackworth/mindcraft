@@ -22,11 +22,53 @@ bot_pf.pathfinder.setMovements(mv);
 assert.equal(mv.allowParkour, false, 'parkour must be off');
 assert.equal(mv.allowSprinting, false, 'sprinting must be off');
 assert.equal(mv.allowFreeMotion, true, 'unrelated movement options must be left alone');
+assert.equal(mv.dontCreateFlow, false, 'block placement next to liquid must be allowed, or a bot cannot pillar out of its own flooded mine');
 assert.equal(seen.length, 1, 'the original setMovements must still be called');
 
 // a null movements object must not throw
 bot_pf.pathfinder.setMovements(null);
 assert.equal(seen.length, 2, 'null still reaches the original');
+
+// --- player builds are dug through only as a last resort --------------------
+let scans = 0;
+const bot_base = {
+    registry: { blocksArray: [{ id: 7, name: 'oak_door' }, { id: 8, name: 'oak_trapdoor' }, { id: 9, name: 'stone' }] },
+    pathfinder: { setMovements: () => {} },
+};
+// The scanner is injected rather than reading bot.findBlocks: findBlocks builds a
+// Block for every block in a 128-cube on direct-palette chunks, and this runs from
+// inside A*. Names, not ids, because that is what world.getNearestBlocks takes.
+const scanDoors = (bot, names) => {
+    scans++;
+    assert.deepEqual(names, ['oak_door'], 'only real doors anchor a build, not trapdoors');
+    return [{ x: 0, y: 64, z: 0 }];
+};
+tameMovements(bot_base, scanDoors);
+const mv_base = { exclusionAreasBreak: [] };
+bot_base.pathfinder.setMovements(mv_base);
+bot_base.pathfinder.setMovements(mv_base);
+// Two penalties -- the build box and the harvestable check -- across two calls,
+// so each is registered once rather than per call.
+assert.equal(mv_base.exclusionAreasBreak.length, 2, 'each penalty must be registered once, not per call');
+const penalty = mv_base.exclusionAreasBreak[0];
+const at = (x, y, z) => penalty({ position: { x, y, z } });
+assert.ok(at(5, 64, 5) >= 99, 'a wall inside the base must be priced out of digging');
+assert.ok(at(0, 64, 0) < 100, 'never fully unbreakable, or a bot shut inside has no path out');
+assert.equal(at(40, 64, 40), 0, 'terrain far from any door digs at the normal cost');
+assert.equal(at(0, 90, 0), 0, 'and so does terrain well above the roof');
+assert.equal(penalty(null), 0, 'a missing block must not throw');
+assert.equal(scans, 1, 'the door scan is cached, not run per block');
+
+// a bot whose world is not loaded yet must not break pathfinding
+const bot_early = {
+    registry: { blocksArray: [{ id: 7, name: 'oak_door' }] },
+    findBlocks: () => { throw new Error('Chunk not loaded'); },
+    pathfinder: { setMovements: () => {} },
+};
+tameMovements(bot_early);
+const mv_early = { exclusionAreasBreak: [] };
+bot_early.pathfinder.setMovements(mv_early);
+assert.equal(mv_early.exclusionAreasBreak[0]({ position: { x: 0, y: 0, z: 0 } }), 0, 'a failed scan means no penalty');
 
 // --- exploration leash ------------------------------------------------------
 const bot = { spawn_point: { x: 100, z: -50 } };
