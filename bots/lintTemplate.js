@@ -5,10 +5,13 @@ import pf from 'mineflayer-pathfinder';
 
 const log = skills.log;
 // Matches the sandbox in coder.js _stageCode. Keep the two in step, or lint
-// passes code the compartment cannot run (or rejects code it can).
+// passes code the compartment cannot run (or rejects code it can). pf itself is
+// exposed as well as pf.goals: the model writes `new pf.goals.GoalNear(...)`
+// about as often as the bare `goals.` form.
 const goals = pf.goals;
 
-export async function main(bot) {
+// __log via a default parameter, matching execTemplate -- see the comment there.
+export async function main(bot, __log = log) {
     /* CODE HERE */
-    log(bot, 'Code finished.');
+    __log(bot, 'Code finished.');
 }

@@ -90,6 +90,12 @@ export class Coder {
             let res = await this.agent.prompter.promptCoding(messages_copy);
             if (this.agent.bot.interrupt_code)
                 return null;
+            // null means another coding request is already in flight, not that
+            // the model declined. Retrying cannot help -- no request was made,
+            // and the retry returns here instantly -- so it would just spend the
+            // no-code budget and report a refusal that never happened.
+            if (res === null)
+                return 'Another action is already writing code. Wait for it to finish before starting a new one.';
             let contains_code = res.indexOf('```') !== -1;
             if (!contains_code) {
                 if (res.indexOf('!newAction') !== -1) {
@@ -242,13 +248,22 @@ export class Coder {
     async _stageCode(code) {
         code = this._sanitizeCode(code);
         let src = '';
-        code = code.replaceAll('console.log(', 'log(bot,');
-        code = code.replaceAll('log("', 'log(bot,"');
+        // __log, not log: these are calls WE splice into the generated body, so
+        // they must not resolve to whatever the model happened to name a
+        // variable. "let log = world.getNearestBlock(bot, 'pine_log', 16)" is a
+        // thing it writes constantly in a forest, and it shadowed every one of
+        // these for the rest of the body. See bots/execTemplate.js.
+        code = code.replaceAll('console.log(', '__log(bot,');
+        code = code.replaceAll('log("', '__log(bot,"');
 
         console.log(`Generated code: """${code}"""`);
 
         // this may cause problems in callback functions
-        code = code.replaceAll(';\n', '; if(bot.interrupt_code) {log(bot, "Code interrupted.");return;}\n');
+        // This one is the interrupt check spliced after every statement, so a
+        // shadowed `log` broke it on the SAME line that declared the shadow --
+        // which is how "let log = ..." turned into "log is not a function"
+        // before the code had done anything at all.
+        code = code.replaceAll(';\n', '; if(bot.interrupt_code) {__log(bot, "Code interrupted.");return;}\n');
         for (let line of code.split('\n')) {
             src += `    ${line}\n`;
         }
@@ -281,6 +296,14 @@ export class Coder {
             // let the obvious code work than to keep rejecting it; the lint
             // feedback below still points at the skills first.
             goals: pf.goals,
+            // The lint template imports pf and the compartment did not, so
+            // `new pf.goals.GoalNear(...)` -- the form the pathfinder docs use,
+            // and the one the model writes about as often as the bare `goals.`
+            // form -- passed lint and then died at runtime on "Cannot read
+            // properties of undefined (reading 'GoalNear')". The comment on the
+            // lint template asks for these two to be kept in step; this is the
+            // half that was missing.
+            pf,
         });
         const mainFn = compartment.evaluate(src);
         

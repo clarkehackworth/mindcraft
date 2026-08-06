@@ -299,8 +299,14 @@ export class Prompter {
             // has no await"), and retried -- straight back into this branch. All
             // five attempts burned in milliseconds, 275 times in one log. An
             // empty string reads as "no code provided", which is what happened.
+            // null, not '': the caller retries an empty response three times,
+            // and retrying THIS is pointless -- nothing has changed, no request
+            // was made, and the retry lands right back here in the same
+            // millisecond. Live, that burned all three attempts instantly and
+            // reported "Action failed, agent would not write code", which reads
+            // as the model refusing rather than as two coders racing.
             console.warn('Already awaiting coding response, returning no response.');
-            return '';
+            return null;
         }
         this.awaiting_coding = true;
         try {
