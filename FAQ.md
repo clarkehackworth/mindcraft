@@ -31,7 +31,7 @@
   - Possible reason 3: Not setting the code path correctly in setting.js, use andy.js by default. 
 
 # Common Questions
-- Mod Support? Mindcraft only supports client-side mods like optifine and sodium, though they can be tricky to set up. Mods that change minecraft game mechanics are not supported.
+- Mod Support? Client-side mods like optifine and sodium are supported, though they can be tricky to set up. For modded servers that add blocks/items or shift vanilla registry ids, generate a registry dump with `tools/mod-data-dumper` and point the `mod_data` setting at it (see `mod_data/README.md`) so the bot can recognize modded blocks. This doesn't teach the bot new mod mechanics or recipes beyond what's in the dump — it just stops it from misreading the world.
   
 - Texture Packs? Apparently these cause issues and refuse to connect. Not sure why
   
