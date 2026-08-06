@@ -4,11 +4,30 @@ import pf from 'mineflayer-pathfinder';
 import Vec3 from 'vec3';
 import settings from "../../../settings.js";
 
+// How many blocks collectBlocks may break before it stops to pick the drops up,
+// when nothing is arriving in the bag on its own. See the sweep in collectBlocks.
+// ponytail: a fixed stride. If drop loss and dig aborts trade off differently on
+// another server, this is the knob -- lower picks up more, higher digs faster.
+const SWEEP_STRIDE = 4;
+
+// How far pickupNearbyItems will go for a dropped item. Named because the
+// lost-drop diagnostic reports distances against it, and a bare 8 in two places
+// that must agree is how those two drift apart.
+const PICKUP_RADIUS = 8;
+
 const blockPlaceDelay = settings.block_place_delay == null ? 0 : settings.block_place_delay;
 const useDelay = blockPlaceDelay > 0;
 
 export function log(bot, message) {
     bot.output += message + '\n';
+}
+
+// "I am `done` of `total` through this." Read by ActionManager to decide whether
+// a non-urgent interrupter should wait a moment rather than throw the work away.
+// It lives on the bot because that is the only object a skill is given.
+// Reporting is optional: an action that says nothing is never nearly-finished.
+export function reportProgress(bot, done, total) {
+    bot.action_progress = total > 0 ? { done, total } : null;
 }
 
 /**
@@ -652,7 +671,12 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
     let collected = 0;
     // Total item count, not per-item names: what a block drops (stone ->
     // cobblestone, ore -> raw metal) is a mapping this check does not need.
-    const items_before_collect = bot.inventory.items().reduce((sum, i) => sum + i.count, 0);
+    const items_before_collect = bankedCount(bot);
+    // Watermark for the in-loop pickup sweep below: what was in the bag the last
+    // time we looked. It only moves forward, so a sweep that recovers nothing
+    // does not make the next block think progress was made.
+    let banked_at_last_sweep = items_before_collect;
+    let since_sweep = 0;
 
     const movements = new pf.Movements(bot);
     movements.dontMineUnderFallingBlock = false;
@@ -724,10 +748,35 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
             }
             else {
                 await bot.collectBlock.collect(block);
+                // collectBlock breaks the block but only walks to the drop if
+                // minecraft-data's drop table told it what to expect, which for
+                // a modded block it did not. Sweeping once at the end is not
+                // enough: a 20-log run walks the bot across the grove, and
+                // pickupNearbyItems looks 8 blocks out, so the earlier drops are
+                // long out of range by the time it runs -- "Broke 20 pine_log
+                // but nothing entered your inventory", repeatedly, live.
+                // So sweep as we go, and only when nothing arrived on its own:
+                // on a vanilla server collectBlock banks the item itself and
+                // this never fires.
+                // Every SWEEP_STRIDE blocks, not every block: the sweep walks
+                // the bot to each drop, and walking between digs is how
+                // "Digging aborted" happens. Four is enough to keep the drops
+                // inside pickupNearbyItems' 8-block reach on a normal tree,
+                // while costing a quarter of the movement.
+                if (++since_sweep >= SWEEP_STRIDE && bankedCount(bot) <= banked_at_last_sweep) {
+                    await pickupNearbyItems(bot);
+                    since_sweep = 0;
+                }
+                else if (bankedCount(bot) > banked_at_last_sweep) since_sweep = 0;
+                banked_at_last_sweep = bankedCount(bot);
                 success = true;
             }
             if (success)
                 collected++;
+            // Cancelling this at block 14 of 16 threw away the whole trip, and
+            // what usually cancelled it was the model starting a new idea. Say
+            // how far along we are so that kind of interrupter waits.
+            reportProgress(bot, collected, num);
             await autoLight(bot);
         }
         catch (err) {
@@ -735,10 +784,15 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                 log(bot, `Failed to collect ${blockType}: Inventory full, no place to deposit.`);
                 break;
             }
-            else {
-                log(bot, `Failed to collect ${blockType}: ${err}.`);
-                continue;
-            }
+            // An interrupt aborts the dig in progress, and every dig after it,
+            // so `continue` here walked the rest of the block list logging
+            // "Digging aborted" once per block -- twenty identical lines in one
+            // action output, and the action ignoring the interrupt long enough
+            // to be abandoned by force ten seconds later. The interrupt check at
+            // the bottom of the loop never ran, because `continue` skips it.
+            if (bot.interrupt_code) break;
+            log(bot, `Failed to collect ${blockType}: ${err}.`);
+            continue;
         }
         
         if (bot.interrupt_code)
@@ -748,13 +802,133 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
     // holes, burn, or despawn ("Got 8 pine logs" with an empty inventory sent
     // the LLM planning around wood it did not have). Only claim success the
     // inventory can back up.
-    const items_after_collect = bot.inventory.items().reduce((sum, i) => sum + i.count, 0);
-    if (collected > 0 && items_after_collect <= items_before_collect) {
-        log(bot, `Broke ${collected} ${blockType} but nothing entered your inventory -- the drops were lost or are out of reach. Check !inventory before planning around them.`);
+    const banked = await bankedAnything(bot, items_before_collect, collected, blockType);
+    if (banked !== true) {
+        // Three different stories, and telling the wrong one has a cost: every
+        // one of these used to read "the drops were lost or are out of reach",
+        // which is how the agent learned that the trees here are unobtainable
+        // and then acted on it for hours. Two of the three cases are not even
+        // about the drops.
+        log(bot, {
+            // Cut off before it could pick anything up. bankedAnything bails
+            // early rather than pathfind past the grace period, so it never
+            // looked -- this is not evidence about the drops in either direction.
+            interrupted: `Broke ${collected} ${blockType}, but was interrupted before the drops could be picked up. They are probably still on the ground where you were. This says nothing about whether ${blockType} is collectable here.`,
+            // The block broke and no item ever existed. Note that the tool check
+            // before the dig cannot catch this: prismarine-block's canHarvest
+            // returns true whenever harvestTools is undefined, which is every
+            // block minecraft-data has never heard of -- so on a modded server
+            // it always passes and protects nothing.
+            no_drop: `Broke ${collected} ${blockType} but no dropped item ever appeared, so nothing was banked. This happens intermittently here and the same block type does work other times, so it is not proof that ${blockType} is uncollectable -- check !inventory, and if you need more, try again from a different spot rather than concluding it cannot be had.`,
+            // The drops exist and the bot could not get to them.
+            unreachable: `Broke ${collected} ${blockType} but could not reach the drops -- they are nearby and out of reach. Check !inventory before planning around them.`,
+        }[banked] ?? `Broke ${collected} ${blockType} but nothing entered your inventory. Check !inventory before planning around them.`);
         return false;
     }
     log(bot, `Collected ${collected} ${blockType}.`);
     return collected > 0;
+}
+
+// Did the collect actually put anything in the bag, and if not, is that because
+// the drops are still lying where they fell?
+//
+// mineflayer's collectBlock walks to a drop only if it recognises it, and it
+// works that out from minecraft-data's drop table -- which has no entry for a
+// modded block. On Prominence 2 the whole pine_log line therefore broke fine and
+// was never picked up: seventeen "nothing entered your inventory" in six hours,
+// so no wood, no planks, no sword, and twenty deaths holding nothing. The
+// manual-collect branch in collectBlocks already sweeps after digging; this is
+// the same sweep for the branch that does not.
+//
+// Separate and exported so the "swept, then re-checked" order is testable
+// without standing up a chunk to break blocks in.
+// The nearest dropped item, by any of the names mineflayer has called one.
+// `entity.name === 'item'` alone is what the sweep used to check, and a drop
+// entity a modded server registers under another name is invisible to it -- the
+// sweep then walks nowhere and reports "picked up 0" while the log lies on the
+// ground in front of the bot.
+function getNearestDrop(bot, distance) {
+    return bot.nearestEntity(e =>
+        (e.name === 'item' || e.objectType === 'Item' || e.displayName === 'Item' || e.entityType === 'item')
+        && bot.entity.position.distanceTo(e.position) < distance);
+}
+
+// How many items are in the bag, counting stacks. "Did that actually work" is
+// asked of the inventory rather than of a counter, because the counter counts
+// blocks broken and the drops can be lost.
+export function bankedCount(bot) {
+    return bot.inventory.items().reduce((sum, i) => sum + i.count, 0);
+}
+
+// Returns true if anything reached the bag, or one of 'interrupted' /
+// 'no_drop' / 'unreachable' saying why not. The caller needs the distinction:
+// all three used to be reported to the agent as "the drops were lost or are out
+// of reach", and two of those were false statements that taught it the trees
+// here are unobtainable.
+export async function bankedAnything(bot, items_before, collected, blockType = 'the block') {
+    const banked = () => bankedCount(bot);
+    if (collected <= 0 || banked() > items_before) return true;
+    // The sweep pathfinds once per item, so skipping it on an interrupt is not
+    // an optimisation -- it stops the action being held open past its grace
+    // period, which pickupNearbyItems already carries a comment about.
+    if (bot.interrupt_code) return 'interrupted';
+    // Let the drop exist before looking for it. The item entity arrives a tick
+    // or two after the block break, and this check runs immediately after --
+    // so a one-block collect swept an empty world, reported "picked up 0", and
+    // declared the log lost while it was still spawning. Losses clustered on
+    // small collects, which is what pointed at a race rather than at distance:
+    // a long collect gets its later blocks swept anyway.
+    await new Promise(resolve => setTimeout(resolve, 400));
+    if (banked() > items_before) return true;
+    await pickupNearbyItems(bot);
+    if (banked() > items_before) return true;
+    return describeLostDrops(bot, blockType);
+}
+
+// Diagnostic for the losses that survive the sweep. Two explanations remain and
+// they want opposite fixes, so guessing between them is how you ship the wrong
+// one: either the drops are out of pickupNearbyItems' 8-block reach (felling a
+// tall pine leaves the bot in the canopy while the logs fall to the forest
+// floor), or there is no drop entity at all and the server consumed the block.
+// One line each time says which. console, not log(), so it stays out of the
+// action output the model reads.
+function describeLostDrops(bot, blockType) {
+    const held = bot.heldItem ? bot.heldItem.name : 'nothing';
+    const near = getNearestDrop(bot, 64);
+    if (!near) {
+        // canHarvest already gated this break and said yes, so minecraft-data
+        // believes the held item is sufficient. The server disagreed. That is
+        // the usual shape of a modded block whose real tool requirement is not
+        // in the vanilla registry -- so record what was actually in hand, which
+        // is the one thing needed to tell that from a block that legitimately
+        // drops nothing.
+        // The tool theory is dead: this agent has never owned an axe and has
+        // still banked 15 logs in one go, so logs plainly drop bare-handed here
+        // and the failures are intermittent rather than categorical.
+        //
+        // What is left is whether the drop exists at all. mineflayer only tracks
+        // entities it could parse, so a modded item entity it choked on would be
+        // invisible to getNearestDrop while being perfectly real on the server --
+        // which would explain the intermittency exactly (the bot banks them only
+        // when it happens to walk over one). So list what IS nearby: if there are
+        // entities here with names we do not recognise, that is the answer.
+        const near_all = Object.values(bot.entities ?? {})
+            .filter(e => e?.position && bot.entity.position.distanceTo(e.position) < 16)
+            .map(e => e.name ?? e.displayName ?? `type:${e.type}`);
+        console.log(`[lost drops] broke ${blockType} holding ${held}; no item entity within 64. `
+            + `Entities within 16: ${near_all.length ? near_all.join(', ') : '(none at all)'}`);
+        return 'no_drop';
+    }
+    const me = bot.entity.position;
+    const dist = me.distanceTo(near.position);
+    // Report the measurement, not a theory about it. The first version of this
+    // line ended "but the sweep only reaches 8" unconditionally, and then
+    // printed a distance of 5.6 -- asserting a cause the number contradicts.
+    console.log(`[lost drops] nearest item is ${dist.toFixed(1)} away (dy ${(near.position.y - me.y).toFixed(1)}), `
+        + `bot y=${me.y.toFixed(1)}, drop y=${near.position.y.toFixed(1)}. `
+        + (dist >= PICKUP_RADIUS ? `Beyond the sweep's ${PICKUP_RADIUS}-block reach.`
+            : 'Within reach, so the sweep saw it and still could not get to it.'));
+    return 'unreachable';
 }
 
 export async function pickupNearbyItems(bot) {
@@ -765,21 +939,38 @@ export async function pickupNearbyItems(bot) {
      * @example
      * await skills.pickupNearbyItems(bot);
      **/
-    const distance = 8;
-    const getNearestItem = bot => bot.nearestEntity(entity => entity.name === 'item' && bot.entity.position.distanceTo(entity.position) < distance);
-    let nearestItem = getNearestItem(bot);
+    let nearestItem = getNearestDrop(bot, PICKUP_RADIUS);
     let pickedUp = 0;
     // Same shape as the sleep loop below: one pathfind per item, and nothing
     // watching the interrupt flag, so a pile of drops holds the action open past
     // the grace period.
     while (nearestItem && !bot.interrupt_code) {
         let movements = new pf.Movements(bot);
-        movements.canDig = false;
+        // Logs do not always fall to the ground. Measured live: a drop 5.6 away
+        // and 5 blocks ABOVE the bot -- resting on the leaves of the tree it had
+        // just felled, well inside the sweep's reach, seen, and unreachable,
+        // because canDig:false leaves no way up through a canopy. That was the
+        // last unexplained source of "nothing entered your inventory".
+        //
+        // Digging is allowed only to reach a drop the bot already owns the work
+        // for. It cannot wander: the goal is one specific item within
+        // PICKUP_RADIUS, and scaffolding stays off, so the worst case is a few
+        // leaf blocks broken in a tree that is already half gone.
+        movements.canDig = true;
+        movements.allow1by1towers = false;
         bot.pathfinder.setMovements(movements);
-        await goToGoal(bot, new pf.goals.GoalFollow(nearestItem, 1));
+        // goToGoal throws on an unreachable goal, by design. A drop that fell
+        // somewhere the bot cannot walk to is an ordinary outcome here -- logs
+        // roll off into ravines and under trees -- and it must not take the
+        // whole collect down with it. Give up on that one item and stop.
+        try {
+            await goToGoal(bot, new pf.goals.GoalFollow(nearestItem, 1));
+        } catch (err) {
+            break;
+        }
         await new Promise(resolve => setTimeout(resolve, 200));
         let prev = nearestItem;
-        nearestItem = getNearestItem(bot);
+        nearestItem = getNearestDrop(bot, PICKUP_RADIUS);
         if (prev === nearestItem) {
             break;
         }
