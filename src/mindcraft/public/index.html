@@ -3,7 +3,18 @@
 <head>
     <title>Mindcraft</title>
     <script src="/socket.io/socket.io.js"></script>
+    <!-- CodeMirror for the policy JSON editors; if the CDN is unreachable the plain textareas still work -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/material-darker.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/show-hint.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/javascript/javascript.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/show-hint.min.js"></script>
     <style>
+        /* min-width:0 lets the editors shrink to their flex basis; without it
+           CodeMirror's intrinsic width crushes the tile pane to nothing. */
+        .CodeMirror { flex: 1 1 auto; height: auto; min-height: 0; min-width: 0; width: 100%; font-size: 12px; border-radius: 4px; }
+        .CodeMirror-hints { z-index: 2000; }
         body {
             font-family: Arial, sans-serif;
             margin: 20px;
@@ -59,6 +70,15 @@
             font-size: 0.9em;
         }
         .gear-btn:hover { background: #5a5a5a; }
+        .lock-toggle {
+            margin-left: 6px;
+            font-size: 0.9em;
+            font-weight: normal;
+            cursor: pointer;
+            user-select: none;
+        }
+        .lock-toggle input { vertical-align: middle; margin-right: 3px; }
+        .lock-toggle input:disabled + span { opacity: 0.5; }
         .status-icon {
             font-size: 12px;
             margin-right: 8px;
@@ -369,6 +389,78 @@
             border-top: 1px solid #3a3a3a;
         }
         .footer-left { color: #cccccc; font-style: italic; }
+
+        /* Policy modal */
+        /* The tab strip stays put and only the selected pane scrolls, so the
+           editor textarea can fill whatever height is left over. */
+        #policyModal .modal-body { display: flex; flex-direction: column; }
+        .policy-pane { display: none; flex: 1 1 auto; min-height: 0; flex-direction: column; }
+        .policy-pane.selected { display: flex; }
+        .policy-pane[data-tab="compose"] { overflow: auto; }
+        .policy-body { display: flex; gap: 12px; flex: 1 1 auto; min-height: 0; }
+        .policy-view { flex: 1 1 50%; overflow: auto; }
+        .policy-edit { flex: 1 1 50%; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+        .policy-edit textarea {
+            flex: 1; width: 100%; resize: none; box-sizing: border-box;
+            background: #1e1e1e; color: #d4d4d4; border: 1px solid #3a3a3a;
+            border-radius: 4px; font-family: monospace; font-size: 12px; padding: 8px;
+        }
+        .policy-source {
+            background: #1e1e1e; border-left: 3px solid #42a5f5; border-radius: 4px;
+            padding: 8px 10px; margin-bottom: 10px; color: #ccc; font-style: italic; white-space: pre-wrap;
+        }
+        .rule-card {
+            background: #383838; border-radius: 6px; padding: 8px 10px; margin-bottom: 8px;
+            border-left: 3px solid #4CAF50;
+        }
+        .rule-card.interrupts-all { border-left-color: #f44336; }
+        .rule-add {
+            margin-left: auto; font-size: 11px; padding: 1px 8px; border-radius: 8px;
+            background: #555; color: #fff; border: none; cursor: pointer;
+        }
+        .rule-add:hover { background: #42a5f5; }
+        .rule-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+        .rule-name { font-weight: bold; }
+        .rule-badge {
+            font-size: 11px; padding: 1px 6px; border-radius: 8px; background: #4CAF50; color: #fff;
+        }
+        .rule-badge.all { background: #f44336; }
+        .rule-badge.cooldown { background: #555; }
+        .rule-desc { color: #bbb; font-size: 13px; margin-bottom: 4px; }
+        .rule-code { font-family: monospace; font-size: 12px; color: #9cdcfe; white-space: pre-wrap; }
+        .policy-modes-line { color: #ccc; font-size: 13px; margin-bottom: 10px; }
+        .policy-tabs { display: flex; align-items: center; gap: 4px; margin-bottom: 8px; }
+        .policy-tab {
+            background: #2a2a2a; color: #aaa; border: 1px solid #3a3a3a; border-bottom: none;
+            padding: 6px 16px; border-radius: 4px 4px 0 0; cursor: pointer; font-size: 13px;
+        }
+        .policy-tab:hover { color: #eee; }
+        .policy-tab.selected { background: #1e1e1e; color: #42a5f5; border-color: #42a5f5; font-weight: bold; }
+        .policy-tab.empty::after { content: ' ·'; color: #666; }
+        .policy-tab-note { margin-left: auto; color: #888; font-size: 12px; }
+        .profile-bar { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
+        .profile-bar select, .profile-bar input {
+            background: #2a2a2a; color: #ddd; border: 1px solid #3a3a3a;
+            border-radius: 4px; padding: 5px 8px; font-size: 13px;
+        }
+        .profile-bar select { min-width: 200px; }
+        .profile-bar input { width: 160px; }
+        .profile-bar-sep { flex: 1; }
+        .policy-pin { color: #ffb74d; font-size: 11px; margin-left: 6px; }
+        .policy-layer-head {
+            font-weight: bold; text-transform: uppercase; font-size: 12px; letter-spacing: 1px;
+            color: #42a5f5; margin: 12px 0 6px; border-bottom: 1px solid #3a3a3a; padding-bottom: 2px;
+        }
+        .policy-note { color: #888; font-size: 12px; margin-bottom: 10px; }
+        .profile-bar select#profileKind { min-width: 110px; }
+        .compose-attrs { margin-bottom: 10px; }
+        .compose-attr {
+            display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer;
+            background: #333; border-radius: 4px; padding: 5px 8px; margin-bottom: 4px;
+        }
+        .compose-attr:hover { background: #3a3a3a; }
+        .compose-attr-src { color: #888; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .policy-stale { color: #ffb74d; font-size: 12px; }
     </style>
 </head>
 <body>
@@ -376,6 +468,7 @@
         <div class="title-left">
             <h1 style="margin: 0;">Mindcraft</h1>
             <span id="msStatus" class="status-badge offline">mindserver offline</span>
+            <span id="dayNight" class="status-badge"></span>
         </div>
         <div class="title-spacer"></div>
     </div>
@@ -435,6 +528,97 @@
                     <button id="discardAgentSettingsBtn" class="stop-btn" style="background:#777;">Discard Changes</button>
                     <button id="applyAgentSettingsBtn" class="start-btn" disabled>Apply & Restart</button>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Memory Modal -->
+    <div id="memoryModal" class="modal-backdrop">
+        <div class="modal">
+            <div class="modal-header">
+                <h2 id="memoryTitle" style="margin:0;">Memory</h2>
+                <button id="closeMemoryBtn" class="modal-close-btn">Close</button>
+            </div>
+            <div class="modal-body">
+                <div class="policy-edit" style="height:100%;">
+                    <textarea id="memoryEditor" spellcheck="false"></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <div class="footer-left" id="memoryError">The agent's rolling summary of what has happened. Max 500 chars; it gets rewritten as the agent plays.</div>
+                <div class="footer-actions">
+                    <button id="clearMemoryBtn" class="stop-btn">Clear Memory</button>
+                    <button id="applyMemoryBtn" class="start-btn">Apply</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Policy Modal -->
+    <div id="policyModal" class="modal-backdrop">
+        <div class="modal">
+            <div class="modal-header">
+                <h2 id="policyTitle" style="margin:0;">Policy</h2>
+                <button id="closePolicyBtn" class="modal-close-btn">Close</button>
+            </div>
+            <div class="modal-body">
+                <div class="policy-tabs" id="policyTabs">
+                    <button class="policy-tab" data-tab="compose">Profile</button>
+                    <button class="policy-tab" data-tab="active">Active</button>
+                    <button class="policy-tab" data-tab="editor">Editor</button>
+                    <span class="policy-tab-note" id="policyTabNote"></span>
+                </div>
+
+                <!-- Pick what the agent should be, then let it merge the pieces -->
+                <div class="policy-pane" data-tab="compose">
+                    <div class="profile-bar">
+                        <label for="composeBase">Base profile</label>
+                        <select id="composeBase"><option value="">— pick a base profile —</option></select>
+                    </div>
+                    <div class="policy-note">Attributes stack in the order you tick them, and later ones win over earlier ones. The base profile sits underneath them all, and the agent's own AI rules sit on top.</div>
+                    <div class="compose-attrs" id="composeAttributes"></div>
+                    <div class="profile-bar">
+                        <button id="generatePolicyBtn" class="start-btn">Generate &amp; Apply</button>
+                    </div>
+                </div>
+
+                <!-- What the agent is actually running right now -->
+                <div class="policy-pane" data-tab="active">
+                    <div class="policy-body">
+                        <div class="policy-view" id="policyView"></div>
+                        <div class="policy-edit">
+                            <textarea id="policyEditor" spellcheck="false"></textarea>
+                            <div class="profile-bar" style="margin: 8px 0 0;">
+                                <button id="applyPolicyBtn" class="start-btn">Apply</button>
+                                <button id="clearPolicyBtn" class="stop-btn">Clear</button>
+                                <button id="regenPolicyBtn" class="neutral-btn">Regen</button>
+                                <span class="policy-stale" id="policyStale"></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- The profile library on disk; never touches a running agent -->
+                <div class="policy-pane" data-tab="editor">
+                    <div class="profile-bar">
+                        <select id="editorSelect"><option value="">— saved profiles —</option></select>
+                        <button id="loadProfileBtn" class="start-btn">Load</button>
+                        <span class="profile-bar-sep"></span>
+                        <input id="profileName" type="text" placeholder="profile name..." spellcheck="false">
+                        <select id="profileKind">
+                            <option value="base">base</option>
+                            <option value="attribute">attribute</option>
+                        </select>
+                        <button id="saveProfileBtn" class="start-btn">Save</button>
+                    </div>
+                    <div class="policy-note">Saving writes to the profile library only. A running agent picks the change up when you hit Regen on the Active tab.</div>
+                    <div class="policy-edit">
+                        <textarea id="profileEditor" spellcheck="false" placeholder='{ "source": ["what this profile is for"], "goal": "what it should be working towards (optional)", "kind": "attribute" }'></textarea>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <div class="footer-left" id="policyError">Rules run in priority order, top first.</div>
             </div>
         </div>
     </div>
@@ -543,6 +727,17 @@
                 statusEl.classList.remove('online');
                 statusEl.classList.add('offline');
             }
+        }
+        const dayNightEl = document.getElementById('dayNight');
+        // ponytail: night starts at tick 13000, matching world.js isNight() so the badge
+        // never disagrees with the bot's own day/night check.
+        function updateDayNight(timeOfDay) {
+            if (!dayNightEl || typeof timeOfDay !== 'number') return;
+            const isDay = timeOfDay < 13000;
+            const pct = isDay
+                ? Math.round(timeOfDay / 13000 * 100)
+                : Math.round((timeOfDay - 13000) / 11000 * 100);
+            dayNightEl.textContent = (isDay ? '☀️ Day ' : '🌙 Night ') + pct + '%';
         }
         function subscribeToState() {
             socket.emit('listen-to-agents');
@@ -676,6 +871,502 @@
         }
         document.getElementById('closeCreateAgentBtn').addEventListener('click', hideCreateAgentModal);
 
+        // Memory modal logic
+        const memoryModal = document.getElementById('memoryModal');
+        const memoryEditor = document.getElementById('memoryEditor');
+        const memoryError = document.getElementById('memoryError');
+        const MEMORY_HINT = memoryError.textContent;
+        let memoryAgent = null;
+
+        function openMemoryModal(agentName) {
+            memoryAgent = agentName;
+            document.getElementById('memoryTitle').textContent = `Memory — ${agentName}`;
+            memoryError.textContent = 'Loading...';
+            memoryEditor.value = '';
+            memoryModal.style.display = 'flex';
+            socket.emit('get-memory', agentName, (text) => {
+                memoryEditor.value = text ?? '';
+                memoryError.textContent = MEMORY_HINT;
+            });
+        }
+        document.getElementById('closeMemoryBtn').addEventListener('click', () => memoryModal.style.display = 'none');
+        document.getElementById('applyMemoryBtn').addEventListener('click', () => {
+            memoryError.textContent = 'Applying...';
+            socket.emit('set-memory', memoryAgent, memoryEditor.value, (res) => {
+                memoryError.textContent = res?.success ? 'Applied ✔ Live on the agent and saved to disk.' : 'Rejected: ' + (res?.error || 'unknown error');
+            });
+        });
+        document.getElementById('clearMemoryBtn').addEventListener('click', () => {
+            socket.emit('set-memory', memoryAgent, '', (res) => {
+                if (res?.success) {
+                    memoryEditor.value = '';
+                    memoryError.textContent = 'Memory cleared.';
+                } else {
+                    memoryError.textContent = 'Rejected: ' + (res?.error || 'unknown error');
+                }
+            });
+        });
+
+        // Policy modal logic
+        const policyModal = document.getElementById('policyModal');
+        const policyEditor = document.getElementById('policyEditor');
+        const policyView = document.getElementById('policyView');
+        const policyError = document.getElementById('policyError');
+        const profileEditor = document.getElementById('profileEditor');
+
+        // Wrap a textarea in CodeMirror while keeping every existing call site:
+        // .value reads/writes are proxied to the editor, and changes re-fire the
+        // textarea's 'input' event so the live preview keeps working.
+        // Mirrors CONDITIONS/ACTIONS in src/agent/behavior/policy.js and the
+        // built-in mode names -- hints only, so drift is cosmetic.
+        const POLICY_VOCAB = [
+            'hostile_nearby','entity_nearby','block_nearby','animal_nearby','player_nearby',
+            'health_below','hunger_below','has_item','at_position','drowning','is_night','is_idle','always',
+            'flee','fight_back','attack','goto','goto_player','follow_player','move_away','stay',
+            'go_to_surface','search_block','search_entity','collect','deposit','consume','equip',
+            'equip_weapon','go_to_bed','say','set_mode','prompt_self',
+            'self_preservation','unstuck','cowardice','self_defense','hunting','item_collecting',
+            'torch_placing','elbow_room','idle_staring',
+            'source','kind','base','attribute','policy','modes','rules',
+            'name','description','interrupts','when','do','cooldown','pinned',
+            'cond','value','act','until','not','any','all','range','distance','message','item','count',
+        ];
+        const codeEditors = [];
+        function upgradeEditor(textarea) {
+            if (!window.CodeMirror) return;
+            const cm = CodeMirror.fromTextArea(textarea, {
+                mode: { name: 'javascript', json: true },
+                theme: 'material-darker',
+                lineNumbers: true,
+                matchBrackets: true,
+                extraKeys: { 'Ctrl-Space': 'autocomplete' },
+                hintOptions: {
+                    completeSingle: false,
+                    hint: (ed) => {
+                        const cur = ed.getCursor();
+                        const line = ed.getLine(cur.line);
+                        let start = cur.ch;
+                        while (start > 0 && /[\w]/.test(line.charAt(start - 1))) start--;
+                        const word = line.slice(start, cur.ch).toLowerCase();
+                        const list = POLICY_VOCAB.filter(w => w.startsWith(word) && w !== word);
+                        return { list, from: { line: cur.line, ch: start }, to: cur };
+                    },
+                },
+            });
+            cm.on('inputRead', (ed, change) => {
+                if (/[\w]/.test(change.text[0] ?? '') && !ed.state.completionActive) ed.showHint();
+            });
+            cm.on('change', () => textarea.dispatchEvent(new Event('input')));
+            Object.defineProperty(textarea, 'value', {
+                get: () => cm.getValue(),
+                set: (v) => { if (cm.getValue() !== (v ?? '')) cm.setValue(v ?? ''); },
+            });
+            codeEditors.push(cm);
+        }
+        upgradeEditor(policyEditor);
+        upgradeEditor(profileEditor);
+        // CodeMirror sizes itself to nothing inside a hidden pane, so re-measure
+        // whenever the editors can actually be seen.
+        function refreshCodeEditors() {
+            requestAnimationFrame(() => codeEditors.forEach(cm => cm.refresh()));
+        }
+        const POLICY_HINT = 'A base profile, the chosen attributes merged on top of it, then the rules the agent wrote for itself on top of that. Higher wins; within a policy, rules run in priority order, top first.';
+        let policyAgent = null;
+
+        function escHtml(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
+        function condToText(c) {
+            if (!c || typeof c !== 'object') return '?';
+            if (c.all) return c.all.map(x => '(' + condToText(x) + ')').join(' AND ');
+            if (c.any) return c.any.map(x => '(' + condToText(x) + ')').join(' OR ');
+            if (c.not) return 'NOT (' + condToText(c.not) + ')';
+            const args = Object.entries(c).filter(([k]) => k !== 'cond').map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(', ');
+            return c.cond + (args ? ` [${args}]` : '');
+        }
+        function actToText(a) {
+            const args = Object.entries(a).filter(([k]) => k !== 'act').map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(', ');
+            return a.act + (args ? ` [${args}]` : '');
+        }
+        // The whole {layers, locked, compose} state lives here. Only the active
+        // layer is editable; Apply always sends the state back whole so the AI
+        // layer the agent wrote for itself survives untouched.
+        let policyState = { layers: {}, locked: false };
+        // A policy that failed to load looks exactly like a policy with nothing
+        // in it, and every write here sends the whole state back -- so applying
+        // from a failed read wipes the AI layer the agent wrote for itself.
+        // Nothing may be written until a real read has landed.
+        let policyLoaded = false;
+        let policyTab = 'active';
+        // Everything the profile library currently holds: {name, kind, source, mtime}.
+        let profileList = [];
+        // Order is meaningful to the merge, so the ticked attributes are kept as a
+        // list in the order they were ticked rather than read back off the DOM.
+        let composeAttrs = [];
+        // Rules currently drawn as tiles, in render order, so the per-tile
+        // "+ editor" button can find its rule without re-parsing the view.
+        const viewRules = [];
+        const LAYER_BLURB = {
+            active: 'The combined policy: the base profile with the chosen attributes merged into it.',
+            self: 'Rules the agent wrote for itself. They sit on top of the active policy and are not editable here.',
+        };
+
+        function renderPolicyView() {
+            viewRules.length = 0;
+            const layer = policyState.layers?.active;
+            let html = policyState.locked
+                ? '<div class="policy-note">🔒 Locked — the agent may not load profiles into its own layer.</div>' : '';
+            html += `<div class="policy-note">${LAYER_BLURB.active}</div>`;
+            if (!layer?.policy) {
+                html += '<div class="policy-note">Nothing is active. Generate a policy on the Profile tab, or write JSON on the right and apply.</div>';
+            } else {
+                if (layer.profile) html += `<div class="policy-layer-head">profile “${escHtml(layer.profile)}”</div>`;
+                html += renderLayerView(layer);
+            }
+            const self = policyState.layers?.self;
+            if (self?.policy) {
+                html += '<div class="policy-layer-head">AI layer</div>';
+                html += `<div class="policy-note">${LAYER_BLURB.self}</div>`;
+                html += renderLayerView(self);
+            }
+            policyView.innerHTML = html;
+        }
+
+        // Append a tile's rule to whatever profile JSON sits in the Editor tab,
+        // so a generated rule can be folded back into a base or attribute file.
+        policyView.addEventListener('click', (e) => {
+            const btn = e.target.closest('.rule-add');
+            if (!btn) return;
+            const rule = viewRules[+btn.dataset.ridx];
+            if (!rule) return;
+            let data;
+            try { data = JSON.parse(profileEditor.value); }
+            catch { data = null; }
+            if (!data || typeof data !== 'object')
+                data = { source: [], kind: 'attribute' };
+            data.policy = data.policy ?? { modes: {}, rules: [] };
+            data.policy.rules = data.policy.rules ?? [];
+            data.policy.rules.push(JSON.parse(JSON.stringify(rule)));
+            profileEditor.value = JSON.stringify(data, null, 2);
+            policyError.textContent = `Appended rule “${rule.name}” to the Editor tab — save it there to keep it.`;
+        });
+
+        function renderPolicyTabs() {
+            for (const tab of document.querySelectorAll('.policy-tab'))
+                tab.classList.toggle('selected', tab.dataset.tab === policyTab);
+            const filled = [];
+            if (policyState.layers?.active?.policy) filled.push('active');
+            if (policyState.layers?.self?.policy) filled.push('AI');
+            document.getElementById('policyTabNote').textContent =
+                filled.length ? `in use: ${filled.join(', ')}` : 'no policy set';
+        }
+
+        function showPolicyTab(tab) {
+            policyTab = tab;
+            for (const pane of document.querySelectorAll('.policy-pane'))
+                pane.classList.toggle('selected', pane.dataset.tab === tab);
+            renderPolicyTabs();
+            policyError.textContent = POLICY_HINT;
+            refreshCodeEditors();
+        }
+
+        // Re-render everything that reads off policyState: the active view, the
+        // editor JSON, the tab strip and the compose selection.
+        function refreshPolicyPanes() {
+            const data = policyState.layers?.active;
+            policyEditor.value = JSON.stringify(
+                data ?? { source: ['edited via web UI'], policy: { modes: {}, rules: [] } }, null, 2);
+            renderPolicyView();
+            renderPolicyTabs();
+            renderComposeTab();
+            updateStaleNote();
+        }
+        function renderLayerView(layer) {
+            let html = '';
+            const source = Array.isArray(layer.source) ? layer.source.join(' | ') : layer.source;
+            if (source) html += `<div class="policy-source">“${escHtml(source)}”</div>`;
+            const modes = layer.policy.modes || {};
+            if (Object.keys(modes).length)
+                html += `<div class="policy-modes-line">Mode overrides: ${Object.entries(modes).map(([m, on]) => `${m}=${on ? 'on' : 'off'}`).join(', ')}</div>`;
+            for (const rule of layer.policy.rules || []) {
+                const all = (rule.interrupts ?? 'all') === 'all';
+                html += `<div class="rule-card ${all ? 'interrupts-all' : ''}">
+                    <div class="rule-head"><span class="rule-name">${escHtml(rule.name || '?')}</span>
+                        <span class="rule-badge ${all ? 'all' : ''}">${all ? 'interrupts all' : 'idle only'}</span>
+                        <span class="rule-badge cooldown">cooldown ${rule.cooldown ?? 3}s</span>
+                        ${rule.pinned ? '<span class="policy-pin" title="Runs above every unpinned rule, including higher layers">📌 pinned</span>' : ''}
+                        <button class="rule-add" data-ridx="${viewRules.push(rule) - 1}" title="Append this rule to the profile loaded in the Editor tab">+ editor</button></div>
+                    ${rule.description ? `<div class="rule-desc">${escHtml(rule.description)}</div>` : ''}
+                    <div class="rule-code">when: ${escHtml(condToText(rule.when))}\ndo:   ${(rule.do || []).map(a => escHtml(actToText(a))).join('\n      ')}</div>
+                </div>`;
+            }
+            return html;
+        }
+        function openPolicyModal(agentName) {
+            policyAgent = agentName;
+            document.getElementById('policyTitle').textContent = `Policy — ${agentName}`;
+            policyError.textContent = 'Loading...';
+            policyView.innerHTML = '';
+            policyEditor.value = '';
+            policyModal.style.display = 'flex';
+            refreshCodeEditors();
+            showPolicyTab(policyTab);
+            policyLoaded = false;
+            socket.emit('get-policy', agentName, (data) => {
+                if (!data?.layers) {
+                    policyState = { layers: {}, locked: false };
+                    refreshPolicyPanes();
+                    policyError.textContent = `Could not read ${agentName}'s policy — the agent is not connected, or did not answer. Nothing below is real: it is blank because the read failed, not because the policy is empty. Reopen this once the agent is up.`;
+                    return;
+                }
+                policyLoaded = true;
+                policyState = data;
+                composeAttrs = [...(policyState.compose?.attributes ?? [])];
+                // The profile list arrives separately and re-renders the compose
+                // tab and the stale note once it lands.
+                refreshProfileList();
+                refreshPolicyPanes();
+                policyError.textContent = POLICY_HINT;
+            });
+        }
+        for (const tab of document.querySelectorAll('.policy-tab'))
+            tab.addEventListener('click', () => showPolicyTab(tab.dataset.tab));
+
+        policyEditor.addEventListener('input', () => {
+            try {
+                // Preview the edit without committing it: the live state is only
+                // updated on Apply, so a half-typed rule cannot reach the agent.
+                const edited = JSON.parse(policyEditor.value);
+                const preview = { ...policyState, layers: { ...policyState.layers, active: edited } };
+                const saved = policyState;
+                policyState = preview;
+                renderPolicyView();
+                policyState = saved;
+                policyError.textContent = POLICY_HINT;
+            } catch (e) {
+                policyError.textContent = 'JSON parse error: ' + e.message;
+            }
+        });
+        document.getElementById('closePolicyBtn').addEventListener('click', () => policyModal.style.display = 'none');
+
+        // Apply and Clear both send the whole state with the active layer swapped,
+        // so the AI layer and the compose record survive untouched.
+        function applyPolicyState(state, okMessage) {
+            if (!policyLoaded) {
+                policyError.textContent = 'Nothing was written: this panel never loaded the agent’s policy, so applying it would replace the real one with a blank. Reopen once the agent is connected.';
+                return;
+            }
+            policyError.textContent = 'Applying...';
+            socket.emit('set-policy', policyAgent, state, (res) => {
+                if (res?.success) {
+                    policyState = state;
+                    refreshPolicyPanes();
+                    policyError.textContent = okMessage;
+                } else {
+                    policyError.textContent = 'Rejected: ' + (res?.error || 'unknown error');
+                }
+            });
+        }
+        document.getElementById('applyPolicyBtn').addEventListener('click', () => {
+            let layer;
+            try { layer = JSON.parse(policyEditor.value); }
+            catch (e) { policyError.textContent = 'JSON parse error: ' + e.message; return; }
+            applyPolicyState(
+                { ...policyState, layers: { ...policyState.layers, active: layer } },
+                'Applied ✔ The active policy is live on the agent and saved to disk.');
+        });
+        document.getElementById('clearPolicyBtn').addEventListener('click', () => {
+            const layers = { ...policyState.layers, active: null }; // null clears; omitting it would now preserve
+            applyPolicyState({ ...policyState, layers }, 'The active policy was cleared.');
+        });
+
+        // --- compose: base profile + attributes, merged by the agent's LLM ---
+        function renderComposeTab() {
+            const baseSelect = document.getElementById('composeBase');
+            const chosenBase = baseSelect.value || policyState.compose?.base || '';
+            baseSelect.innerHTML = '<option value="">— pick a base profile —</option>';
+            for (const p of profileList.filter(p => p.kind !== 'attribute')) {
+                const option = document.createElement('option');
+                option.value = p.name;
+                option.textContent = p.name;
+                option.title = (p.source ?? []).join(' ');
+                if (p.name === chosenBase) option.selected = true;
+                baseSelect.appendChild(option);
+            }
+            const attrs = profileList.filter(p => p.kind === 'attribute');
+            // A profile can be deleted from disk while it is still ticked here.
+            // Only prune once the list has actually arrived: this runs before the
+            // async list-profiles callback lands, and pruning against an empty
+            // list silently unticked every attribute the agent was really running.
+            if (profileList.length)
+                composeAttrs = composeAttrs.filter(n => attrs.some(p => p.name === n));
+            const box = document.getElementById('composeAttributes');
+            if (!attrs.length) {
+                box.innerHTML = '<div class="policy-note">No attribute profiles yet — make one on the Editor tab with kind “attribute”.</div>';
+                return;
+            }
+            box.innerHTML = attrs.map(p => {
+                const pos = composeAttrs.indexOf(p.name);
+                return `<label class="compose-attr">
+                    <input type="checkbox" data-attr="${escHtml(p.name)}" ${pos >= 0 ? 'checked' : ''}>
+                    <span>${escHtml(p.name)}</span>
+                    ${pos >= 0 ? `<span class="rule-badge cooldown">#${pos + 1}</span>` : ''}
+                    <span class="compose-attr-src">${escHtml((p.source ?? []).join(' '))}</span>
+                </label>`;
+            }).join('');
+            for (const input of box.querySelectorAll('input[type=checkbox]'))
+                input.addEventListener('change', onComposeAttrToggle);
+        }
+        function onComposeAttrToggle(e) {
+            const name = e.target.dataset.attr;
+            if (e.target.checked) {
+                if (!composeAttrs.includes(name)) composeAttrs.push(name);
+            } else {
+                composeAttrs = composeAttrs.filter(n => n !== name);
+            }
+            renderComposeTab(); // renumbers the order badges
+        }
+
+        // The merge is a real LLM call on the agent, so it is slow and the
+        // buttons that trigger it are held down until it answers.
+        function setPolicyBusy(busy) {
+            document.getElementById('generatePolicyBtn').disabled = busy;
+            document.getElementById('regenPolicyBtn').disabled = busy;
+        }
+        function generatePolicy(selection, okMessage) {
+            if (!selection.base) { policyError.textContent = 'Pick a base profile first.'; return; }
+            policyError.textContent = 'Generating with the LLM… a local model can take several minutes.';
+            setPolicyBusy(true);
+            socket.emit('generate-policy', policyAgent, selection, (res) => {
+                setPolicyBusy(false);
+                if (res?.success && res.state) {
+                    policyLoaded = true;
+                    policyState = res.state;
+                    composeAttrs = [...(policyState.compose?.attributes ?? [])];
+                    refreshPolicyPanes();
+                    showPolicyTab('active');
+                    policyError.textContent = okMessage;
+                } else {
+                    policyError.textContent = 'Rejected: ' + (res?.error || 'unknown error');
+                }
+            });
+        }
+        document.getElementById('generatePolicyBtn').addEventListener('click', () => {
+            generatePolicy(
+                { base: document.getElementById('composeBase').value, attributes: [...composeAttrs] },
+                'Generated ✔ The combined policy is live on the agent and saved to disk.');
+        });
+        document.getElementById('regenPolicyBtn').addEventListener('click', () => {
+            // Regen follows what is ticked on the Profile tab, not the selection
+            // that was saved last time. Reading the saved compose meant ticking a
+            // new attribute and hitting Regen quietly rebuilt the OLD selection.
+            const base = document.getElementById('composeBase').value || policyState.compose?.base;
+            if (!base) { policyError.textContent = 'Nothing to regenerate — build a policy on the Profile tab first.'; return; }
+            generatePolicy({ base, attributes: [...composeAttrs] },
+                'Regenerated ✔ from the current base and attributes.');
+        });
+
+        // What is running is a snapshot of the profiles as they were at
+        // generated_at. If any of them has been edited or deleted since, say so
+        // rather than letting the agent quietly run stale rules.
+        function updateStaleNote() {
+            const regen = document.getElementById('regenPolicyBtn');
+            const note = document.getElementById('policyStale');
+            const compose = policyState.compose;
+            regen.style.display = compose?.base ? '' : 'none';
+            note.textContent = '';
+            if (!compose?.base || !profileList.length) return;
+            const stale = [compose.base, ...(compose.attributes ?? [])].some(name => {
+                const p = profileList.find(p => p.name === name);
+                return !p || p.mtime > (compose.generated_at ?? 0);
+            });
+            if (stale) note.textContent = '⚠ base/attributes changed since last generation';
+        }
+
+        // --- the profile library on disk; nothing here reaches a running agent ---
+        function refreshProfileList() {
+            socket.emit('list-profiles', (profiles) => {
+                profileList = profiles ?? [];
+                renderComposeTab();
+                renderEditorSelect();
+                updateStaleNote();
+            });
+        }
+        function renderEditorSelect() {
+            const select = document.getElementById('editorSelect');
+            const chosen = select.value;
+            select.innerHTML = '<option value="">— saved profiles —</option>'
+                + '<option value="__self__">AI layer (live on the agent)</option>';
+            for (const p of profileList) {
+                const option = document.createElement('option');
+                option.value = p.name;
+                option.textContent = `${p.name} (${p.kind})`;
+                option.title = (p.source ?? []).join(' ');
+                if (p.name === chosen) option.selected = true;
+                select.appendChild(option);
+            }
+            // Rebuilding the options resets the selection, which must survive a
+            // list refresh or Save silently flips from AI layer to profile mode.
+            if (chosen === '__self__') select.value = chosen;
+            syncEditorTarget();
+        }
+        // The AI layer edits live agent state, not a library file, so the
+        // name/kind controls only apply to real profiles.
+        function syncEditorTarget() {
+            const isSelf = document.getElementById('editorSelect').value === '__self__';
+            document.getElementById('profileName').disabled = isSelf;
+            document.getElementById('profileKind').disabled = isSelf;
+        }
+        document.getElementById('editorSelect').addEventListener('change', syncEditorTarget);
+        document.getElementById('loadProfileBtn').addEventListener('click', () => {
+            const name = document.getElementById('editorSelect').value;
+            if (!name) { policyError.textContent = 'Pick a profile to load first.'; return; }
+            if (name === '__self__') {
+                if (!policyLoaded) { policyError.textContent = 'The agent’s policy never loaded, so there is no AI layer to load. Reopen this once the agent is connected.'; return; }
+                const self = policyState.layers?.self ?? { source: [], policy: { modes: {}, rules: [] } };
+                profileEditor.value = JSON.stringify({ source: self.source ?? [], policy: self.policy }, null, 2);
+                policyError.textContent = 'Loaded the AI layer. Saving sends it straight to the running agent.';
+                return;
+            }
+            socket.emit('get-profile', name, (res) => {
+                if (!res?.success) { policyError.textContent = 'Rejected: ' + (res?.error || 'unknown error'); return; }
+                const kind = res.profile.kind === 'attribute' ? 'attribute' : 'base';
+                const data = { source: res.profile.source ?? [], kind };
+                if (res.profile.goal) data.goal = res.profile.goal;
+                if (res.profile.policy) data.policy = res.profile.policy;
+                profileEditor.value = JSON.stringify(data, null, 2);
+                document.getElementById('profileName').value = name;
+                document.getElementById('profileKind').value = kind;
+                policyError.textContent = `Loaded profile "${name}" for editing. Nothing was sent to the agent.`;
+            });
+        });
+        document.getElementById('saveProfileBtn').addEventListener('click', () => {
+            let data;
+            try { data = JSON.parse(profileEditor.value); }
+            catch (e) { policyError.textContent = 'JSON parse error: ' + e.message; return; }
+            if (document.getElementById('editorSelect').value === '__self__') {
+                const layers = { ...policyState.layers };
+                if (data?.policy?.rules?.length || Object.keys(data?.policy?.modes ?? {}).length)
+                    layers.self = { profile: null, source: data.source ?? [], policy: data.policy };
+                else
+                    layers.self = null; // an empty policy clears the AI layer; null says so out loud, omission no longer would
+                applyPolicyState({ ...policyState, layers },
+                    'AI layer saved — it is live on the agent immediately.');
+                return;
+            }
+            const name = document.getElementById('profileName').value.trim();
+            if (!name) { policyError.textContent = 'Name the profile before saving.'; return; }
+            // The kind picker is the authority, so switching it renames the kind
+            // even when the JSON in the box still says the old one.
+            data.kind = document.getElementById('profileKind').value;
+            socket.emit('save-profile', name, data, (res) => {
+                if (res?.success) {
+                    policyError.textContent = `Saved profile "${name}". A running agent only picks it up when you hit Regen on the Active tab.`;
+                    refreshProfileList();
+                } else {
+                    policyError.textContent = 'Rejected: ' + (res?.error || 'unknown error');
+                }
+            });
+        });
+
         socket.on('bot-output', (agentName, message) => {
             agentLastMessage[agentName] = message;
             const messageDiv = document.getElementById(`lastMessage-${agentName}`);
@@ -692,6 +1383,7 @@
                 const healthEl = document.getElementById(`health-${name}`);
                 if (st && !st.error) {
                     const gp = st.gameplay || {};
+                    updateDayNight(gp.timeOfDay);
                     if (healthEl && typeof gp.health === 'number') {
                         const hMax = typeof gp.healthMax === 'number' ? gp.healthMax : 20;
                         healthEl.textContent = `health: ${gp.health}/${hMax}`;
@@ -912,7 +1604,16 @@
             socket.emit('set-agent-settings', currentAgentName, edited);
             // Update local settings immediately
             agentSettings[currentAgentName] = { ...edited, fetched: true };
-            updateAgentViewer(currentAgentName);
+            const agentState = currentAgents.find(a => a.name === currentAgentName);
+            const el = document.getElementById(`agent-${currentAgentName}`);
+            if (agentState && el) {
+                // Rebuild the card: the viewer iframe only exists in the DOM when
+                // render_bot_view was already on at last render, so a plain
+                // display toggle can't reveal it after enabling it here.
+                el.outerHTML = renderAgentCard(agentState);
+            } else {
+                updateAgentViewer(currentAgentName);
+            }
             closeAgentSettings();
         });
 
@@ -922,8 +1623,11 @@
         function renderAgentCard(agent) {
             const cfg = agentSettings[agent.name] || {};
             const showViewer = agent.in_game && cfg.render_bot_view === true;
-            const viewerPort = agent.viewerPort;
-            const viewerHTML = showViewer ? `<div class="agent-view-container"><iframe class="agent-viewer" id="viewer-${agent.name}" src="http://localhost:${viewerPort}"></iframe></div>` : '';
+            // Served by the mindserver's /viewer proxy, so it works from any host
+            // and stays behind the auth token. Trailing slash matters: the viewer
+            // client resolves its assets and socket.io path relative to it.
+            const viewerSrc = `viewer/${encodeURIComponent(agent.name)}/` + (authToken ? `?token=${encodeURIComponent(authToken)}` : '');
+            const viewerHTML = showViewer ? `<div class="agent-view-container"><iframe class="agent-viewer" id="viewer-${agent.name}" src="${viewerSrc}"></iframe></div>` : '';
             const lastMessage = agentLastMessage[agent.name] || '';
             const invOpen = inventoryOpen[agent.name] === true;
             const invStyle = invOpen ? '' : 'display:none;';
@@ -931,9 +1635,12 @@
                     <div class="agent" id="agent-${agent.name}">
                         <div class="agent-grid">
                             <div class="cell title" style="grid-column: 1 / -1; display:flex; align-items:center; justify-content:space-between;">
-                                <span><span class="status-icon ${agent.in_game ? 'online' : 'offline'}">●</span>${agent.name}${agent.socket_connected && !agent.in_game ? '<span style="margin-left:6px;color:#f0ad4e;">joining...</span>' : ''}
+                                <span><span class="status-icon ${agent.in_game ? 'online' : 'offline'}">●</span>${agent.name}${agent.socket_connected && !agent.in_game ? '<span style="margin-left:6px;color:#f0ad4e;">joining...</span>' : ''}<span id="uptime-${agent.name}" style="margin-left:8px;font-weight:normal;opacity:0.6;font-size:0.85em;"></span>
                                     <button class="gear-btn" title="Settings" onclick="openAgentSettings('${agent.name}')">⚙</button>
                                     <button class="gear-btn" title="Inventory" onclick="toggleDetails('${agent.name}')">Inventory</button>
+                                    <button class="gear-btn" title="Policy" onclick="openPolicyModal('${agent.name}')">Policy</button>
+                                    <button class="gear-btn" title="Memory" onclick="openMemoryModal('${agent.name}')">Memory</button>
+                                    <label class="lock-toggle" title="While locked, the agent may not load a shared policy profile into its own policy"><input type="checkbox" id="policyLock-${agent.name}" ${agent.policy_locked ? 'checked' : ''} ${agent.socket_connected ? '' : 'disabled'} onchange="setPolicyLock('${agent.name}', this.checked)"><span>Lock policy</span></label>
                                 </span>
                             </div>
                             ${showViewer ? `<div class="cell" style="grid-row: span 3; padding:0;">${viewerHTML}</div>` : ''}
@@ -967,7 +1674,43 @@
                     </div>`;
         }
 
+        // Agent cards only re-render when in_game/viewerPort/socket_connected change,
+        // so uptime is ticked separately instead of being baked into the card HTML.
+        const loginEpoch = {};
+        const aliveEpoch = {};
+
+        function trackUptime(agents) {
+            for (const a of agents) {
+                // active_ms/alive_ms are durations, not timestamps: the browser clock
+                // need not agree with the server's.
+                loginEpoch[a.name] = a.active_ms == null ? null : Date.now() - a.active_ms;
+                aliveEpoch[a.name] = a.alive_ms == null ? null : Date.now() - a.alive_ms;
+            }
+            tickUptime();
+        }
+
+        function formatUptime(ms) {
+            const s = Math.floor(ms / 1000);
+            if (s < 60) return s + 's';
+            const m = Math.floor(s / 60), h = Math.floor(m / 60);
+            if (h < 1) return m + 'm';
+            return h + 'h ' + (m % 60) + 'm';
+        }
+
+        function tickUptime() {
+            for (const name in loginEpoch) {
+                const el = document.getElementById('uptime-' + name);
+                if (!el) continue;
+                if (!loginEpoch[name]) { el.textContent = ''; continue; }
+                let text = 'up ' + formatUptime(Date.now() - loginEpoch[name]);
+                if (aliveEpoch[name]) text += ' · alive ' + formatUptime(Date.now() - aliveEpoch[name]);
+                el.textContent = text;
+            }
+        }
+        setInterval(tickUptime, 1000);
+
         async function renderAgents(agents) {
+            trackUptime(agents);
             if (!agents.length) {
                 agentsDiv.innerHTML = '<div class="agent">No agents connected</div>';
                 return;
@@ -989,7 +1732,7 @@
             const prevAgents = currentAgents.reduce((acc, a) => ({ ...acc, [a.name]: a }), {});
             const changedAgents = agents.filter(a => {
                 const prev = prevAgents[a.name];
-                return !prev || prev.in_game !== a.in_game || prev.viewerPort !== a.viewerPort || prev.socket_connected !== a.socket_connected;
+                return !prev || prev.in_game !== a.in_game || prev.viewerPort !== a.viewerPort || prev.socket_connected !== a.socket_connected || prev.policy_locked !== a.policy_locked;
             });
 
             // Update only changed agents
@@ -1017,6 +1760,7 @@
         }
 
         socket.on('agents-status', async (agents) => {
+            trackUptime(agents);
             // Fetch settings for all agents that don't have current settings
             const needSettings = agents.filter(a => !agentSettings[a.name]);
             if (needSettings.length > 0) {
@@ -1032,7 +1776,7 @@
             const prevAgents = currentAgents.reduce((acc, a) => ({ ...acc, [a.name]: a }), {});
             const changedAgents = agents.filter(a => {
                 const prev = prevAgents[a.name];
-                return !prev || prev.in_game !== a.in_game || prev.viewerPort !== a.viewerPort || prev.socket_connected !== a.socket_connected;
+                return !prev || prev.in_game !== a.in_game || prev.viewerPort !== a.viewerPort || prev.socket_connected !== a.socket_connected || prev.policy_locked !== a.policy_locked;
             });
 
             // Update current agents list
@@ -1074,6 +1818,23 @@
             });
         });
 
+        function setPolicyLock(n, locked) {
+            const box = document.getElementById('policyLock-' + n);
+            if (box) box.disabled = true;
+            socket.emit('set-policy-lock', n, locked, (res) => {
+                if (!box) return;
+                box.disabled = false;
+                // Only the agent can persist the flag, so a failure means nothing
+                // changed: put the checkbox back where it was.
+                if (!res?.success) {
+                    box.checked = !locked;
+                    alert('Could not change the policy lock: ' + (res?.error || 'unknown error'));
+                } else {
+                    box.checked = !!res.locked;
+                }
+            });
+        }
+
         function restartAgent(n) { socket.emit('restart-agent', n); }
         function disconnectAgent(n) { socket.emit('stop-agent', n); }
         function startAgent(n) { 
@@ -1095,7 +1856,14 @@
             socket.emit('start-agent', n);
         }
         function stopAgent(n) { socket.emit('stop-agent', n); }
-        function destroyAgent(n) { socket.emit('destroy-agent', n); }
+        // Removing sits next to Disconnect and looks just as reversible, but it
+        // is not: the agent is gone until the mindserver restarts and re-reads
+        // settings.js. Ask first, like shutdown does.
+        function destroyAgent(n) {
+            if (confirm(`Remove ${n}?\nThis stops the agent and removes it from the dashboard. Getting it back means restarting the mindserver.`)) {
+                socket.emit('destroy-agent', n);
+            }
+        }
         function disconnectAllAgents() { 
             socket.emit('stop-all-agents'); 
         }

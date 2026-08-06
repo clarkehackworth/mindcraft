@@ -1,4 +1,4 @@
-import { createMindServer, registerAgent, numStateListeners } from './mindserver.js';
+import { createMindServer, registerAgent, numStateListeners, loadSettingsOverrides } from './mindserver.js';
 import { AgentProcess } from '../process/agent_process.js';
 import { getServer } from './mcserver.js';
 import open from 'open';
@@ -49,6 +49,10 @@ export async function createAgent(settings) {
     }
     settings = JSON.parse(JSON.stringify(settings));
     let agent_name = settings.profile.name;
+    const saved = loadSettingsOverrides(agent_name);
+    if (saved) {
+        settings = { ...settings, ...saved, profile: settings.profile };
+    }
     const agentIndex = agent_count++;
     const viewer_port = 3000 + agentIndex;
     registerAgent(settings, viewer_port);
