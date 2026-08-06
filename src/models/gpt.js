@@ -21,7 +21,10 @@ export class GPT {
         this.openai = new OpenAIApi(config);
     }
 
-    async sendRequest(turns, systemMessage, stop_seq='***') {
+    // extra_params is per-call, for the one caller that needs the reply in a
+    // shape rather than in prose. Other providers ignore the argument, which
+    // just leaves them where they already were.
+    async sendRequest(turns, systemMessage, stop_seq='***', extra_params=null) {
         let messages = strictFormat(turns);
         messages = messages.map(message => {
             message.content += stop_seq;
@@ -42,7 +45,8 @@ export class GPT {
                     model: model,
                     messages,
                     stop: stop_seq,
-                    ...(this.params || {})
+                    ...(this.params || {}),
+                    ...(extra_params || {})
                 };
                 if (model.includes('o1') || model.includes('o3') || model.includes('5')) {
                     delete pack.stop;
