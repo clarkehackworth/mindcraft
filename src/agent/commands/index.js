@@ -1,4 +1,4 @@
-import { getBlockId, getItemId } from "../../utils/mcdata.js";
+import { getBlockId, getItemId, suggestNames, isKnownBlockName } from "../../utils/mcdata.js";
 import { actionsList } from './actions.js';
 import { queryList } from './queries.js';
 
@@ -164,11 +164,11 @@ export function parseCommandMessage(message) {
                 suppressNoDomainWarning = true; //Don't spam console. Only give the warning once.
             }
         } else if(param.type === 'BlockName') { //Check that there is a block with this name
-            if(getBlockId(arg) == null) return  `Invalid block type: ${arg}.`
+            if(!isKnownBlockName(arg)) return  `Invalid block type: ${arg}.` + suggestNames(arg, 'block')
         } else if(param.type === 'ItemName') { //Check that there is an item with this name
-            if(getItemId(arg) == null) return `Invalid item type: ${arg}.`
+            if(getItemId(arg) == null) return `Invalid item type: ${arg}.` + suggestNames(arg)
         } else if(param.type === 'BlockOrItemName') {
-            if(getBlockId(arg) == null && getItemId(arg) == null) return  `Invalid block or item type: ${arg}.`
+            if(!isKnownBlockName(arg) && getItemId(arg) == null) return  `Invalid block or item type: ${arg}.` + (suggestNames(arg) || suggestNames(arg, 'block'))
         }
         args[i] = arg;
     }

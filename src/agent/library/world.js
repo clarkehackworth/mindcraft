@@ -606,15 +606,18 @@ export function shouldPlaceTorch(bot) {
     return false;
 }
 
-export function getBiomeName(bot) {
+export function getBiomeName(bot, pos = null) {
     /**
-     * Get the name of the biome the bot is in.
+     * Get the name of the biome the bot is in, or at a given loaded position.
      * @param {Bot} bot - The bot to get the biome for.
+     * @param {Vec3} [pos] - Position to sample. Defaults to the bot's own. Only
+     *   meaningful for loaded chunks; unloaded ones report whatever the client
+     *   has cached, so this is for where the bot has been, not where it might go.
      * @returns {string} - The name of the biome.
      * @example
      * let biome = world.getBiomeName(bot);
      **/
-    const biomeId = bot.world.getBiome(bot.entity.position);
+    const biomeId = bot.world.getBiome(pos ?? bot.entity.position);
     // Prefer the registry the server sent us over minecraft-data's static
     // table: mineflayer populates bot.registry from the login packet's
     // dimension codec, so it knows about modded biomes that minecraft-data

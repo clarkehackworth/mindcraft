@@ -3,6 +3,7 @@ import * as world from './library/world.js';
 import * as mc from '../utils/mcdata.js';
 import settings from './settings.js'
 import convoManager from './conversation.js';
+import { sendOutputToServer } from './mindserver_proxy.js';
 
 async function say(agent, message) {
     agent.bot.modes.behavior_log += message + '\n';
@@ -374,7 +375,16 @@ const modes_list = [
 const URGENT_MODES = ['self_preservation', 'unstuck', 'cowardice', 'self_defense'];
 const isUrgentMode = (mode) => mode.urgent ?? URGENT_MODES.includes(mode.name);
 
+// One grep-stable line per behavior fire, to the log and to the mindserver
+// bot-output stream. tools/live_test.sh awaits on these, so scenarios assert
+// on the behavior itself, not on prose log phrasing that drifts.
+function logEvt(agentName, line) {
+    console.log(line);
+    try { sendOutputToServer(agentName, line); } catch (_) {}
+}
+
 async function execute(mode, agent, func, timeout=2) {
+    logEvt(agent.name, `EVT mode:fire:${mode.name}`);
     if (agent.self_prompter.isActive())
         // Only a mode that preempts everything gets to throw away a command the
         // model already committed to. An idle-only mode runs *because* nothing

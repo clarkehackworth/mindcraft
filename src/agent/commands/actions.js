@@ -1,7 +1,7 @@
 import * as skills from '../library/skills.js';
 import settings from '../settings.js';
 import convoManager from '../conversation.js';
-import { compilePolicy, describePolicy, savePolicy, deletePolicy, isUserPolicy, parseConditionExpr, evalCondition, conditionDocs, describeCondition } from '../behavior/policy.js';
+import { compilePolicy, describePolicy, validatePolicy, applyPolicyGoal, loadPolicyState, savePolicyState, composePolicy, appendLayerSource, SELF_SOURCE_CAP, describePolicyState, isPolicyLocked, saveProfile, loadProfile, listProfiles, LAYERS, parseConditionExpr, evalCondition, conditionDocs, describeCondition } from '../behavior/policy.js';
 
 
 function runAsAction (actionFn, resume = false, timeout = -1) {
@@ -17,13 +17,33 @@ function runAsAction (actionFn, resume = false, timeout = -1) {
         const actionFnWithAgent = async () => {
             await actionFn(agent, ...args);
         };
-        const code_return = await agent.actions.runAction(`action:${actionLabel}`, actionFnWithAgent, { timeout, resume });
-        if (code_return.interrupted && !code_return.timedout)
-            return;
+        // A command the model chose is never an emergency -- the emergencies are
+        // the pinned rules and the self-preservation modes, and they say so. So
+        // a new idea waits a moment rather than throwing away a collect that was
+        // one block from done. It only ever costs the model up to 3 seconds.
+        const code_return = await agent.actions.runAction(`action:${actionLabel}`, actionFnWithAgent, { timeout, resume, urgent: false });
+        // Returning nothing here printed as "undefined" and told the model the
+        // command was broken. An interrupted action still has something to say --
+        // getBotOutputSummary marks it as partial.
         return code_return.message;
     }
 
     return wrappedAction;
+}
+
+// Recompose all three layers and hand the arbiter one flat policy: the mode
+// controller stays layer-unaware.
+function applyPolicyState(agent, state) {
+    const composed = composePolicy(state);
+    if (composed.rules.length === 0 && Object.keys(composed.modes).length === 0)
+        agent.bot.modes.clearPolicy();
+    else
+        agent.bot.modes.installPolicy(composed, describePolicyState(state));
+    savePolicyState(agent.name, state);
+    // Only the active layer can carry a goal, so the agent writing its own
+    // layer never reaches this; a person loading a profile into active does.
+    applyPolicyGoal(agent, state).catch(err => console.error('Error starting policy goal:', err));
+    return composed;
 }
 
 export const actionsList = [
@@ -47,7 +67,7 @@ export const actionsList = [
                     result = 'Error generating code: ' + e.toString();
                 }
             };
-            await agent.actions.runAction('action:newAction', actionFn, {timeout: settings.code_timeout_mins});
+            await agent.actions.runAction('action:newAction', actionFn, {timeout: settings.code_timeout_mins, urgent: false});
             return result;
         }
     },
@@ -97,7 +117,7 @@ export const actionsList = [
         },
         perform: runAsAction(async (agent, player_name, closeness) => {
             await skills.goToPlayer(agent.bot, player_name, closeness);
-        })
+        }, true)  // resume after interruptions
     },
     {
         name: '!followPlayer',
@@ -121,7 +141,7 @@ export const actionsList = [
         },
         perform: runAsAction(async (agent, x, y, z, closeness) => {
             await skills.goToPosition(agent.bot, x, y, z, closeness);
-        })
+        }, true)  // resume after interruptions
     },
     {
         name: '!searchForBlock',
@@ -136,7 +156,7 @@ export const actionsList = [
                 range = 32;
             }
             await skills.goToNearestBlock(agent.bot, block_type, 4, range);
-        })
+        }, true)  // resume after interruptions
     },
     {
         name: '!goToSurface',
@@ -148,14 +168,15 @@ export const actionsList = [
     },
     {
         name: '!searchForEntity',
-        description: 'Find and go to the nearest entity of a given type in a given range.',
+        description: 'Find and go to the nearest entity of a given type, travelling further out to look if none are in sight.',
         params: {
             'type': { type: 'string', description: 'The type of entity to go to.' },
-            'search_range': { type: 'float', description: 'The range to search for the entity.', domain: [32, 512] }
+            'search_range': { type: 'float', description: 'How far to travel looking for the entity.', domain: [32, 512] },
+            'pattern': { type: 'string', description: '"spiral" (default) sweeps outward covering new ground -- use it to find something. "random" hops blindly, which is slower but gets past terrain a straight line cannot cross.', optional: true }
         },
-        perform: runAsAction(async (agent, entity_type, range) => {
-            await skills.goToNearestEntity(agent.bot, entity_type, 4, range);
-        })
+        perform: runAsAction(async (agent, entity_type, range, pattern) => {
+            await skills.searchForEntity(agent.bot, entity_type, range, { pattern: pattern === 'random' ? 'random' : 'spiral' });
+        }, true)  // resume after interruptions
     },
     {
         name: '!moveAway',
@@ -186,7 +207,7 @@ export const actionsList = [
             return;
             }
             await skills.goToPosition(agent.bot, pos[0], pos[1], pos[2], 1);
-        })
+        }, true)  // resume after interruptions
     },
     {
         name: '!givePlayer',
@@ -269,7 +290,7 @@ export const actionsList = [
         },
         perform: runAsAction(async (agent, type, num) => {
             await skills.collectBlock(agent.bot, type, num);
-        }, false, 10) // 10 minute timeout
+        }, true, 10) // 10 minute timeout
     },
     {
         name: '!craftRecipe',
@@ -414,50 +435,196 @@ export const actionsList = [
     },
     {
         name: '!endGoal',
-        description: 'Call when you have accomplished your goal. It will stop self-prompting and the current action. ',
+        description: 'Call when you have accomplished your goal. It stops the current action and returns you to your standing goal, or stops self-prompting if there is none.',
         perform: async function (agent) {
-            agent.self_prompter.stop();
-            return 'Self-prompting stopped.';
+            return await agent.self_prompter.finish();
         }
     },
     {
         name: '!policy',
-        description: 'Set standing instructions for how to behave in specific circumstances (e.g. "flee from mobs, and eat when health is low"). Compiles them into automatic rules checked every tick, in priority order. REPLACES the entire previous policy, including safety rules, so only use it for instructions a person gave you about how to BEHAVE. Notes to yourself ("prefer larch planks", "oak is not in this biome", "zombies killed me here") are NOT policies -- they go in your memory, and putting them here deletes the rules keeping you alive. Use !goal for tasks to work towards.',
+        description: 'ADD a standing instruction for how to behave in specific circumstances (e.g. "flee from mobs, and eat when health is low"). It is added to the instructions already in that layer and the whole layer is recompiled into automatic rules checked every tick, in priority order. There are two layers: "active" is what a person set -- normally generated by merging a base profile with attribute profiles -- and "self" holds your own standing rules. Your own !policy calls always go to the "self" layer and never disturb what a person set; you may hold 8 standing instructions there, and adding a ninth drops your oldest. Your layer sits on top, so your own rules win a conflict, but a person can still outrank you by pinning. Pin a rule of your own only when it keeps you alive -- say so ("...and make this a rule that overrides whatever job I am given") when the instruction is about not dying. Notes to yourself ("prefer larch planks", "oak is not in this biome", "zombies killed me here") are NOT policies -- they are facts to remember and belong in your memory, not here. Use !goal for tasks to work towards.',
         params: {
             'instructions': { type: 'string', description: 'Natural language standing instructions describing what to do in which circumstances.' },
+            'layer': { type: 'string', description: 'Which layer to add to. Only "active" for a person. Ignored for your own instructions, which always go to "self".', optional: true },
         },
-        perform: async function (agent, instructions) {
-            if (agent.command_self_issued && isUserPolicy(agent.name))
-                return 'Your policy was set by a person, so you cannot replace it. ' +
-                    'If this is a fact to remember rather than a change in how you behave, keep it in your memory instead. ' +
-                    'If you genuinely need different standing behavior, ask them to change the policy.';
+        perform: async function (agent, instructions, layer = null) {
+            let note = '';
+            if (agent.command_self_issued) {
+                if (layer && layer !== 'self')
+                    note = `\n(Your own standing instructions always go to the "self" layer; the "${layer}" layer is a person's to set.)`;
+                layer = 'self';
+            } else {
+                layer = layer ?? 'active';
+                if (layer !== 'active')
+                    return `"${layer}" is not a layer you can write to. Use "active".`;
+            }
+            const state = loadPolicyState(agent.name);
+            const { source, evicted } = appendLayerSource(state, layer, instructions);
+            if (evicted.length)
+                note += `\n(You may hold ${SELF_SOURCE_CAP} standing instructions at once, so your oldest no longer applies: "${evicted.join('", "')}". Re-add it if you still need it.)`;
             let policy;
             const goal = agent.self_prompter.isActive() ? agent.self_prompter.prompt : null;
             try {
-                policy = await compilePolicy(agent, instructions, goal);
+                // The goal is passed for context only. A policy must never stop
+                // the self-prompt loop, however well it seems to cover the goal:
+                // rules are reflexes that cannot change their own trigger, and
+                // the loop is the only thing that can notice the trigger is
+                // unreachable. Andy handed "mine nearby ores" to a rule, lost his
+                // pickaxe, and spent four hours logging "Don't have right tools"
+                // with nothing left running that could decide to craft one.
+                // Recompile the whole layer from the joined source so one LLM
+                // call reconciles a new instruction against the old ones.
+                // ...and the OTHER layer's rules, so it stops re-deriving what a
+                // person already installed. Only the other layer: this call
+                // rewrites `layer` wholesale from its own source, so showing it
+                // its own current rules would tell it not to write them again.
+                const other = LAYERS.filter(l => l !== layer)
+                    .flatMap(l => state.layers?.[l]?.policy?.rules ?? []);
+                policy = await compilePolicy(agent, source.join('. '), goal, { rules: other });
             } catch (err) {
                 return `Failed to compile policy: ${err.message}`;
             }
-            agent.bot.modes.installPolicy(policy, instructions);
-            savePolicy(agent.name, policy, instructions, !agent.command_self_issued);
-            let res = `Policy installed:\n${describePolicy(policy)}`;
-            if (goal && policy.covers_goal) {
-                agent.self_prompter.stop();
-                res += '\nThe policy fully covers your goal, so self-prompting was stopped; the rules now run it automatically.';
-            }
-            return res;
+            const err = validatePolicy(policy);
+            if (err) return `Failed to compile policy: ${err}`;
+            state.layers[layer] = { profile: null, source, policy };
+            applyPolicyState(agent, state);
+            return `Added to the "${layer}" policy layer:\n${describePolicy(policy)}${note}`;
         }
     },
     {
         name: '!clearPolicy',
-        description: 'Remove the current standing-instruction policy and restore default behavior. Only a person can clear a policy they set.',
-        perform: async function (agent) {
-            // Without this the refusal above is theatre: clear, then set.
-            if (agent.command_self_issued && isUserPolicy(agent.name))
-                return 'Your policy was set by a person, so you cannot clear it. Ask them if it needs to change.';
-            agent.bot.modes.clearPolicy();
-            deletePolicy(agent.name);
-            return 'Policy cleared, default behaviors restored.';
+        description: 'Remove standing instructions and restore default behavior. Clears one layer ("active" or "self") or all of them. You may only clear your own "self" layer.',
+        params: {
+            'layer': { type: 'string', description: 'Which layer to clear: "active", "self", or "all".', optional: true },
+        },
+        perform: async function (agent, layer = null) {
+            if (agent.command_self_issued) {
+                if (layer && layer !== 'self')
+                    return `You can only clear your own "self" layer. The "${layer === 'all' ? 'active' : layer}" instructions were set by a person; ask them if they need to change.`;
+                layer = 'self';
+            } else {
+                layer = layer ?? 'all';
+                if (!['all', ...LAYERS].includes(layer))
+                    return `"${layer}" is not a layer. Use "active", "self" or "all".`;
+            }
+            const state = loadPolicyState(agent.name);
+            for (let l of layer === 'all' ? LAYERS : [layer]) delete state.layers[l];
+            // The recipe describes a layer that is no longer there; keeping it
+            // would let a Regen quietly reinstate what was just cleared.
+            if (!state.layers.active) state.compose = null;
+            applyPolicyState(agent, state);
+            return layer === 'all'
+                ? 'All policy layers cleared, default behaviors restored.'
+                : `The "${layer}" policy layer was cleared.\n${describePolicyState(state)}`;
+        }
+    },
+    {
+        name: '!saveProfile',
+        description: 'Save the current "active" policy to the shared profile library so any bot can load it later.',
+        params: {
+            'name': { type: 'string', description: 'Name to save the profile under (letters, numbers, - and _).' },
+            'layer': { type: 'string', description: 'Which layer to snapshot. Only "active".', optional: true },
+            'kind': { type: 'string', description: 'What kind of profile: "base" (a whole stance, the default) or "attribute" (something layered on top of a base).', optional: true },
+        },
+        perform: async function (agent, name, layer = 'active', kind = 'base') {
+            if (agent.command_self_issued)
+                return 'Only a person can save a shared policy profile.';
+            if (layer !== 'active')
+                return `"${layer}" is not a layer that can be saved. Use "active".`;
+            if (!['base', 'attribute'].includes(kind))
+                return `"${kind}" is not a profile kind. Use "base" or "attribute".`;
+            const state = loadPolicyState(agent.name);
+            const l = state.layers?.[layer];
+            if (!l?.policy) return `There is no "${layer}" policy layer to save.`;
+            try {
+                saveProfile(name, { source: l.source, policy: l.policy, kind });
+            } catch (err) {
+                return `Failed to save profile: ${err.message}`;
+            }
+            return `Saved the "${layer}" layer as ${kind} profile "${name}".`;
+        }
+    },
+    {
+        name: '!loadProfile',
+        description: 'Load a saved base policy profile into the "active" layer, replacing whatever it held. Use !listProfiles to see what exists. Attribute profiles are not loaded directly -- they are merged onto a base from the web UI. You may only do this when your policy is not locked.',
+        params: {
+            'name': { type: 'string', description: 'Name of the profile to load.' },
+            'layer': { type: 'string', description: 'Layer to load it into. Only "active".', optional: true },
+        },
+        perform: async function (agent, name, layer = null) {
+            const data = loadProfile(name);
+            if (!data) return `There is no policy profile named "${name}". Use !listProfiles to see what exists.`;
+            layer = layer ?? 'active';
+            if (layer !== 'active')
+                return `"${layer}" is not a layer a profile can be loaded into. Use "active".`;
+            if (agent.command_self_issued && isPolicyLocked(agent.name))
+                return 'Your policy is locked, so you cannot change it yourself. Ask a person to unlock it.';
+            if (data.kind !== 'base')
+                return `"${name}" is an attribute profile, not a base. Attributes are merged onto a base policy, not loaded on their own.`;
+            if (!data.policy)
+                return `Profile "${name}" is only natural language with no compiled rules, so it cannot be loaded directly. Merge it onto a base policy instead.`;
+            const err = validatePolicy(data.policy);
+            if (err) return `Profile "${name}" is not a valid policy: ${err}`;
+            const state = loadPolicyState(agent.name);
+            state.layers[layer] = { profile: name, source: data.source, policy: data.policy };
+            state.compose = { base: name, attributes: [], generated_at: Date.now() };
+            applyPolicyState(agent, state);
+            return `Loaded profile "${name}" into the "${layer}" layer:\n${describePolicy(data.policy)}`;
+        }
+    },
+    {
+        name: '!updateProfile',
+        description: 'Create a profile in the shared library, or ADD instructions to an existing one, from natural language. Use when asked to change a base profile or to make/extend an attribute. Does NOT change the running policy -- a person applies it with Regen on the Active tab.',
+        params: {
+            'instructions': { type: 'string', description: 'The behavior to add, in plain language.' },
+            'name': { type: 'string', description: 'Profile to create or extend. Defaults to the base profile the current policy was generated from.', optional: true },
+            'kind': { type: 'string', description: 'Only for new profiles: "base" (a whole stance, compiled to rules) or "attribute" (layered on a base; default).', optional: true },
+        },
+        perform: async function (agent, instructions, name = null, kind = null) {
+            if (agent.command_self_issued && isPolicyLocked(agent.name))
+                return 'Your policy is locked, so you cannot edit the profile library yourself. Ask a person to unlock it.';
+            const state = loadPolicyState(agent.name);
+            name = name ?? state.compose?.base;
+            if (!name) return 'No profile name given and no base profile is currently in use. Say which profile to update.';
+            const existing = loadProfile(name);
+            kind = existing?.kind ?? (kind === 'base' ? 'base' : 'attribute');
+            const source = [...(existing?.source ?? []), instructions];
+            let policy = existing?.policy;
+            // Bases must stay runnable on their own, so the new instructions are
+            // compiled and laid on top of the rules the profile already had --
+            // never recompiled wholesale, which would shred hand-tuned rules.
+            // Prose-only attributes stay prose; the Regen merge compiles them.
+            if (kind === 'base' || policy) {
+                let compiled;
+                try {
+                    compiled = await compilePolicy(agent, instructions);
+                } catch (err) {
+                    return `Failed to compile the new instructions: ${err.message}`;
+                }
+                const err = validatePolicy(compiled);
+                if (err) return `Failed to compile the new instructions: ${err}`;
+                policy = policy
+                    ? { modes: { ...policy.modes, ...compiled.modes }, rules: [...(policy.rules ?? []), ...(compiled.rules ?? [])] }
+                    : compiled;
+            }
+            try {
+                saveProfile(name, { source, policy, kind });
+            } catch (err) {
+                return `Failed to save profile: ${err.message}`;
+            }
+            const inUse = state.compose?.base === name || state.compose?.attributes?.includes(name);
+            return `${existing ? `Added to ${kind} profile` : `Created ${kind} profile`} "${name}".`
+                + (inUse ? ' It is part of the running policy, so a person must hit Regen on the Active tab to apply the change.' : '');
+        }
+    },
+    {
+        name: '!listProfiles',
+        description: 'List the saved policy profiles that can be loaded with !loadProfile.',
+        perform: async function () {
+            const profiles = listProfiles();
+            if (profiles.length === 0) return 'There are no saved policy profiles.';
+            return 'Saved policy profiles:\n' +
+                profiles.map(p => `- ${p.name} (${p.kind}): ${p.summary}`).join('\n');
         }
     },
     {

@@ -4,6 +4,7 @@ import { getCommandDocs } from './index.js';
 import convoManager from '../conversation.js';
 import { checkLevelBlueprint, checkBlueprint } from '../tasks/construction_tasks.js';
 import { load } from 'cheerio';
+import { formatDuration } from '../../utils/text.js';
 
 const pad = (str) => {
     return '\n' + str + '\n';
@@ -37,19 +38,34 @@ export const queryList = [
             // light properties are bugged, they are not accurate
 
 
-            if (bot.time.timeOfDay < 6000) {
-                res += '\n- Time: Morning';
-            } else if (bot.time.timeOfDay < 12000) {
-                res += '\n- Time: Afternoon';
-            } else {
+            // Same isNight() the policy rules use, so what the bot is told never
+            // contradicts what its rules are acting on.
+            if (world.isNight(bot)) {
                 res += '\n- Time: Night';
+            } else if (bot.time.timeOfDay < 6000) {
+                res += '\n- Time: Morning';
+            } else {
+                res += '\n- Time: Afternoon';
             }
+
+            // Real time since login, so the bot can tell a fresh restart from a
+            // session that has been grinding at the same goal for an hour.
+            if (agent.login_time)
+                res += `\n- Active for: ${formatDuration(Date.now() - agent.login_time)}`;
+
+            // Time since the last death, so "I've survived a while" isn't confused
+            // with "I logged in a while ago and died twice since".
+            const alive_ms = agent.aliveMs();
+            if (alive_ms != null)
+                res += `\n- Alive for: ${formatDuration(alive_ms)}`;
+            else if (agent.login_time)
+                res += `\n- Alive for: ${formatDuration(Date.now() - agent.login_time)} (no deaths on record)`;
 
             // get the bot's current action
             let action = agent.actions.currentActionLabel;
             if (agent.isIdle())
                 action = 'Idle';
-            res += `\- Current Action: ${action}`;
+            res += `\n- Current Action: ${action}`;
 
 
             let players = world.getNearbyPlayerNames(bot);

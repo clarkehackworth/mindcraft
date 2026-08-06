@@ -76,3 +76,10 @@ export function strictFormat(turns) {
     }
     return messages;
 }
+export function formatDuration(ms) {
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60), h = Math.floor(m / 60);
+    if (h < 1) return `${m}m`;
+    return `${h}h ${m % 60}m`;
+}
