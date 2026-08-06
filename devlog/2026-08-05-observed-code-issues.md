@@ -7,8 +7,8 @@ Running log kept while watching Andy on the Prominence 2 server. These are
 went out separately (see the bottom of this file).
 
 **Status:** most are fixed and deployed. 1 is the stubborn one and is now split
-into three measured causes, two fixed. 2 is probably not a bug. 4, 5 and 7 are
-unexamined. A companion log covers
+into three measured causes, two fixed. 2 is probably not a bug. 4, 5, 7 and 12
+are open. 12 is the one that needs a decision rather than a patch. A companion log covers
 [the test harness](2026-08-05-live-test-harness.md) built partway through, and
 why passive observation alone kept producing wrong answers.
 
@@ -27,6 +27,10 @@ why passive observation alone kept producing wrong answers.
 | 6c | No "nearly finished" grace in the arbiter | fixed |
 | 7 | `!stayUntil` accepts a condition no amount of waiting reaches | open |
 | 8 | No `is_freezing` condition on a server where freezing kills | fixed, confirmed live |
+| 9 | The parser rejected the syntax `describeCondition` prints | fixed |
+| 10 | A timed-out policy merge silently overwrote later edits | fixed |
+| 11 | Health thresholds calibrated for a 20-point bar; it is 52 | fixed |
+| 12 | Spawn death loop: respawns into mobs, dies before it can act | **open — a gap, not a bug** |
 
 ## 1. `collectBlocks` on modded logs breaks the block and banks nothing
 
@@ -691,3 +695,111 @@ already available), or the instruction has nowhere sensible to go.
   This is worth generalising: any prompt that hardcodes a recipe is a prompt
   that is wrong on a modded server. `!getCraftingPlan` exists; the prompts
   should use it rather than assert.
+
+
+## 9. The parser rejected the syntax we print — **fixed**
+
+```
+stay needs a valid "until" condition:
+  unknown condition "entity_nearby(name=illusioner,range=16)"
+```
+
+Three times in one window, from three different rules. It looks like the model
+inventing a syntax. It is not:
+
+```js
+// describeCondition
+return spec.cond + (args.length ? `(${args.map(([k, v]) => `${k}=${v}`).join(', ')})` : '');
+```
+
+That is what `describePolicy` prints, and what the model reads back in every rule
+description and every `!stats`-style summary. It writes the form we showed it,
+and `parseConditionExpr` accepted only the flat `entity_nearby illusioner 16`.
+
+Printing one grammar and parsing another is our bug, and the model paid for it
+one retry at a time. Both forms parse now, and there is a round-trip test for the
+property that should have held from the start: anything `describeCondition`
+prints, `parseConditionExpr` reads back identically. Bad argument names still
+fail loudly, so this widens what is accepted without weakening what is checked.
+
+Worth generalising: this is the third failure in this log where the agent was
+blamed for output that our own code had handed it. The others were
+`!collectBlocks("log")` (rejected a family name the skills accept, then suggested
+a tree that does not exist here) and the drop report that said "the drops were
+lost" for interrupted collects.
+
+## 10. A timed-out merge silently overwrote later edits — **fixed**
+
+`mindserver.js` already described this, as a comment explaining why the relay
+timeout is 600s:
+
+> the relay gave up and reported failure while the merge went on to succeed and
+> install itself
+
+The first half was treated as the problem. The second half is the bug. A caller
+told the generate failed will reasonably set the policy another way — and then
+the abandoned merge lands on top and wins, silently. Observed: a raider rule
+installed by hand reverted to an older version minutes later, with nothing in the
+log to say why. I lost twenty minutes to it before recognising my own symptom in
+a comment I had already read.
+
+`savePolicyState` stamps an incrementing `revision`; `generate-policy` records it
+before the merge and re-checks after. If anything else wrote in between, the
+merged result is discarded and the caller is told. Nothing is overwritten behind
+someone's back.
+
+**Not fixed:** why the merge takes long enough to time out at all. Three attempts
+at up to three minutes each exceeds 600s on its own. I assumed context length,
+measured it, and was wrong — the merge prompt is ~6.5k tokens. It is retry
+count times a slow gateway. Reducing retries, or streaming a partial result,
+would both be real improvements.
+
+## 11. Health thresholds were calibrated for a health bar we do not have — **fixed**
+
+Max health here is **52**, confirmed with
+`attribute clarkhackworth generic.max_health get`. Every absolute threshold in
+the profiles was therefore written for a bot with a third of the health it has:
+`flee_when_hurt` on `health_below 8` reads like 40% and meant 15%. The flagship
+survival reflex was firing too late to be a reflex, on the profile whose entire
+job is staying alive.
+
+`health_below` takes a `pct` now. See the harness log for how this surfaced —
+it fell out of a metadata probe added for something else entirely, which is an
+argument for probes that print everything rather than only what you went looking
+for.
+
+One near-miss worth recording: `parseConditionExpr` fills arguments
+**positionally** from their declaration order, so listing `pct` first silently
+reinterpreted every `health_below 6` in a `!stayUntil` or stay-until string as
+six *percent*. A test caught it. A live agent would not have — it would simply
+have waited longer and died.
+
+## 12. Spawn death loop — **open, and not obviously a code bug**
+
+Eight-plus consecutive zombie deaths, every death position within ~15 blocks of
+world spawn:
+
+```
+13.5, 72, -0.2   -8.7, 70, -0.9   -5.7, 70, -5.2   -2.7, 75, 8.5
+ 6.7, 67, -1.5   10.7, 70,  8.7    4.7, 68, -8.5
+```
+
+The agent respawns into a mob pile and dies before any rule can act. Nothing in
+the policy vocabulary covers this: `leave_your_death_spot` is about the place you
+*died*, and here the danger is at the place you *respawn*, which is a different
+location and one the agent cannot avoid.
+
+Broken by hand for now — cleared hostiles within 40 blocks of spawn and set day.
+That is a bandage, and it will recur.
+
+Three possible answers, and choosing between them is a judgement call rather
+than a bug fix:
+
+- **Policy**: a pinned rule that fires on `at_position(spawn)` shortly after a
+  respawn and runs. Needs a condition that does not exist yet, and it is fighting
+  the game rather than playing it.
+- **World**: move the spawn point somewhere defensible, or light it. Cheapest and
+  most durable, but it is a change to the world rather than to the agent.
+- **Accept**: on a modpack this hostile, dying at spawn while unarmed at night
+  may simply be correct behaviour, and the real fix is the agent getting a weapon
+  and a bed — which is what most of this log has been about.
