@@ -6,23 +6,60 @@
 # the state under test on purpose.
 #
 # Usage:
-#   tools/live_test.sh pos                 where is the bot
-#   tools/live_test.sh rcon "<command>"    raw server command
-#   tools/live_test.sh freeze              stand it in powder snow, watch is_freezing
-#   tools/live_test.sh wood                give it a tree to fell, watch the drops
-#   tools/live_test.sh watch <pattern> [s] tail the agent log for a pattern
+#   Setup primitives (compose these into scenarios):
+#     tools/live_test.sh pos                     where is the bot
+#     tools/live_test.sh rcon "<command>"        raw server command
+#     tools/live_test.sh tp <x> <y> <z>          move the bot
+#     tools/live_test.sh summon <mob> [dist]     spawn a mob near the bot (default 10)
+#     tools/live_test.sh give <item> [n]         put items in its inventory
+#     tools/live_test.sh effect <eff> [s] [amp]  apply a status effect
+#     tools/live_test.sh damage [n]              hurt it (default 6 = 3 hearts)
+#     tools/live_test.sh heal                    full health + saturation
+#     tools/live_test.sh clearinv                empty its inventory
+#     tools/live_test.sh time <day|night|...>    set time
+#     tools/live_test.sh weather <clear|rain|thunder>
+#   State:
+#     tools/live_test.sh snapshot [name]         save pos + inventory
+#     tools/live_test.sh restore [name]          tp back, heal, re-give items
+#   Talk to the agent (mindserver socket, no log grepping):
+#     tools/live_test.sh say "<msg>" [waitSecs]  chat/!command to the agent, stream output
+#     tools/live_test.sh evt <pattern> [secs]    await an EVT line on the socket stream
+#     tools/live_test.sh restart|stop|start      agent process control
+#   Iterate:
+#     tools/live_test.sh deploy [files...]       push changed files to container, restart agent
+#   Observe:
+#     tools/live_test.sh watch <pattern> [since] tail the agent log for a pattern
+#   Scenarios: freeze | wood | raider [mob]
 #
-# ponytail: bash + rcon-cli, no framework. Everything here is one server command
-# and a log grep; a harness would be more code than the tests.
+# ponytail: bash + rcon-cli + one small socket client, no framework. Everything
+# here is one server command and an assertion; a harness would be more code
+# than the tests.
 set -euo pipefail
 
 HOST=${MC_HOST:-docker.lan}
 MC=${MC_CONTAINER:-minecraft-prominence2}
 BOT_CONTAINER=${BOT_CONTAINER:-mindcraft}
 PLAYER=${MC_PLAYER:-clarkhackworth}
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+SNAPDIR=${SNAPDIR:-/tmp/live_test_snapshots}
 
 rcon() { ssh "$HOST" "docker exec $MC rcon-cli \"$*\"" 2>&1; }
 botlog() { ssh "$HOST" "docker logs --since ${2:-2m} $BOT_CONTAINER 2>&1" | grep -E "$1" || true; }
+
+# Mindserver auth token: env wins, else pull it from the container (SETTINGS_JSON
+# env overrides /app/settings.js, so check both, env first).
+token() {
+    if [ -n "${MINDSERVER_TOKEN:-}" ]; then echo "$MINDSERVER_TOKEN"; return; fi
+    ssh "$HOST" "docker exec $BOT_CONTAINER sh -c 'printenv SETTINGS_JSON; cat /app/settings.js' 2>/dev/null" \
+        | grep -o '"mindserver_auth_token"[: ]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/'
+}
+
+# Talk to the agent over the mindserver socket -- instant and structured, and
+# !commands sent this way bypass the LLM entirely (no 30s wait, no API cost).
+drive() {
+    MINDSERVER_TOKEN="$(token)" MINDSERVER_URL="${MINDSERVER_URL:-http://$HOST:8080}" \
+        node "$ROOT/tools/drive.js" "$@"
+}
 
 # Bot position as three integers, via the server rather than the agent, so it
 # works even when the agent is wedged.
@@ -52,8 +89,9 @@ require_pos() {
     return 1
 }
 
-# Watch for a pattern to appear, up to a deadline. Returns 1 if it never does,
-# so a scenario that silently fails to reproduce is a failure, not a pass.
+# Watch for a pattern to appear in the docker log, up to a deadline. Returns 1
+# if it never does, so a scenario that silently fails to reproduce is a
+# failure, not a pass. Prefer `evt` (socket, instant) where an EVT line exists.
 await() {
     local pattern=$1 secs=${2:-90} start
     start=$(date +%s)
@@ -71,6 +109,70 @@ await() {
 case "${1:-}" in
 pos)  pos ;;
 rcon) shift; rcon "$@" ;;
+
+# --- setup primitives ---------------------------------------------------------
+tp)       rcon "tp $PLAYER ${2:?x} ${3:?y} ${4:?z}" ;;
+summon)   read -r X Y Z <<<"$(require_pos)" || exit 1
+          rcon "summon ${2:?mob} $((X+${3:-10})) $Y $Z" ;;
+give)     rcon "give $PLAYER ${2:?item} ${3:-1}" ;;
+effect)   rcon "effect give $PLAYER ${2:?effect} ${3:-30} ${4:-0} true" ;;
+damage)   rcon "damage $PLAYER ${2:-6}" ;;
+heal)     rcon "effect give $PLAYER minecraft:instant_health 1 10 true" >/dev/null
+          rcon "effect give $PLAYER minecraft:saturation 3 10 true" ;;
+clearinv) rcon "clear $PLAYER" ;;
+time)     rcon "time set ${2:-night}" ;;
+weather)  rcon "weather ${2:-clear}" ;;
+
+# --- known-state snapshot / restore ------------------------------------------
+snapshot)
+    mkdir -p "$SNAPDIR"
+    read -r X Y Z <<<"$(require_pos)" || exit 1
+    { echo "POS $X $Y $Z"; echo "INV $(rcon "data get entity $PLAYER Inventory")"; } > "$SNAPDIR/${2:-default}"
+    echo "saved $SNAPDIR/${2:-default} (pos $X $Y $Z)"
+    ;;
+restore)
+    SNAP="$SNAPDIR/${2:-default}"
+    [ -f "$SNAP" ] || { echo "no snapshot at $SNAP" >&2; exit 1; }
+    read -r _ X Y Z <<<"$(grep '^POS ' "$SNAP")"
+    require_pos >/dev/null || exit 1
+    rcon "tp $PLAYER $X $Y $Z" >/dev/null
+    rcon "effect give $PLAYER minecraft:instant_health 1 10 true" >/dev/null
+    rcon "effect give $PLAYER minecraft:saturation 3 10 true" >/dev/null
+    rcon "clear $PLAYER" >/dev/null
+    # ponytail: restores item ids and counts only -- slots, damage, and
+    # enchantments are lost. Full NBT re-give if a scenario ever needs it.
+    grep '^INV ' "$SNAP" | tr '{' '\n' | while read -r entry; do
+        id=$(echo "$entry" | grep -oE 'id: "[^"]+"' | head -1 | cut -d'"' -f2)
+        n=$(echo "$entry" | grep -oE 'Count: [0-9]+b' | head -1 | grep -oE '[0-9]+')
+        [ -n "$id" ] && [ -n "$n" ] && { rcon "give $PLAYER $id $n" >/dev/null; echo "gave ${n}x $id"; }
+    done
+    echo "restored to $X $Y $Z, healed"
+    ;;
+
+# --- mindserver socket --------------------------------------------------------
+say)     shift; drive say "$@" ;;
+evt)     shift; drive listen "${1:?pattern}" "${2:-90}" ;;
+restart|stop|start) drive "$1" ;;
+
+# --- push code and bounce only the agent -------------------------------------
+deploy)
+    shift
+    files=("$@")
+    if [ ${#files[@]} -eq 0 ]; then
+        mapfile -t files < <(git -C "$ROOT" status --porcelain \
+            | awk '$1 != "D" {print $NF}' \
+            | grep -E '^(src/|profiles/|policies/|settings\.js|main\.js)' || true)
+    fi
+    [ ${#files[@]} -eq 0 ] && { echo "nothing to deploy"; exit 0; }
+    for f in "${files[@]}"; do
+        case $f in *.js) node --check "$ROOT/$f" || { echo "syntax error in $f -- not deploying" >&2; exit 1; } ;; esac
+    done
+    echo "deploying: ${files[*]}"
+    tar -C "$ROOT" -cz "${files[@]}" | ssh "$HOST" "docker exec -i $BOT_CONTAINER tar xz -C /app"
+    drive restart || { echo "socket restart failed; restarting container"; ssh "$HOST" "docker restart $BOT_CONTAINER"; }
+    ;;
+
+# --- scenarios ----------------------------------------------------------------
 
 # is_freezing reads entity metadata that a server only sends once it changes
 # from its default, so absence proves nothing and the condition can only be
@@ -132,11 +234,15 @@ raider)
     read -r X Y Z <<<"$(require_pos)" || exit 1
     echo "summoning $MOB 10 blocks from the bot at $X $Y $Z"
     rcon "summon $MOB $((X+10)) $Y $Z"
-    await "policy:active:flee_ranged_raiders" 90 \
+    # The EVT carries the layer the rule lives in -- "rule:fire:active:<name>"
+    # or "rule:fire:self:<name>" -- so matching on the bare name was a pattern
+    # that could never hit, and reported "the rule never fired" while the log
+    # showed it firing. Match either layer.
+    await "EVT rule:fire:[a-z]+:flee_ranged_raiders" 90 \
         && echo "-- the rule fires: the client spells this mob the way the policy does" \
         || echo "-- rule never fired. Either the mob did not spawn, or entity_nearby's name does not match what mineflayer calls it."
     ;;
 
 watch) shift; botlog "$1" "${2:-5m}" ;;
-*) sed -n '2,16p' "$0" ;;
+*) sed -n '2,36p' "$0" ;;
 esac

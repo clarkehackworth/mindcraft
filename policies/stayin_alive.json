@@ -118,7 +118,7 @@
       },
       {
         "name": "flee_ranged_raiders",
-        "description": "Everything that kills from outside cowardice's radius, in one rule. The chillager was the first; Stray and the illager family do the same thing and were half of twenty deaths in six hours on the live agent. Every restart it wrote itself another version of this from scratch -- pillager_avoidance, pillager_flee_shelter, stray_avoidance, stray_pillager_death_response -- and every version ended in {\"act\": \"stay\"}, which is standing in the open. Run a long way, then hole up if it is night; in daylight the stay ends the tick it starts and the flee is the whole rule.",
+        "description": "Everything that kills this agent from outside cowardice's radius, in one rule, with the list taken from counting actual deaths rather than from what sounds dangerous. Stray, chillager and the illager family were the first; Illusioner, Iceologer, the mutant skeleton and two kinds of creeper earned their places later. Every id was checked against the server with `summon` before being added, because a name the client spells differently matches nothing and fails silently -- see tools/live_test.sh raider. Zombie is the biggest killer by far and is deliberately absent: it is melee, which is cowardice's job, and this rule is pinned and interrupts everything, so it must not fire for things fleeing cannot fix.",
         "interrupts": "all",
         "when": {
           "any": [
@@ -146,6 +146,31 @@
               "cond": "entity_nearby",
               "name": "ravager",
               "range": 32
+            },
+            {
+              "cond": "entity_nearby",
+              "name": "illusioner",
+              "range": 24
+            },
+            {
+              "cond": "entity_nearby",
+              "name": "friendsandfoes:iceologer",
+              "range": 24
+            },
+            {
+              "cond": "entity_nearby",
+              "name": "mutantmonsters:mutant_skeleton",
+              "range": 32
+            },
+            {
+              "cond": "entity_nearby",
+              "name": "mutantmonsters:mutant_creeper",
+              "range": 16
+            },
+            {
+              "cond": "entity_nearby",
+              "name": "graveyard:skeleton_creeper",
+              "range": 16
             }
           ]
         },
