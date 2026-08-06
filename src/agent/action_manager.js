@@ -1,6 +1,20 @@
 // How long an action gets to notice the interrupt before it is abandoned.
 const STOP_GRACE_MS = 10000;
 
+// How long a nearly-finished action may keep running before a NON-urgent
+// interrupter takes the slot, and how far along it has to be to earn that.
+//
+// Cancelling a 16-log collect at block 14 threw away the whole trip: the drops
+// are only banked as they are picked up, the agent read "Collected 0" and
+// concluded the trees were unreachable, and the thing that cancelled it was
+// usually the model starting some new idea rather than anything dangerous.
+//
+// Three seconds, and only past three-quarters done, so this can never hold up a
+// reflex: urgency is decided by the interrupter, not by this, and everything
+// that keeps the agent alive declares itself urgent (see runAction).
+const FINISH_GRACE_MS = 3000;
+const FINISH_GRACE_FRACTION = 0.75;
+
 export class ActionManager {
     constructor(agent) {
         this.agent = agent;
@@ -19,20 +33,43 @@ export class ActionManager {
         this.generation = 0;
     }
 
+    // {done, total} for the running action, when it bothers to say. It lives on
+    // the bot because that is the only object a skill is handed -- see
+    // reportProgress in skills.js. An action that never reports is simply never
+    // nearly-finished, which is the safe answer.
+    _nearlyFinished() {
+        const p = this.agent?.bot?.action_progress;
+        return !!p && p.total > 0 && p.done / p.total >= FINISH_GRACE_FRACTION;
+    }
+
     async resumeAction(actionFn, timeout) {
         return this._executeResume(actionFn, timeout);
     }
 
-    async runAction(actionLabel, actionFn, { timeout, resume = false } = {}) {
+    // urgent: may this interrupt a nearly-finished action immediately? Defaults
+    // to true, so a caller that has not thought about it behaves exactly as
+    // before -- the grace is opt-in, and nothing that keeps the agent alive has
+    // to remember to opt out of it.
+    async runAction(actionLabel, actionFn, { timeout, resume = false, urgent = true } = {}) {
         if (resume) {
             return this._executeResume(actionLabel, actionFn, timeout);
         } else {
-            return this._executeAction(actionLabel, actionFn, timeout);
+            return this._executeAction(actionLabel, actionFn, timeout, urgent);
         }
     }
 
-    async stop() {
+    async stop(urgent = true) {
         if (!this.executing) return;
+        // Let an action that is about to finish actually finish, when whatever
+        // wants the slot is not an emergency. Nothing is interrupted during this
+        // window -- requestInterrupt is not called -- so the action either lands
+        // or the window closes and the normal cooperative stop below proceeds.
+        if (!urgent) {
+            const finish_by = Date.now() + FINISH_GRACE_MS;
+            while (this.executing && this._nearlyFinished() && Date.now() < finish_by)
+                await new Promise(resolve => setTimeout(resolve, 100));
+            if (!this.executing) return;
+        }
         // ponytail: cooperative interrupt only. Generated code runs in this
         // process, so there is no way to actually cancel it -- we set
         // interrupt_code, stop pathfinder/digging/pvp, and hope the action
@@ -80,7 +117,7 @@ export class ActionManager {
         }
     }
 
-    async _executeAction(actionLabel, actionFn, timeout = 10) {
+    async _executeAction(actionLabel, actionFn, timeout = 10, urgent = true) {
         let TIMEOUT;
         let gen; // set once this action owns the manager; the catch needs it too
         try {
@@ -117,9 +154,14 @@ export class ActionManager {
             // await current action to finish (executing=false), with 10 seconds timeout
             // also tell agent.bot to stop various actions
             if (this.executing) {
-                console.log(`action "${actionLabel}" trying to interrupt current action "${this.currentActionLabel}"`);
+                console.log(`action "${actionLabel}" trying to interrupt current action "${this.currentActionLabel}"`
+                    + (!urgent && this._nearlyFinished() ? ' (letting it finish first)' : ''));
             }
-            await this.stop();
+            await this.stop(urgent);
+            // Whatever the previous action reported is meaningless now, and a
+            // stale value would make the NEXT interrupter think this action was
+            // nearly done before it had started.
+            if (this.agent?.bot) this.agent.bot.action_progress = null;
 
             // clear bot logs and reset interrupt code
             this.agent.clearBotLogs();

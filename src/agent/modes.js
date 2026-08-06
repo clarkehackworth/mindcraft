@@ -367,6 +367,13 @@ const modes_list = [
 // stuck pathfinder (e.g. surfacing from drowning against an obstruction) left
 // currentActionLabel stuck forever -- the status UI showed "drowning_escape"
 // long after oxygen was restored. 2 minutes is generous for a reflex action.
+// The modes that exist to keep the agent alive, and so may cancel an action
+// that was one block from finishing. Everything else -- hunting, picking items
+// up, placing torches, elbow room, staring at the sky -- can wait the moment
+// out. A policy rule answers this with its own `urgent` (set from `pinned`).
+const URGENT_MODES = ['self_preservation', 'unstuck', 'cowardice', 'self_defense'];
+const isUrgentMode = (mode) => mode.urgent ?? URGENT_MODES.includes(mode.name);
+
 async function execute(mode, agent, func, timeout=2) {
     if (agent.self_prompter.isActive())
         // Only a mode that preempts everything gets to throw away a command the
@@ -377,7 +384,7 @@ async function execute(mode, agent, func, timeout=2) {
     mode.active = true;
     let code_return = await agent.actions.runAction(`mode:${mode.name}`, async () => {
         await func();
-    }, { timeout });
+    }, { timeout, urgent: isUrgentMode(mode) });
     mode.active = false;
     console.log(`Mode ${mode.name} finished executing, code_return: ${code_return.message}`);
 
