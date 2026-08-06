@@ -1,7 +1,8 @@
 {
   "source": [
     "Build up a food surplus instead of eating hand to mouth. Harvest carrots, potatoes, beetroot and sweet berries whenever they are in reach, and hunt nearby animals when the meat supply is short.",
-    "Cook raw meat at a furnace before storing it, and bank the surplus in the base chests so there is always food to come home to."
+    "Cook raw meat at a furnace before storing it, and bank the surplus in the base chests so there is always food to come home to.",
+    "Being unarmed is never a reason to stop feeding yourself. Foraging, baking, cooking and going out to look for food all happen whether or not there is a weapon in the bag -- an agent that cannot get wood must still be able to eat."
   ],
   "goal": "Keep a standing food surplus in the base chests, going out to farm, forage and hunt for it rather than waiting until you are hungry.",
   "kind": "attribute",
@@ -140,35 +141,6 @@
             },
             {
               "cond": "is_idle"
-            },
-            {
-              "any": [
-                {
-                  "cond": "has_item",
-                  "item": "wooden_sword",
-                  "count": 1
-                },
-                {
-                  "cond": "has_item",
-                  "item": "stone_sword",
-                  "count": 1
-                },
-                {
-                  "cond": "has_item",
-                  "item": "iron_sword",
-                  "count": 1
-                },
-                {
-                  "cond": "has_item",
-                  "item": "golden_sword",
-                  "count": 1
-                },
-                {
-                  "cond": "has_item",
-                  "item": "diamond_sword",
-                  "count": 1
-                }
-              ]
             }
           ]
         },
@@ -223,35 +195,6 @@
             },
             {
               "cond": "is_idle"
-            },
-            {
-              "any": [
-                {
-                  "cond": "has_item",
-                  "item": "wooden_sword",
-                  "count": 1
-                },
-                {
-                  "cond": "has_item",
-                  "item": "stone_sword",
-                  "count": 1
-                },
-                {
-                  "cond": "has_item",
-                  "item": "iron_sword",
-                  "count": 1
-                },
-                {
-                  "cond": "has_item",
-                  "item": "golden_sword",
-                  "count": 1
-                },
-                {
-                  "cond": "has_item",
-                  "item": "diamond_sword",
-                  "count": 1
-                }
-              ]
             }
           ]
         },
@@ -304,35 +247,6 @@
             },
             {
               "cond": "is_idle"
-            },
-            {
-              "any": [
-                {
-                  "cond": "has_item",
-                  "item": "wooden_sword",
-                  "count": 1
-                },
-                {
-                  "cond": "has_item",
-                  "item": "stone_sword",
-                  "count": 1
-                },
-                {
-                  "cond": "has_item",
-                  "item": "iron_sword",
-                  "count": 1
-                },
-                {
-                  "cond": "has_item",
-                  "item": "golden_sword",
-                  "count": 1
-                },
-                {
-                  "cond": "has_item",
-                  "item": "diamond_sword",
-                  "count": 1
-                }
-              ]
             }
           ]
         },
@@ -392,36 +306,11 @@
         "when": {
           "all": [
             {
-              "cond": "is_idle"
+              "cond": "hunger_below",
+              "value": 18
             },
             {
-              "any": [
-                {
-                  "cond": "has_item",
-                  "item": "wooden_sword",
-                  "count": 1
-                },
-                {
-                  "cond": "has_item",
-                  "item": "stone_sword",
-                  "count": 1
-                },
-                {
-                  "cond": "has_item",
-                  "item": "iron_sword",
-                  "count": 1
-                },
-                {
-                  "cond": "has_item",
-                  "item": "golden_sword",
-                  "count": 1
-                },
-                {
-                  "cond": "has_item",
-                  "item": "diamond_sword",
-                  "count": 1
-                }
-              ]
+              "cond": "is_idle"
             },
             {
               "not": {
@@ -491,7 +380,7 @@
         "do": [
           {
             "act": "prompt_self",
-            "message": "You are carrying no food at all and there is nothing to forage or hunt within reach. Do not wait for hunger to force this. Go and look, and pick what suits the land you are actually standing in rather than what you wish were here. In a snowy pine forest that means sweet berry bushes and rabbits, not cows and wheat fields. Try in this order: !searchForBlock sweet_berry_bush 128 and !collectBlocks them -- berry bushes regrow, so a patch you find once is food forever, and !rememberHere it. Otherwise !searchForEntity for whatever animal lives here -- rabbit, sheep, chicken, cow, pig, fox -- and !attack it, then !smeltItem the raw meat if a furnace is in reach. If you have string from spiders, 3 sticks and 2 string make a fishing_rod and any open water is then food you can stand still for. Finish one of these before starting anything else, and if a search says it could not travel at all, move somewhere else first -- searching again from a spot you cannot leave will not work."
+            "message": "You are carrying no food at all and there is nothing to forage or hunt within reach. Do not wait for hunger to force this. Go and look, and pick what suits the land you are actually standing in rather than what you wish were here. In a snowy pine forest that means sweet berry bushes and rabbits, not cows and wheat fields. Try in this order: !searchForBlock sweet_berry_bush 128 and !collectBlocks them -- berry bushes regrow, so a patch you find once is food forever, and !rememberHere it. Otherwise !searchForEntity for whatever animal lives here -- rabbit, sheep, chicken, cow, pig, fox -- and !attack it, then !smeltItem the raw meat if a furnace is in reach. Bare hands are enough for any of those; they do not fight back. They are not enough for anything that does, so if you are unarmed do not let a hunt turn into a fight. If you have string from spiders, 3 sticks and 2 string make a fishing_rod and any open water is then food you can stand still for. Finish one of these before starting anything else, and if a search says it could not travel at all, move somewhere else first -- searching again from a spot you cannot leave will not work."
           }
         ],
         "cooldown": 240

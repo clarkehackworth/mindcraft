@@ -32,6 +32,35 @@ const MAX_COND_SCAN = 16;
 export const isWeaponName = (name) =>
     !!name && (name.includes('sword') || (name.includes('axe') && !name.includes('pickaxe')));
 
+// Entity metadata key 7 is ticks_frozen for 1.17+; mineflayer indexes
+// entity.metadata by key, so this is where the freeze meter lives.
+//
+// Andy has died "froze to death" on Prominence 2, has noticed it, and keeps
+// writing itself cold-weather rules -- but there was no condition to compile
+// them into, so the model substituted is_night or hostile_nearby and landed on
+// {"act": "stay"}, which is the worst rule shape available. It arrived there
+// because the vocabulary had no word for what it was trying to say.
+// A first version of this warned when metadata[7] was absent, on the theory that
+// a condition which can never fire is worse than no condition. It fired within a
+// minute and was wrong: the server only sends a metadata field once it CHANGES
+// from its default, so an absent slot means "not currently freezing", which is
+// the normal state. Absence proves nothing, so it says nothing.
+//
+// What does prove the wiring is a non-zero reading, so that is what gets logged,
+// once. Until that line appears in a log this condition is correct-by-the-spec
+// but unconfirmed on this server; to force it, stand in powder snow.
+const FROZEN_TICKS_KEY = 7;
+let seen_freezing = false;
+function frozenTicks(bot) {
+    const ticks = bot?.entity?.metadata?.[FROZEN_TICKS_KEY];
+    if (typeof ticks !== 'number') return 0;
+    if (ticks > 0 && !seen_freezing) {
+        seen_freezing = true;
+        console.log(`is_freezing: freeze meter is live on this server (metadata[${FROZEN_TICKS_KEY}] = ${ticks}).`);
+    }
+    return ticks;
+}
+
 export const CONDITIONS = {
     hostile_nearby: {
         args: { range: 'number (blocks, default 16)' },
@@ -151,6 +180,11 @@ export const CONDITIONS = {
         desc: 'It is night time.',
         fn: (agent, a) => world.isNight(agent.bot, a.lead ?? 0)
     },
+    is_freezing: {
+        args: { ticks: 'frozen ticks to trigger at (default 90). Vanilla starts doing damage at 140, and the meter empties at ~2 ticks per tick once you are warm again.' },
+        desc: 'The bot is freezing: powder snow or a cold biome is filling its freeze meter. Fires before the damage starts, so there is time to do something about it.',
+        fn: (agent, a) => frozenTicks(agent.bot) >= (a.ticks ?? 90)
+    },
     is_idle: {
         args: {},
         desc: 'Bot has no current action or goal in progress.',
@@ -204,9 +238,16 @@ export const ACTIONS = {
         fn: async (agent, a) => await skills.followPlayer(agent.bot, a.name, 4)
     },
     move_away: {
-        cost: 'blocking', clears: ['hostile_nearby', 'entity_nearby', 'animal_nearby', 'player_nearby', 'at_position', 'block_nearby', 'at_death_position'],
+        // is_freezing belongs here for the same reason hostile_nearby does on
+        // flee: walking out of the powder snow you are standing in, or out from
+        // under the blizzard, is the thing that actually empties the freeze
+        // meter. Like the others it is a partial clear -- you can walk from one
+        // snowfield into another, just as you can flee into a second zombie --
+        // but it is real progress rather than waiting, and waiting is the rule
+        // shape this vocabulary exists to keep the model away from.
+        cost: 'blocking', clears: ['hostile_nearby', 'entity_nearby', 'animal_nearby', 'player_nearby', 'at_position', 'block_nearby', 'at_death_position', 'is_freezing'],
         args: { distance: 'number (default 8)' },
-        desc: 'Move away from the current position in any direction.',
+        desc: 'Move away from the current position in any direction. Also the reflex for standing in something that is hurting you, like powder snow.',
         fn: async (agent, a) => await skills.moveAway(agent.bot, a.distance ?? 8)
     },
     stay: {
@@ -714,6 +755,15 @@ export function repairPolicy(policy) {
     let cowardice = false, changed = false;
     const rules = [];
     for (let rule of policy.rules) {
+        // Before anything else looks at "when": every check below reads the
+        // condition tree, so a leaf the model shaped wrong would otherwise make
+        // isCowardice/isAimless/livelockRisk quietly answer about a rule that
+        // isn't the one the model meant.
+        const normalized = normalizeCondition(rule?.when);
+        if (JSON.stringify(normalized) !== JSON.stringify(rule?.when)) {
+            rule = { ...rule, when: normalized };
+            changed = true;
+        }
         if (isCowardice(rule)) { cowardice = changed = true; continue; }
         // Nothing here can invent the world-facing trigger this rule needs, and
         // a rule that fires forever on "nothing is happening" starves every real
@@ -761,6 +811,40 @@ export function repairPolicy(policy) {
     };
 }
 
+// Four ways the compiler's model malformed a condition leaf, live, repeatedly:
+//   {"cond": {"cond": "is_night"}}      -> "unknown condition [object Object]"
+//   {"condition": "hostile_nearby"}     -> "unknown condition undefined"
+//   {"is_night": {"lead": 1500}}        -> "unknown condition undefined"
+//   {"all": {"cond": "..."}}            -> '"all" must be an array'
+// None of them is a reasoning error -- the intent is unambiguous in every case
+// -- but each cost a full retry, and three of them cost the whole !policy call.
+// Rewriting them here is cheaper than asking the model again.
+export function normalizeCondition(spec) {
+    if (!spec || typeof spec !== 'object') return spec;
+    for (const key of ['all', 'any']) {
+        if (spec[key] === undefined) continue;
+        const branches = Array.isArray(spec[key]) ? spec[key] : [spec[key]];
+        return { ...spec, [key]: branches.map(normalizeCondition) };
+    }
+    if (spec.not !== undefined) return { ...spec, not: normalizeCondition(spec.not) };
+    // A leaf that wrapped itself one level too deep.
+    if (spec.cond && typeof spec.cond === 'object') return normalizeCondition(spec.cond);
+    if (spec.cond) return spec;
+    // The name under some other key, or as the key itself.
+    for (const alias of ['condition', 'name', 'type']) {
+        if (typeof spec[alias] === 'string' && CONDITIONS[spec[alias]]) {
+            const { [alias]: _drop, ...rest } = spec;
+            return { ...rest, cond: spec[alias] };
+        }
+    }
+    const keys = Object.keys(spec);
+    if (keys.length === 1 && CONDITIONS[keys[0]]) {
+        const args = spec[keys[0]];
+        return { cond: keys[0], ...(args && typeof args === 'object' ? args : {}) };
+    }
+    return spec;
+}
+
 export function validateCondition(spec) {
     if (!spec || typeof spec !== 'object') return 'missing "when" condition.';
     if (spec.all) return Array.isArray(spec.all) ? spec.all.map(validateCondition).find(e => e) ?? null : '"all" must be an array.';
@@ -778,26 +862,33 @@ export function validateCondition(spec) {
 // positional, in the order CONDITIONS lists them, and may be omitted to default.
 export function parseConditionExpr(expr) {
     if (typeof expr !== 'string' || !expr.trim()) return { error: 'empty condition.' };
-    const joiner = / and /.test(expr) ? 'all' : / or /.test(expr) ? 'any' : null;
-    if (joiner && (/ and /.test(expr) && / or /.test(expr)))
-        return { error: 'mixing "and" with "or" is not supported. Use one or the other.' };
-    const terms = joiner ? expr.split(joiner === 'all' ? / and / : / or /) : [expr];
-    const specs = [];
-    for (let term of terms) {
-        const words = term.trim().split(/\s+/);
-        const negated = words[0] === 'not';
-        if (negated) words.shift();
-        const name = words.shift();
-        const def = CONDITIONS[name];
-        if (!def) return { error: `unknown condition "${name}". Valid: ${Object.keys(CONDITIONS).join(', ')}` };
-        const argNames = Object.keys(def.args);
-        if (words.length > argNames.length)
-            return { error: `"${name}" takes at most ${argNames.length} args (${argNames.join(', ')}), got ${words.length}.` };
-        const spec = { cond: name };
-        words.forEach((w, i) => { spec[argNames[i]] = isNaN(Number(w)) ? w : Number(w); });
-        specs.push(negated ? { not: spec } : spec);
+    // "or" binds loosest, "and" tightest, as everywhere else: "a and b or c"
+    // is (a and b) or c. Refusing the mixed form instead was costing three LLM
+    // calls a time -- the model writes "not is_night 1500 or not hostile_nearby
+    // 8" unprompted, gets told to pick one, and picks the wrong one.
+    const orParts = expr.split(/ or /);
+    const branches = [];
+    for (const orPart of orParts) {
+        const terms = orPart.split(/ and /);
+        const specs = [];
+        for (let term of terms) {
+            const words = term.trim().split(/\s+/).filter(Boolean);
+            if (!words.length) return { error: 'empty condition.' };
+            const negated = words[0] === 'not';
+            if (negated) words.shift();
+            const name = words.shift();
+            const def = CONDITIONS[name];
+            if (!def) return { error: `unknown condition "${name}". Valid: ${Object.keys(CONDITIONS).join(', ')}` };
+            const argNames = Object.keys(def.args);
+            if (words.length > argNames.length)
+                return { error: `"${name}" takes at most ${argNames.length} args (${argNames.join(', ')}), got ${words.length}.` };
+            const spec = { cond: name };
+            words.forEach((w, i) => { spec[argNames[i]] = isNaN(Number(w)) ? w : Number(w); });
+            specs.push(negated ? { not: spec } : spec);
+        }
+        branches.push(specs.length === 1 ? specs[0] : { all: specs });
     }
-    return { spec: specs.length === 1 ? specs[0] : { [joiner]: specs } };
+    return { spec: branches.length === 1 ? branches[0] : { any: branches } };
 }
 
 // One line per condition, for command docs.
@@ -838,6 +929,11 @@ export class Rule {
         this.name = 'policy:' + spec.name;
         this.description = spec.description ?? spec.name;
         this.interrupts = spec.interrupts === 'idle' ? [] : ['all'];
+        // Pinned is already how a rule says "this one keeps me alive". Reuse it
+        // as the answer to "may this cancel an action that was about to finish?"
+        // -- so flee/eat/surface take the slot instantly, while an unpinned rule
+        // waits the moment out rather than throwing away a nearly-done collect.
+        this.urgent = !!spec.pinned;
         this.on = true;
         this.paused = false;
         this.active = false;
@@ -1235,10 +1331,32 @@ Emit it as compact JSON on a single line: no indentation, no line breaks, no spa
 
 User instructions: $INSTRUCTIONS`;
 
-export async function compilePolicy(agent, instructions, activeGoal = null) {
+// One line per rule: enough for the model to recognise "that is already
+// handled", not enough to blow the context budget on descriptions written for
+// human readers.
+export function summarizeRules(policy) {
+    return (policy?.rules ?? [])
+        .map(r => `- ${r.name}${r.pinned ? ' (pinned)' : ''}: when ${describeCondition(r.when)} -> ` +
+            (r.do ?? []).map(s => s.act).join(', '))
+        .join('\n');
+}
+
+export async function compilePolicy(agent, instructions, activeGoal = null, existing = null) {
     let prompt = COMPILE_PROMPT
         .replace('$REGISTRY', registryDocs())
         .replace('$INSTRUCTIONS', instructions);
+    // Without this the agent cannot see what a person already put in place, so
+    // it writes it again from scratch every restart. One session produced seven
+    // names for "flee illagers" and six for "hold a weapon", all duplicating
+    // pinned rules that were already installed -- and its duplicates outranked
+    // them, which is how a pinned {"act": "stay"} ended up holding the bot
+    // motionless in the open all night.
+    const already = summarizeRules(existing);
+    if (already)
+        prompt += `\n\nThese rules are ALREADY installed and running alongside yours:\n${already}\n`
+            + 'Do not restate any of them, however strongly the instructions ask for it -- a rule you add'
+            + ' outranks these, so a worse copy of one replaces it. Write only what they do not already'
+            + ' cover, and if the instructions are entirely covered above, return an empty "rules" array.';
     if (activeGoal)
         prompt += `\n\nThe agent also has this active goal, which keeps running alongside these rules: "${activeGoal}". Write rules that support it and stay out of its way -- do not try to replace it with standing behavior.`;
     let lastErr = null;

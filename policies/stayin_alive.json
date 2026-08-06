@@ -4,7 +4,9 @@
     "Never let hunger become an emergency. Eat well before the hunger bar starts draining health, and go looking for food while there is still time to find it.",
     "Keep a home base: gather wood, craft and place a room of chests, remember where it is, and use it to store surplus food, ore and building blocks.",
     "Stay out of water you cannot see the bottom of. Getting to air when drowning is already a rule; this is the half that stops it happening -- only enter shallow, open water, never enclosed or underground water, and never swim far from shore.",
-    "Do not fight without a weapon in hand, and do not go back to where you last died until it is daylight and you are armed."
+    "Do not fight without a weapon in hand, and do not go back to where you last died until it is daylight and you are armed.",
+    "Run from what you cannot fight. Strays and the illager family shoot and charge from further away than you notice them, so put real distance between you and them rather than backing off a few blocks. Standing still is never the answer to a mob: mobs do not wander off because you waited, so never answer a mob by staying put.",
+    "Cold is a way to die here, not just weather. If you start freezing, that is a countdown: get out of the snow and under cover, or put something warm between you and it. Standing where you are does not warm you up."
   ],
   "goal": "Stay alive indefinitely and make yourself harder to kill: keep a home base with a bed and stocked chests, and keep food, shelter and a weapon between you and every way this world can end you.",
   "policy": {
@@ -115,13 +117,37 @@
         "pinned": true
       },
       {
-        "name": "flee_chillager",
-        "description": "The chillager is this modpack's ranged snow-biome mob and it kills from further away than cowardice reacts to, which is why it needs its own rule at 32 rather than the mode's radius. Carried back from the live agent's own generated policy, where it had never once fired: it named the mob \"entity.frostiful.chillager\", which is the translation key. The entity is \"frostiful:chillager\", and entity_nearby compares against that. The stay is a no-op in daylight (\"not is_night\" is already true, so it ends the tick it begins) and holds position through the night if the sighting was after dusk.",
+        "name": "flee_ranged_raiders",
+        "description": "Everything that kills from outside cowardice's radius, in one rule. The chillager was the first; Stray and the illager family do the same thing and were half of twenty deaths in six hours on the live agent. Every restart it wrote itself another version of this from scratch -- pillager_avoidance, pillager_flee_shelter, stray_avoidance, stray_pillager_death_response -- and every version ended in {\"act\": \"stay\"}, which is standing in the open. Run a long way, then hole up if it is night; in daylight the stay ends the tick it starts and the flee is the whole rule.",
         "interrupts": "all",
         "when": {
-          "cond": "entity_nearby",
-          "name": "frostiful:chillager",
-          "range": 32
+          "any": [
+            {
+              "cond": "entity_nearby",
+              "name": "frostiful:chillager",
+              "range": 32
+            },
+            {
+              "cond": "entity_nearby",
+              "name": "stray",
+              "range": 24
+            },
+            {
+              "cond": "entity_nearby",
+              "name": "pillager",
+              "range": 24
+            },
+            {
+              "cond": "entity_nearby",
+              "name": "vindicator",
+              "range": 24
+            },
+            {
+              "cond": "entity_nearby",
+              "name": "ravager",
+              "range": 32
+            }
+          ]
         },
         "do": [
           {
@@ -134,6 +160,27 @@
           }
         ],
         "cooldown": 6,
+        "pinned": true
+      },
+      {
+        "name": "get_out_of_the_cold",
+        "description": "The freeze meter is filling and there is about two seconds before it starts taking health. Andy has died \"froze to death\" here. This is a prompt rather than named actions because the fix genuinely depends on what is around -- dig into a hillside, get off the ice, put a roof and a light overhead, or craft leather -- and there is no single action that is right in all of them. What is certainly wrong is waiting, which is what the agent wrote for itself every time, having no is_freezing to compile against.",
+        "interrupts": "all",
+        "when": {
+          "cond": "is_freezing",
+          "ticks": 90
+        },
+        "do": [
+          {
+            "act": "move_away",
+            "distance": 10
+          },
+          {
+            "act": "prompt_self",
+            "message": "YOU ARE FREEZING. The freeze meter is nearly full and it will start taking your health, then kill you -- you have died this way before. This is not something to wait out; standing still is what fills the meter.\nDo one of these NOW, whichever is closest:\n- If you are standing in powder snow, get OUT of it first -- !moveAway 8. It looks like a normal snow block and it is the fastest way to freeze.\n- Get under cover and out of the weather: dig two blocks into the nearest hillside, or dig down two and put a block over your head. Being enclosed stops the snow reaching you.\n- Put a heat source next to you: !placeHere torch, or a campfire if you have one. Then stay beside it, not merely near it.\n- Leather armour stops freezing entirely. If you have leather, !craftRecipe leather_boots and the rest, and !equip them.\nIf none of that is possible where you stand, walk out of the snow: pick a direction and !moveAway 32, then look again. Any of these beats another second in the open."
+          }
+        ],
+        "cooldown": 60,
         "pinned": true
       },
       {
@@ -307,7 +354,7 @@
       },
       {
         "name": "craft_shovel_for_snow",
-        "description": "Snow underfoot and nothing to dig it with. A named craft; there was never a decision here.",
+        "description": "Snow underfoot and nothing to dig it with. A named craft; there was never a decision here. It still needs the wood the craft consumes: without that guard this fired twenty times in six hours on an agent that owned no planks, and every one of them ended in \"You do not have the resources to craft a wooden_shovel\". craft_a_weapon already carries the same guard.",
         "interrupts": "idle",
         "when": {
           "all": [
@@ -315,6 +362,20 @@
               "cond": "block_nearby",
               "name": "snow_block",
               "range": 8
+            },
+            {
+              "any": [
+                {
+                  "cond": "has_item",
+                  "item": "planks",
+                  "count": 1
+                },
+                {
+                  "cond": "has_item",
+                  "item": "log",
+                  "count": 1
+                }
+              ]
             },
             {
               "not": {
@@ -352,7 +413,7 @@
       },
       {
         "name": "get_a_bed",
-        "description": "Animals to shear, or a base with no bed in it: either way the night problem is solvable right now. Daytime only -- this rule walks a 500-block spiral looking for sheep, and doing that after dark is what got the bot killed by a zombie. The message no longer forbids doing anything else: in a frozen taiga where the pathfinder could not move at all, that clause pinned the bot in an unwinnable sheep search for the whole session.",
+        "description": "No bed means every night is spent in the open. Kept as a prompt rather than named crafts because the recipe is server-dependent -- this one wants feather_block, not wool -- so the agent has to look it up before it can act. Gated on wood as well: every known bed recipe needs planks, and this fired every six minutes at an agent that owned none.",
         "interrupts": "idle",
         "when": {
           "all": [
@@ -425,13 +486,27 @@
             },
             {
               "cond": "is_idle"
+            },
+            {
+              "any": [
+                {
+                  "cond": "has_item",
+                  "item": "planks",
+                  "count": 3
+                },
+                {
+                  "cond": "has_item",
+                  "item": "log",
+                  "count": 1
+                }
+              ]
             }
           ]
         },
         "do": [
           {
             "act": "prompt_self",
-            "message": "You have no bed, and without one every night is spent standing in the open where zombies kill you. Get one now. A bed needs 3 wool OF THE SAME COLOUR plus 3 planks -- 2 white and 1 light_gray will NOT craft, which is why every previous attempt failed. Sheep are only on the surface, so if you are underground !goToSurface FIRST. Then !searchForEntity sheep 500, and !attack or shear them until !inventory shows 3 of one colour, then !craftRecipe white_bed (match the name to the colour you have: red_wool -> red_bed). Then go to your base, !placeHere the bed, and !rememberHere base.\nREAD THE FAILURE BEFORE YOU RETRY. If the search says it covered ground and found nothing, run it again from where you now stand, or with pattern \"random\" if the spiral keeps getting blocked. But if it says every attempt to TRAVEL failed, then this is not about sheep -- you cannot move, and searching again cannot possibly work. In that case stop searching entirely. Digging straight UP does not fix it and usually leaves you standing in a tree canopy, which is not open ground: dig SIDEWAYS at your own feet level for at least 10 blocks to reach real terrain, then try once more from there. If travel still fails, give up on the bed for now, say so, and go do something you can actually do where you stand -- mine, craft, or wall yourself in before dark. A bed you cannot reach is worth less than surviving the night."
+            "message": "You have no bed, and without one every night is spent standing in the open where zombies kill you. Get one now.\nSTART BY ASKING WHAT A BED COSTS HERE: !getCraftingPlan(\"white_bed\", 1). This is a heavily modded server and the recipe is NOT the vanilla one -- it has been seen to want feather_block and planks rather than wool, so a sheep hunt may be entirely wasted effort. Read the plan, then go and get exactly what it lists, and match the colour name if it wants a coloured bed (red_wool -> red_bed).\nIf the plan needs an animal drop, remember animals are only on the surface: !goToSurface FIRST, then !searchForEntity for it.\nREAD THE FAILURE BEFORE YOU RETRY. If a search says it covered ground and found nothing, run it again from where you now stand, or with pattern \"random\" if the spiral keeps getting blocked. But if it says every attempt to TRAVEL failed, then this is not about what you were looking for -- you cannot move, and searching again cannot possibly work. In that case stop searching entirely. Digging straight UP does not fix it and usually leaves you standing in a tree canopy, which is not open ground: dig SIDEWAYS at your own feet level for at least 10 blocks to reach real terrain, then try once more from there. If travel still fails, give up on the bed for now, say so, and go do something you can actually do where you stand -- mine, craft, or wall yourself in before dark. A bed you cannot reach is worth less than surviving the night.\nOnce you have one: go to your base, !placeHere the bed, and !rememberHere base."
           }
         ],
         "cooldown": 360,
