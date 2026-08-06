@@ -915,6 +915,32 @@ export function parseConditionExpr(expr) {
         const terms = orPart.split(/ and /);
         const specs = [];
         for (let term of terms) {
+            // Accept the form describeCondition PRINTS -- "entity_nearby(name=stray,
+            // range=24)" -- as well as the flat "entity_nearby stray 24".
+            //
+            // The model kept writing the parenthesised form into stay "until"
+            // strings and being told the condition was unknown, three times in
+            // one window. It was not inventing a syntax: that is the syntax we
+            // show it, in describePolicy output and in every rule description it
+            // reads back. Printing one grammar and parsing another is our bug,
+            // and the model paid for it one retry at a time.
+            const call = term.trim().match(/^(not\s+)?([a-z_]+)\s*\(([^)]*)\)$/i);
+            if (call) {
+                const [, neg, name, arglist] = call;
+                const def = CONDITIONS[name];
+                if (!def) return { error: `unknown condition "${name}". Valid: ${Object.keys(CONDITIONS).join(', ')}` };
+                const spec = { cond: name };
+                for (const pair of arglist.split(',').map(s => s.trim()).filter(Boolean)) {
+                    const [key, ...rest] = pair.split('=');
+                    const raw = rest.join('=').trim();
+                    if (!rest.length) return { error: `"${name}" takes named arguments like (${Object.keys(def.args)[0] ?? 'arg'}=value), got "${pair}".` };
+                    const argName = key.trim();
+                    if (!(argName in def.args)) return { error: `"${name}" has no argument "${argName}". Valid: ${Object.keys(def.args).join(', ') || 'none'}` };
+                    spec[argName] = isNaN(Number(raw)) ? raw : Number(raw);
+                }
+                specs.push(neg ? { not: spec } : spec);
+                continue;
+            }
             const words = term.trim().split(/\s+/).filter(Boolean);
             if (!words.length) return { error: 'empty condition.' };
             const negated = words[0] === 'not';
@@ -1033,6 +1059,9 @@ export class Rule {
             agent._last_prompt_dispatch = now;
         }
         this.last_fire = Date.now();
+        // Step rules also get "EVT mode:fire:policy:<name>" via the arbiter;
+        // this line is the one that covers prompt-only rules too.
+        console.log(`EVT rule:fire:${this.spec.name}`);
         if (steps.length > 0) {
             // A rule whose condition it cannot change and whose action always
             // fails re-fires forever and keeps the agent busy, which starves the
@@ -1161,13 +1190,30 @@ export function loadPolicyState(agentName) {
     }
 }
 
+// Bumped on every write, so a slow writer can tell whether anything else has
+// changed the policy since it started. Nothing reads it for meaning -- only for
+// inequality. See the generate-policy handler in mindserver_proxy.js.
 export function savePolicyState(agentName, state) {
     mkdirSync(`./bots/${agentName}`, { recursive: true });
+    const revision = (policyRevision(agentName) ?? 0) + 1;
     writeFileSync(policyPath(agentName), JSON.stringify({
         layers: state.layers ?? {},
         locked: !!state.locked,
         compose: state.compose ?? null,
+        revision,
     }, null, 2));
+    return revision;
+}
+
+// Current revision, or 0 when there is no policy file yet. Deliberately reads
+// the file rather than trusting an in-memory copy: the point is to notice writes
+// this process did not make.
+export function policyRevision(agentName) {
+    try {
+        return JSON.parse(readFileSync(policyPath(agentName), 'utf8')).revision ?? 0;
+    } catch {
+        return 0;
+    }
 }
 
 export function deletePolicyLayer(state, layer) {

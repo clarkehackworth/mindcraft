@@ -2,7 +2,7 @@ import { io } from 'socket.io-client';
 import convoManager from './conversation.js';
 import { setSettings } from './settings.js';
 import { getFullState } from './library/full_state.js';
-import { validatePolicy, LAYERS, loadPolicyState, savePolicyState, clearPolicyState, composePolicy, describePolicyState, setPolicyLocked, isPolicyLocked, generatePolicy, applyPolicyGoal } from './behavior/policy.js';
+import { validatePolicy, LAYERS, loadPolicyState, savePolicyState, clearPolicyState, composePolicy, describePolicyState, setPolicyLocked, isPolicyLocked, generatePolicy, applyPolicyGoal, policyRevision } from './behavior/policy.js';
 
 // agent's individual connection to the mindserver
 // always connect to localhost
@@ -195,7 +195,24 @@ class MindServerProxy {
         // there is nothing to stream back, the answer is one whole policy.
         this.socket.on('generate-policy', async ({ base, attributes } = {}, callback) => {
             try {
+                // The merge is an LLM call with up to three attempts, so it can
+                // run for minutes -- longer than the 600s relay timeout, which
+                // is documented over in mindserver.js as "the relay gave up and
+                // reported failure while the merge went on to succeed and
+                // install itself".
+                //
+                // That last part is the bug. A caller who is told the generate
+                // failed will reasonably set the policy another way, and then
+                // the abandoned merge lands on top of it and silently wins.
+                // Observed: a raider rule that had just been installed by hand
+                // reverted to an older version minutes later, with nothing in
+                // the log to say why.
+                const revision_before = policyRevision(this.agent.name);
                 const state = await generatePolicy(this.agent, base, attributes ?? []);
+                if (policyRevision(this.agent.name) !== revision_before) {
+                    console.warn('generate-policy: the policy changed while the merge was running; discarding the merged result rather than overwriting it.');
+                    return callback({ success: false, error: 'The policy was changed while this merge was running, so the merge was discarded. Nothing was overwritten. Try again if you still want it.' });
+                }
                 const modes = this.agent.bot?.modes;
                 const composed = composePolicy(state);
                 if (composed.rules.length === 0 && Object.keys(composed.modes).length === 0)

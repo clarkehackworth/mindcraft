@@ -3,7 +3,7 @@
 // mistake with exactly one sensible reading.
 import { strict as assert } from 'node:assert';
 import test from 'node:test';
-import { parseConditionExpr, normalizeCondition, repairPolicy, summarizeRules } from './policy.js';
+import { parseConditionExpr, normalizeCondition, repairPolicy, summarizeRules, describeCondition } from './policy.js';
 
 test('a stay "until" may mix and with or, and binds tighter', () => {
     // "Rule night_no_weapon_no_bed_stay_shelter: stay needs a valid until
@@ -80,4 +80,40 @@ test('summarizeRules gives the compiler one readable line per installed rule', (
     assert.match(text, /flee_ranged_raiders \(pinned\)/);
     assert.match(text, /flee, stay/);
     assert.equal(text.split('\n').length, 1, 'one line per rule, not the full JSON');
+});
+
+test('the parser accepts the syntax describeCondition prints', () => {
+    // Live, three times in one window: "stay needs a valid until condition:
+    // unknown condition entity_nearby(name=illusioner,range=16)". The model was
+    // not inventing that -- it is exactly what describeCondition emits, and what
+    // it reads back in every rule description. Printing one grammar and parsing
+    // another is our bug.
+    assert.deepEqual(parseConditionExpr('entity_nearby(name=illusioner, range=16)').spec,
+        { cond: 'entity_nearby', name: 'illusioner', range: 16 });
+    assert.deepEqual(parseConditionExpr('is_night(lead=1500)').spec,
+        { cond: 'is_night', lead: 1500 });
+    assert.deepEqual(parseConditionExpr('not hostile_nearby(range=8)').spec,
+        { not: { cond: 'hostile_nearby', range: 8 } });
+});
+
+test('a printed condition round-trips back through the parser', () => {
+    // The property that should have held all along.
+    for (const spec of [
+        { cond: 'entity_nearby', name: 'stray', range: 24 },
+        { cond: 'is_night', lead: 1500 },
+        { cond: 'health_below', value: 6 },
+    ]) {
+        const printed = describeCondition(spec);
+        assert.deepEqual(parseConditionExpr(printed).spec, spec, `round trip failed for ${printed}`);
+    }
+});
+
+test('the printed form mixes with and/or like the flat form', () => {
+    assert.deepEqual(parseConditionExpr('not is_night(lead=1500) or hostile_nearby(range=8)').spec,
+        { any: [{ not: { cond: 'is_night', lead: 1500 } }, { cond: 'hostile_nearby', range: 8 }] });
+});
+
+test('a bad argument name in the printed form is still an error', () => {
+    assert.match(parseConditionExpr('is_night(nope=1)').error, /no argument "nope"/);
+    assert.match(parseConditionExpr('not_a_condition(x=1)').error, /unknown condition/);
 });
