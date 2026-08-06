@@ -123,6 +123,21 @@ export function expandBlockName(name) {
     return [name];
 }
 
+// A block name the agent is allowed to use: a real block, or a family name that
+// stands for a set of them ("log", "planks", "bed", "iron_ore").
+//
+// skills.collectBlocks has understood families all along -- the policy engine's
+// collect action passes "log" and it works -- but the command-argument check
+// only accepted real registry names, so `!collectBlocks("log", 8)` was refused
+// as an invalid block type. Worse, the refusal suggested the vanilla logs, and
+// on Prominence 2 the wood is pine: the agent was told to go and get oak_log,
+// which does not exist in this world, and it did try.
+export function isKnownBlockName(name) {
+    if (getBlockId(name) != null) return true;
+    const expanded = expandBlockName(name);
+    return expanded.length > 1 && expanded.some(n => getBlockId(n) != null);
+}
+
 export const WOOL_COLORS = [
     'white',
     'orange',
