@@ -42,12 +42,13 @@ assert.match(validatePolicy(retreat) ?? '', /cowardice mode/, 'a proximity-trigg
 const flee_compound = { rules: [{ ...retreat.rules[0], when: { all: [{ cond: 'hostile_nearby', range: 16 }, { cond: 'is_night' }] }, do: [{ act: 'flee', distance: 24 }] }] };
 assert.ok(validatePolicy(flee_compound), 'flee on proximity is rejected too');
 
-// But retreating plus doing something cowardice cannot is allowed.
-const retreat_and_report = { rules: [{ ...retreat.rules[0], do: [{ act: 'move_away', distance: 16 }, { act: 'say', message: 'mobs here' }] }] };
+// But retreating plus doing something cowardice cannot is allowed. (cooldown 5 because
+// an interrupts:all rule that fires faster than that cancels everything else forever.)
+const retreat_and_report = { rules: [{ ...retreat.rules[0], cooldown: 5, do: [{ act: 'move_away', distance: 16 }, { act: 'say', message: 'mobs here' }] }] };
 assert.equal(validatePolicy(retreat_and_report), null, 'a retreat rule that also does real work is allowed');
 
 // And move_away triggered by something other than proximity is fine.
-const cramped = { rules: [{ ...retreat.rules[0], when: { cond: 'player_nearby', name: 'any', range: 2 } }] };
+const cramped = { rules: [{ ...retreat.rules[0], cooldown: 5, when: { cond: 'player_nearby', name: 'any', range: 2 } }] };
 assert.equal(validatePolicy(cramped), null, 'move_away is fine on a non-proximity trigger');
 
 // stay must carry a parseable "until" exit condition — a stay with no exit
@@ -73,10 +74,21 @@ assert.equal(validatePolicy({ rules: [{ ...night_walk.rules[0], when: { not: { c
 
 // "underwater" compiled to block_nearby water, true on the shore too, so the
 // surface rule fired 8x/90s. The drowning condition keys off oxygen instead.
-const drown = { rules: [{ name: 'surface_when_drowning', when: { cond: 'drowning' }, do: [{ act: 'go_to_surface' }], interrupts: 'all' }] };
+// cooldown 5 is the floor for interrupts:all, and it is what the shipped drowning
+// rule uses: air lasts ~15s underwater, so 5s still gives three attempts.
+const drown = { rules: [{ name: 'surface_when_drowning', when: { cond: 'drowning' }, do: [{ act: 'go_to_surface' }], interrupts: 'all', cooldown: 5 }] };
 assert.equal(validatePolicy(drown), null, 'drowning + go_to_surface is a valid rule');
-assert.equal(CONDITIONS.drowning.fn({ bot: { oxygenLevel: 5 } }, {}), true, 'low oxygen is drowning');
-assert.equal(CONDITIONS.drowning.fn({ bot: { oxygenLevel: 20 } }, {}), false, 'full oxygen is not drowning');
+// ...and on the head being somewhere that can actually drown you: this modpack
+// moves the air bar along with the health bar, so oxygen alone had the rule
+// firing in a dry mineshaft. See drowning_on_land.test.js for the whole story.
+const submerged = (oxygenLevel, head = 'water') => ({ bot: {
+    oxygenLevel,
+    entity: { position: { offset: () => ({}) }, eyeHeight: 1.62 },
+    blockAt: () => ({ name: head }),
+} });
+assert.equal(CONDITIONS.drowning.fn(submerged(5), {}), true, 'low oxygen underwater is drowning');
+assert.equal(CONDITIONS.drowning.fn(submerged(20), {}), false, 'full oxygen is not drowning');
+assert.equal(CONDITIONS.drowning.fn(submerged(5, 'air'), {}), false, 'low oxygen with your head in air is a bad air reading');
 
 // A rule that fires but accomplishes nothing must back off, or it starves the
 // reasoning loop. Live: Andy with no pickaxe ran collect(stone) -> "Don't have
