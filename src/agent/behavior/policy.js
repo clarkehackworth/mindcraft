@@ -229,6 +229,11 @@ export const CONDITIONS = {
         fn: (agent, a) => agent.bot.entity.position.distanceTo(
             { x: a.x, y: a.y, z: a.z }) <= (a.range ?? 3)
     },
+    place_known: {
+        args: { name: 'string place name, as given to remember_here' },
+        desc: 'A place with this name has been remembered (by remember_here or !rememberHere). Pair it with remember_here under a "not" to record a spot once, and use it positively to gate goto_place so the rule stays quiet until there is somewhere to go.',
+        fn: (agent, a) => !!agent.memory_bank?.recallPlace(a.name)
+    },
     drowning: {
         args: { air: 'number (default 12), oxygen out of 20 below which this is true' },
         desc: 'Bot is underwater and losing air. Use this for "underwater"/"drowning", not block_nearby water, which is also true standing on the shore.',
@@ -307,6 +312,30 @@ export const ACTIONS = {
         args: { x: 'number', y: 'number', z: 'number', closeness: 'number (default 2)' },
         desc: 'Navigate to a position.',
         fn: async (agent, a) => await skills.goToPosition(agent.bot, a.x, a.y, a.z, a.closeness ?? 2)
+    },
+    remember_here: {
+        cost: 'cheap', clears: ['place_known'],
+        args: { name: 'string place name, e.g. "berries" or "herd"' },
+        desc: 'Record where the bot is standing under a name, the free half of the remembered-spots loop. The expensive half is finding the spot at all -- a search or a prompt that ranged for minutes -- so a rule that fires this the moment the thing is in sight turns one paid discovery into a route goto_place can walk forever for nothing. Gate it on "not place_known" of the same name or it re-remembers every tick.',
+        fn: (agent, a) => {
+            const p = agent.bot.entity.position;
+            agent.memory_bank.rememberPlace(a.name, p.x, p.y, p.z);
+            skills.log(agent.bot, `Remembered this spot as "${a.name}".`);
+            return true;
+        }
+    },
+    goto_place: {
+        cost: 'blocking', clears: ['at_position', 'block_nearby', 'at_death_position'],
+        args: { name: 'string place name, as given to remember_here', closeness: 'number (default 2)' },
+        desc: 'Walk to a remembered place. The free alternative to search_block/search_entity once the spot is known: no scanning, no prompt, just a path to a coordinate that paid off before. Gate on place_known -- with no such place this does nothing but log.',
+        fn: async (agent, a) => {
+            const p = agent.memory_bank.recallPlace(a.name);
+            if (!p) {
+                skills.log(agent.bot, `No location named "${a.name}" saved.`);
+                return false;
+            }
+            return await skills.goToPosition(agent.bot, p[0], p[1], p[2], a.closeness ?? 2);
+        }
     },
     goto_player: {
         cost: 'blocking', clears: ['player_nearby', 'at_position', 'at_death_position'],

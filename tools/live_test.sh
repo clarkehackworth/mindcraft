@@ -159,7 +159,7 @@ say)     shift; drive say "$@" ;;
 evt)     shift; drive listen "${1:?pattern}" "${2:-90}" ;;
 restart|stop|start|policy) drive "$1" ;;
 # A busy agent starves the merge behind its goal-loop LLM calls until the
-# relay's 600s timeout -- quiesce it first. And !stop leaves self-prompting
+# relay's timeout (600s, now 1800s) -- quiesce it first. And !stop leaves self-prompting
 # alive, so the bot can !policy mid-merge, bump the revision, and get the
 # merge discarded -- hold the self-write lock across the regen.
 regen)   shift

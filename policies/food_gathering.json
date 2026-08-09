@@ -3,7 +3,8 @@
     "Build up a food surplus instead of eating hand to mouth. Harvest carrots, potatoes, beetroot and sweet berries whenever they are in reach, and hunt nearby animals when the meat supply is short.",
     "Cook raw meat at a furnace before storing it, and bank the surplus in the base chests so there is always food to come home to.",
     "Being unarmed is never a reason to stop feeding yourself. Foraging, baking, cooking and going out to look for food all happen whether or not there is a weapon in the bag -- an agent that cannot get wood must still be able to eat.",
-    "A base in a barren area starves you slowly. When no berry bushes, crops or animals live within reach of the base, ranging out to find them IS the job: explore until you find a berry patch, a herd, or ground fit for a farm, !rememberHere the spot, and haul the harvest home. If you ever hold seeds, till ground near water at the base and plant them -- a farm is the only food source that comes to you."
+    "A base in a barren area starves you slowly. When no berry bushes, crops or animals live within reach of the base, ranging out to find them IS the job: explore until you find a berry patch, a herd, or ground fit for a farm, !rememberHere the spot, and haul the harvest home. If you ever hold seeds, till ground near water at the base and plant them -- a farm is the only food source that comes to you.",
+    "Remember the places that pay off. The moment a berry patch or the base chest is in sight, remember_here it under a fixed name (\"berries\", \"pantry\") -- finding it was the expensive part, and a remembered spot makes every later trip a free goto_place instead of another 128-block search or another LLM turn. Gate the remembering on \"not place_known\" so it happens once, and gate the walking on place_known so the rule stays quiet until there is somewhere to go."
   ],
   "goal": "Keep a standing food surplus in the base chests: farm, forage and hunt for it rather than waiting until you are hungry, and when nothing edible lives within reach of the base, go find where it does live, remember the spot, and bring the food home -- as harvest, as seeds for a farm, or as animals worth returning to.",
   "kind": "attribute",
@@ -264,15 +265,68 @@
         "cooldown": 300
       },
       {
-        "name": "stock_the_pantry",
-        "description": "Bank the harvest at the base and keep a working supply on hand. Triggered by a surplus of any staple, not only carrots -- a bot that farms potatoes all day should not need a carrot glut before it banks anything. Extra deposits are cheap no-ops when the item is absent.",
+        "name": "remember_the_berry_patch",
+        "description": "Standing at a bush, write the spot down. Finding a patch is what costs -- a 128-block search, or the LLM turn that decided where to look -- and until now that cost was paid again every time stock ran low, because nothing survived the walk home. One free tick here turns the last expensive discovery into a permanent route for walk_the_berry_route. Bushes regrow, so the address stays good.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "block_nearby",
+              "name": "sweet_berry_bush",
+              "range": 8
+            },
+            {
+              "not": {
+                "cond": "place_known",
+                "name": "berries"
+              }
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "remember_here",
+            "name": "berries"
+          }
+        ],
+        "cooldown": 30
+      },
+      {
+        "name": "remember_the_pantry",
+        "description": "Same trick for the chest: note where the base storage is the first time the bot stands near it. Without this, banking only ever happened if a harvest ended within 24 blocks of a chest by luck -- the live bot's chest sat 60 blocks from where it forages and stayed empty for days.",
         "interrupts": "idle",
         "when": {
           "all": [
             {
               "cond": "block_nearby",
               "name": "chest",
-              "range": 24
+              "range": 6
+            },
+            {
+              "not": {
+                "cond": "place_known",
+                "name": "pantry"
+              }
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "remember_here",
+            "name": "pantry"
+          }
+        ],
+        "cooldown": 30
+      },
+      {
+        "name": "stock_the_pantry",
+        "description": "Bank the harvest at the base and keep a working supply on hand. Walks to the remembered pantry rather than waiting for a chest to happen to be within 24 blocks -- that gate is why the live chest was still empty after days of foraging. Triggered by a surplus of any staple, not only carrots. Extra deposits are cheap no-ops when the item is absent.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "place_known",
+              "name": "pantry"
             },
             {
               "any": [
@@ -302,6 +356,11 @@
         },
         "do": [
           {
+            "act": "goto_place",
+            "name": "pantry",
+            "closeness": 3
+          },
+          {
             "act": "deposit",
             "item": "carrot",
             "num": 16
@@ -323,6 +382,49 @@
           }
         ],
         "cooldown": 180
+      },
+      {
+        "name": "walk_the_berry_route",
+        "description": "Stock is low and a patch is already on file: walk to it instead of scanning for one. Free, and it beats the search rules to the punch because the answer is known -- search_block only earns its keep when there is nothing remembered yet. Runs only when no bush is already in reach, so it does not walk away from the one it is standing in.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "sweet_berries",
+                "count": 24
+              }
+            },
+            {
+              "cond": "place_known",
+              "name": "berries"
+            },
+            {
+              "not": {
+                "cond": "block_nearby",
+                "name": "sweet_berry_bush",
+                "range": 24
+              }
+            },
+            {
+              "cond": "is_idle"
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "goto_place",
+            "name": "berries",
+            "closeness": 3
+          },
+          {
+            "act": "collect",
+            "type": "sweet_berry_bush",
+            "num": 16
+          }
+        ],
+        "cooldown": 300
       },
       {
         "name": "berry_run_while_stocked_low",

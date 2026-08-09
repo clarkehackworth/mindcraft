@@ -559,7 +559,9 @@ if (state.n < 15) {
             // reported failure while the merge went on to succeed and install
             // itself -- the UI said it was still generating something that had
             // already been running for a minute.
-            agent.socket.timeout(600000).emit('generate-policy', selection, (err, res) => {
+            // And 600s stopped being enough once the merge grew to two full
+            // profiles: same failure mode, one order of magnitude later.
+            agent.socket.timeout(1800000).emit('generate-policy', selection, (err, res) => {
                 callback(err ? { success: false, error: 'Agent did not respond' } : res);
             });
         });
