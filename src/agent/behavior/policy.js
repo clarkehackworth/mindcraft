@@ -1615,6 +1615,24 @@ export function buildMergeInstructions(base, attributes) {
     return text;
 }
 
+// The merge keeps "pinned" but routinely drops "interrupts" -- it reads as
+// bookkeeping next to the rule's logic. A missing "interrupts" means "all" at
+// install time, so every opportunistic rule in the merged policy came back a
+// reflex: gather_wood_for_base, walk_the_berry_route and stock_the_pantry
+// cancelling whatever the agent was doing, which is how a bot ends up saying
+// "I'm stuck" and "I'm looping" 200 times an hour. Copy the declaration back
+// from the profile the rule came from. A rule the merge invented has no source
+// to copy from and keeps whatever it declared.
+function restoreInterrupts(policy, profiles) {
+    const declared = new Map();
+    for (const p of profiles)
+        for (const r of p.policy?.rules ?? [])
+            if (r.interrupts) declared.set(r.name, r.interrupts);
+    for (const rule of policy.rules ?? [])
+        if (!rule.interrupts && declared.has(rule.name)) rule.interrupts = declared.get(rule.name);
+}
+export const restoreInterruptsForTest = restoreInterrupts;
+
 // Returns the state with a freshly generated "active" layer. It does NOT
 // install it -- every caller already has its own install-and-save path, and
 // installing here would mean a failed save still changed the running agent.
@@ -1637,6 +1655,7 @@ export async function generatePolicy(agent, baseName, attributeNames = []) {
         if (base.goal) policy.goal = base.goal;
     } else {
         policy = await compilePolicy(agent, buildMergeInstructions({ ...base, name: baseName }, attributes));
+        restoreInterrupts(policy, [base, ...attributes]);
         const err = validatePolicy(policy);
         if (err) throw new Error(`The merged policy is not valid: ${err}`);
         // A goal starts an endless LLM loop, so it takes a profile asking for

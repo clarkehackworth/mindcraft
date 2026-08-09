@@ -7,7 +7,8 @@
     "Do not fight without a weapon in hand, and do not go back to where you last died until it is daylight and you are armed.",
     "Run from what you cannot fight. Strays and the illager family shoot and charge from further away than you notice them, so put real distance between you and them rather than backing off a few blocks. Standing still is never the answer to a mob: mobs do not wander off because you waited, so never answer a mob by staying put.",
     "Cold is a way to die here, not just weather. If you start freezing, that is a countdown: get out of the snow and under cover, or put something warm between you and it. Standing where you are does not warm you up.",
-    "Never walk off a drop of four blocks or more. Go around, or dig a staircase down -- falling is a way to die that nothing else in this policy can save you from."
+    "Never walk off a drop of four blocks or more. Go around, or dig a staircase down -- falling is a way to die that nothing else in this policy can save you from.",
+    "Never approach a hostile mob, and never chase one. Nothing worth having is standing next to a zombie: the mobs come to you, so closing distance only ever buys damage, and doing it unarmed is how this bot has died most often. This goes double for what the goal loop does between rules -- searching for an entity, walking back to a death spot for dropped gear, or looting near a spawner is approaching, whatever it is called. Endermen are the sharpest case: neutral until looked at or struck, lethal after, and they follow you when they teleport."
   ],
   "goal": "Stay alive indefinitely and make yourself harder to kill: keep a home base with a bed and stocked chests, and keep food, shelter and a weapon between you and every way this world can end you.",
   "policy": {
@@ -215,6 +216,38 @@
         ],
         "cooldown": 60,
         "pinned": true
+      },
+      {
+        "name": "back_off_from_endermen",
+        "description": "Endermen are the one mob where approaching is the whole mistake: they are neutral until looked at or hit, and then they teleport with you and out-damage anything wooden. Get distance and wait it out rather than fighting or chasing. Folded from a self rule the bot wrote after being hit by one -- its version also fired on health_below 90, which is true nearly always, so it retreated from nothing eleven times an hour.",
+        "interrupts": "all",
+        "pinned": true,
+        "when": {
+          "all": [
+            {
+              "cond": "entity_nearby",
+              "name": "enderman",
+              "range": 16
+            },
+            {
+              "not": {
+                "cond": "is_sheltered"
+              }
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "flee",
+            "distance": 24
+          },
+          {
+            "act": "stay",
+            "until": "not entity_nearby enderman 16",
+            "seconds": 30
+          }
+        ],
+        "cooldown": 10
       },
       {
         "name": "dig_in_out_of_the_cold",

@@ -139,14 +139,51 @@
             border: none;
             display: block;
         }
-        .last-message {
-            font-style: italic;
-            color: #aaa;
+        .chat-log {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            height: 240px;
+            overflow-y: auto;
+            overscroll-behavior: contain;
+            background: #262626;
+            border: 1px solid #444;
+            border-radius: 4px;
+            padding: 8px;
             margin-top: 5px;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
             width: 100%;
+            box-sizing: border-box;
+        }
+        .chat-bubble {
+            max-width: 78%;
+            padding: 6px 10px;
+            border-radius: 12px;
+            font-size: 0.9em;
+            line-height: 1.35;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+        }
+        .chat-bubble.bot {
+            align-self: flex-start;
+            background: #3a3a3a;
+            border-bottom-left-radius: 3px;
+        }
+        .chat-bubble.user {
+            align-self: flex-end;
+            background: #2b5278;
+            border-bottom-right-radius: 3px;
+        }
+        .chat-who {
+            display: block;
+            font-size: 0.75em;
+            opacity: 0.6;
+            margin-bottom: 2px;
+        }
+        .chat-note {
+            align-self: center;
+            font-size: 0.8em;
+            color: #888;
+            font-style: italic;
         }
         .start-btn:disabled {
             opacity: 0.4;
@@ -257,7 +294,7 @@
         .controls-row {
             margin-top: 8px;
             display: grid;
-            grid-template-columns: auto minmax(100px, 1fr) repeat(5, auto);
+            grid-template-columns: minmax(100px, 1fr) repeat(6, auto);
             gap: 8px;
             align-items: center;
         }
@@ -653,7 +690,6 @@
         let settingsSpec = {};
         let profileData = null;
         const agentSettings = {};
-        const agentLastMessage = {};
         const inventoryOpen = {};
         let currentAgents = [];
 
@@ -1367,12 +1403,87 @@
             });
         });
 
-        socket.on('bot-output', (agentName, message) => {
-            agentLastMessage[agentName] = message;
-            const messageDiv = document.getElementById(`lastMessage-${agentName}`);
-            if (messageDiv) {
-                messageDiv.textContent = message;
+        // Chat log: the server holds the history, the browser caches whatever it
+        // has scrolled into view so a card re-render does not lose the thread.
+        const CHAT_PAGE = 50;
+        const chatCache = {};   // name -> entries, oldest first
+        const chatMore = {};    // name -> server says older entries exist
+        const chatLoading = {};
+
+        function chatBubble(e) {
+            const div = document.createElement('div');
+            div.className = 'chat-bubble ' + (e.role === 'user' ? 'user' : 'bot');
+            div.dataset.id = e.id;
+            const who = document.createElement('span');
+            who.className = 'chat-who';
+            who.textContent = `${e.from} · ${new Date(e.ts).toLocaleTimeString()}`;
+            div.appendChild(who);
+            div.appendChild(document.createTextNode(e.message));
+            return div;
+        }
+
+        function paintChat(name) {
+            const log = document.getElementById(`chatLog-${name}`);
+            if (!log) return;
+            log.textContent = '';
+            if (chatMore[name]) {
+                const note = document.createElement('div');
+                note.className = 'chat-note';
+                note.textContent = 'scroll up for older messages';
+                log.appendChild(note);
             }
+            for (const e of chatCache[name] || []) log.appendChild(chatBubble(e));
+            log.scrollTop = log.scrollHeight;
+        }
+
+        function loadChat(name, before) {
+            if (chatLoading[name]) return;
+            chatLoading[name] = true;
+            socket.emit('get-history', name, before, CHAT_PAGE, (res) => {
+                chatLoading[name] = false;
+                if (!res) return;
+                chatMore[name] = res.more;
+                const log = document.getElementById(`chatLog-${name}`);
+                if (before == null) {
+                    chatCache[name] = res.entries;
+                    paintChat(name);
+                    return;
+                }
+                chatCache[name] = res.entries.concat(chatCache[name] || []);
+                // Repaint would jump to the bottom; anchor on the previously
+                // topmost bubble instead so the reading position holds.
+                const anchor = log?.querySelector(`.chat-bubble[data-id="${before}"]`);
+                const offset = anchor ? anchor.offsetTop : 0;
+                paintChat(name);
+                const again = log?.querySelector(`.chat-bubble[data-id="${before}"]`);
+                if (log && again) log.scrollTop = again.offsetTop - offset;
+            });
+        }
+
+        function hydrateChat(name) {
+            if (!document.getElementById(`chatLog-${name}`)) return;
+            if (chatCache[name]) paintChat(name);
+            else loadChat(name, null);
+        }
+
+        function onChatScroll(name) {
+            const log = document.getElementById(`chatLog-${name}`);
+            if (!log || log.scrollTop > 40 || !chatMore[name]) return;
+            const oldest = (chatCache[name] || [])[0];
+            if (oldest) loadChat(name, oldest.id);
+        }
+        window.onChatScroll = onChatScroll;
+
+        socket.on('chat-message', (agentName, entry) => {
+            const cache = chatCache[agentName];
+            if (!cache) return; // not loaded yet; hydrateChat will fetch it fresh
+            cache.push(entry);
+            if (cache.length > 500) cache.shift();
+            const log = document.getElementById(`chatLog-${agentName}`);
+            if (!log) return;
+            const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
+            log.appendChild(chatBubble(entry));
+            if (atBottom) log.scrollTop = log.scrollHeight;
         });
 
         // Subscribe to aggregated state updates (re-sent on each connect)
@@ -1628,7 +1739,7 @@
             // client resolves its assets and socket.io path relative to it.
             const viewerSrc = `viewer/${encodeURIComponent(agent.name)}/` + (authToken ? `?token=${encodeURIComponent(authToken)}` : '');
             const viewerHTML = showViewer ? `<div class="agent-view-container"><iframe class="agent-viewer" id="viewer-${agent.name}" src="${viewerSrc}"></iframe></div>` : '';
-            const lastMessage = agentLastMessage[agent.name] || '';
+            setTimeout(() => hydrateChat(agent.name), 0); // the card HTML is not in the DOM until the caller writes it
             const invOpen = inventoryOpen[agent.name] === true;
             const invStyle = invOpen ? '' : 'display:none;';
             return `
@@ -1657,14 +1768,14 @@
                                 <div class="cell" id="armor-${agent.name}" style="margin-bottom: 8px;">armor: -</div>
                                 <div class="inventory-grid" id="inventory-${agent.name}"></div>
                             </div>
-                            <div id="lastMessage-${agent.name}" class="last-message" style="grid-column: 1 / -1;"><strong>Last Message:</strong> ${lastMessage}</div>
+                            <div id="chatLog-${agent.name}" class="chat-log" style="grid-column: 1 / -1;" onscroll="onChatScroll('${agent.name}')"></div>
                         </div>
                         <div class="controls-row">
-                            <button class="start-btn" id="sendBtn-${agent.name}" disabled onclick="sendMessage('${agent.name}', document.getElementById('messageInput-${agent.name}').value)">Send</button>
-                            <input class="msg-input" type="text" id="messageInput-${agent.name}" placeholder="Enter message..." 
+                            <input class="msg-input" type="text" id="messageInput-${agent.name}" placeholder="Message ${agent.name}..."
                                 oninput="onMsgInputChange('${agent.name}')"
                                 onkeydown="if(event.key === 'Enter') document.getElementById('sendBtn-${agent.name}').click()"
                                 ${!agent.in_game ? 'disabled' : ''}>
+                            <button class="start-btn" id="sendBtn-${agent.name}" disabled onclick="sendMessage('${agent.name}', document.getElementById('messageInput-${agent.name}').value)">Send</button>
                             <button class="neutral-btn" onclick="sendMessage('${agent.name}', '!stop')" ${!agent.in_game ? 'disabled' : ''}>Stop Action</button>
                             <button class="neutral-btn" onclick="sendMessage('${agent.name}', '!stay(-1)')" ${!agent.in_game ? 'disabled' : ''}>Stay Still</button>
                             <button class="neutral-btn" onclick="restartAgent('${agent.name}')" ${!agent.in_game ? 'disabled' : ''}>Restart</button>

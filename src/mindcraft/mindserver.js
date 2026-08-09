@@ -5,7 +5,7 @@ import net from 'net';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import * as mindcraft from './mindcraft.js';
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'fs';
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'fs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Mindserver is:
@@ -17,6 +17,74 @@ let io;
 let server;
 const agent_connections = {};
 const agent_listeners = [];
+
+// Chat history: JSONL under the agent's bots/ dir, mirrored in memory as a
+// ring buffer of the newest CHAT_HISTORY_MAX entries. Ids are monotonic and
+// resume from the file, so the dashboard can page backwards across restarts.
+const CHAT_HISTORY_MAX = 500;
+const chatHistory = {};
+const chatFileLines = {}; // lines on disk, to know when a file needs compacting
+let chatSeq = 0;
+
+const chatPath = (agentName) => `./bots/${agentName}/chat.jsonl`;
+
+export function loadChatHistory() {
+    let names;
+    try {
+        names = readdirSync('./bots', { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name);
+    } catch (e) {
+        return; // no bots dir yet: nothing has ever run here
+    }
+    for (const name of names) {
+        let raw;
+        try {
+            raw = readFileSync(chatPath(name), 'utf8');
+        } catch (e) {
+            continue;
+        }
+        // A kill mid-append leaves a line with no newline. Close it now, or the
+        // next append glues itself onto the wreckage and is lost with it.
+        if (raw && !raw.endsWith('\n')) {
+            try { appendFileSync(chatPath(name), '\n'); } catch (e) {}
+        }
+        const lines = raw.split('\n').filter(Boolean);
+        chatFileLines[name] = lines.length;
+        const log = [];
+        for (const line of lines.slice(-CHAT_HISTORY_MAX)) {
+            // A kill mid-append leaves a partial last line. Drop it, keep the rest.
+            try { log.push(JSON.parse(line)); } catch (e) {}
+        }
+        chatHistory[name] = log;
+        for (const e of log) if (e.id > chatSeq) chatSeq = e.id;
+    }
+}
+loadChatHistory();
+
+function recordChat(agentName, role, from, message) {
+    const entry = { id: ++chatSeq, role, from, message: String(message ?? ''), ts: Date.now() };
+    const log = chatHistory[agentName] ||= [];
+    log.push(entry);
+    if (log.length > CHAT_HISTORY_MAX) log.splice(0, log.length - CHAT_HISTORY_MAX);
+    try {
+        mkdirSync(`./bots/${agentName}`, { recursive: true });
+        appendFileSync(chatPath(agentName), JSON.stringify(entry) + '\n');
+        chatFileLines[agentName] = (chatFileLines[agentName] || 0) + 1;
+        // ponytail: compact by rewriting the trimmed in-memory log. The file
+        // rides up to 2x the cap between rewrites, so this is rare enough that
+        // a real log rotation would not buy anything.
+        if (chatFileLines[agentName] > CHAT_HISTORY_MAX * 2) {
+            writeFileSync(chatPath(agentName), log.map(e => JSON.stringify(e) + '\n').join(''));
+            chatFileLines[agentName] = log.length;
+        }
+    } catch (e) {
+        console.error('chat history write failed:', e.message);
+    }
+    io?.emit('chat-message', agentName, entry);
+    return entry;
+}
+
+export const getChatHistory = (agentName) => chatHistory[agentName] || [];
+export const recordChatForTest = recordChat;
 
 const settings_spec = JSON.parse(readFileSync(path.join(__dirname, 'public/settings_spec.json'), 'utf8'));
 
@@ -516,10 +584,19 @@ if (state.n < 15) {
 			}
 			try {
                 agent_connections[agentName].socket.emit('send-message', data);
+                recordChat(agentName, 'user', data?.from || 'ADMIN', data?.message ?? '');
 			} catch (error) {
 				console.error('Error: ', error);
 			}
 		});
+
+        socket.on('get-history', (agentName, before, limit, callback) => {
+            const log = chatHistory[agentName] || [];
+            const n = Math.min(Math.max(1, limit || 50), CHAT_HISTORY_MAX);
+            const end = before == null ? log.length : log.findIndex(e => e.id >= before);
+            const stop = end < 0 ? log.length : end;
+            callback({ entries: log.slice(Math.max(0, stop - n), stop), more: stop > n });
+        });
 
         socket.on('get-policy', (agentName, callback) => {
             const agent = agent_connections[agentName];
@@ -630,6 +707,7 @@ if (state.n < 15) {
 
         socket.on('bot-output', (agentName, message) => {
             io.emit('bot-output', agentName, message);
+            recordChat(agentName, 'bot', agentName, message);
         });
 
         socket.on('listen-to-agents', () => {
