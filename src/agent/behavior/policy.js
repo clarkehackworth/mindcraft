@@ -1554,7 +1554,13 @@ export async function compilePolicy(agent, instructions, activeGoal = null, exis
         await agent.prompter.checkCooldown();
         const req = lastErr ? prompt + `\n\nYour previous attempt was invalid: ${lastErr}\nFix it and respond with only the corrected JSON.` : prompt;
         let res = await agent.prompter.chat_model.sendRequest([], req, '***', {
-            response_format: { type: 'json_schema', json_schema: { name: 'policy', schema: POLICY_SCHEMA } }
+            response_format: { type: 'json_schema', json_schema: { name: 'policy', schema: POLICY_SCHEMA } },
+            // The profile's 8000 is sized for a chat turn. A two-profile merge
+            // has to re-emit the whole policy -- 39 rules, ~4.5k tokens of JSON
+            // before the model writes a word of its own -- and it came back cut
+            // off three times running ("Unexpected end of JSON input"), which
+            // the retry loop cannot fix because it is a cap, not a mistake.
+            max_tokens: 16000
         });
         try {
             const cleaned = res.replace(/```json|```/g, '').trim();
@@ -1563,7 +1569,11 @@ export async function compilePolicy(agent, instructions, activeGoal = null, exis
             if (!err) return policy;
             lastErr = err;
         } catch (e) {
-            lastErr = 'Response was not valid JSON: ' + e.message;
+            // The length matters more than the parser's complaint: a reply that
+            // stops mid-object is a token cap, and no amount of retrying fixes
+            // that. Three identical failures cost an hour before anyone knew
+            // whether the model was confused or simply cut off.
+            lastErr = `Response was not valid JSON (${res?.length ?? 0} chars): ` + e.message;
         }
         console.warn('Policy compile attempt failed:', lastErr);
     }
