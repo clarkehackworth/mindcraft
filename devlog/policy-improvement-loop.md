@@ -104,12 +104,33 @@ active layer is ~37 rules from stayin_alive + food_gathering.
 
 ## Worth doing / checking next
 
-1. **Pantry accumulation proof.** Grazing works; banking is unproven. A quiet
-   2-hour window of `food` + chest contents (`rcon data get block <pantry xyz>`)
-   should show deposits. If not: the remembered-food-spots idea — once the goal
-   loop `!rememberHere`s a berry patch/herd, add a stock-gated rule (or action)
-   that returns to remembered spots mechanically, turning one paid discovery
-   into a permanent free route.
+1. ~~**Pantry accumulation proof.**~~ Done, 2026-08-09, and the answer was
+   worse than "unproven": `!savedPlaces` returned nothing at all and the chest
+   `!viewChest` walked to (24,72,-26) was empty. `stock_the_pantry` had been
+   gated on a chest within 24 blocks while the bot forages 60 blocks away, so
+   nothing was ever bankable, and every food run re-paid for a 128-block
+   search because no spot survived the trip home.
+
+   The remembered-spots loop is now the fix: `place_known` (condition) plus
+   `remember_here` / `goto_place` (actions, both free), with
+   `remember_the_berry_patch` and `remember_the_pantry` recording a spot on
+   sight, `walk_the_berry_route` beating the search rules to a known patch,
+   and `stock_the_pantry` walking to the remembered chest. Gate the recording
+   on `not place_known` (fires once) and the walking on `place_known` (quiet
+   until there is somewhere to go); `src/agent/behavior/remembered_places.test.js`
+   holds that shape.
+
+   Verified live: `remember_the_pantry` fired free, `!savedPlaces` went from
+   empty to `pantry`, and `stock_the_pantry` walked and banked 16 carrots
+   (chest at 9,67,-67 now holds them). Two things to know:
+   - `deposit` uses the *nearest* chest, not the remembered one. When the walk
+     is cut short the food still lands somewhere, which is the point, but the
+     "pantry" is wherever the bot happens to be standing.
+   - The blocking half only lands in calm weather. Freezing, strays and the
+     goal loop all preempt an idle-priority 60-block walk; three attempts died
+     to interruptions before one completed. Idle rules that travel need a quiet
+     window, so measure them in one.
+
 2. **The bed.** `sleep_at_night` has barely ever fired because the bot never
    holds a bed (needs wool → sheep). Getting a bed makes every night free and
    removes two prompt rules from play. Check whether `get_a_bed` (paid) fires
@@ -121,9 +142,11 @@ active layer is ~37 rules from stayin_alive + food_gathering.
    structured trace. Log `EVT death:<cause>:<pos>` from the death/respawn
    handler; every fold so far came from death patterns, and this makes them
    greppable instead of inferred.
-5. **Regen relay timeout.** Merges have outgrown 600s. Either raise the
-   timeout in mindserver.js/drive.js or shrink the merge prompt (the compose
-   has redundancy an LLM merge doesn't need to re-read).
+5. ~~**Regen relay timeout.**~~ Raised to 1800s in `mindserver.js`
+   (2026-08-09) after a two-profile merge blew through 600s twice. Note the
+   relay lives in the mindserver, not the agent, so `deploy` is not enough --
+   the container has to be restarted for the new timeout to take.
+
 6. **Widen `food:inv` to all items** if you need to know *what* it eats —
    modded foods bypass `registry.foods`.
 7. **Prompt budget per game-day.** The real KPI. One uninterrupted in-game
