@@ -1034,7 +1034,7 @@ export function wouldMaroon(bot, pos) {
     return true;
 }
 
-export async function breakBlockAt(bot, x, y, z) {
+export async function breakBlockAt(bot, x, y, z, allowNoDrop = false) {
     /**
      * Break the block at the given position. Will use the bot's equipped item.
      * @param {MinecraftBot} bot, reference to the minecraft bot.
@@ -1069,8 +1069,17 @@ export async function breakBlockAt(bot, x, y, z) {
             await bot.tool.equipForBlock(block);
             const itemId = bot.heldItem ? bot.heldItem.type : null
             if (!block.canHarvest(itemId)) {
-                log(bot, `Don't have right tools to break ${block.name}.`);
-                return false;
+                // canHarvest answers "will it drop", not "can it be cleared".
+                // For descent and shelter digging the drop is irrelevant -- a
+                // snow_block breaks barehanded in under a second and drops
+                // nothing, and refusing it left the bot standing in the open
+                // all night. Callers that only need the block GONE pass
+                // allowNoDrop; the dig-time cap keeps bare-handed obsidian and
+                // friends out.
+                if (!allowNoDrop || bot.digTime(block) > 10000) {
+                    log(bot, `Don't have right tools to break ${block.name}.`);
+                    return false;
+                }
             }
         }
         if (wouldMaroon(bot, block.position)) {
@@ -2765,7 +2774,7 @@ export async function digDown(bot, distance = 10) {
             continue;
         }
 
-        let dug = await breakBlockAt(bot, targetBlock.position.x, targetBlock.position.y, targetBlock.position.z);
+        let dug = await breakBlockAt(bot, targetBlock.position.x, targetBlock.position.y, targetBlock.position.z, true);
         if (!dug) {
             log(bot, 'Failed to dig block at position:' + targetBlock.position);
             return false;

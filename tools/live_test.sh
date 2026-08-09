@@ -25,11 +25,16 @@
 #     tools/live_test.sh say "<msg>" [waitSecs]  chat/!command to the agent, stream output
 #     tools/live_test.sh evt <pattern> [secs]    await an EVT line on the socket stream
 #     tools/live_test.sh restart|stop|start      agent process control
+#     tools/live_test.sh policy                  dump the composed policy state
+#     tools/live_test.sh regen <base> [attrs...] regenerate active layer from profiles
+#     tools/live_test.sh rules [since]           rule fire counts (default 30m)
+#     tools/live_test.sh food [since]            food gains/losses/eats + tally
+#     tools/live_test.sh path [since]            pathfinder verdicts + breadcrumbs
 #   Iterate:
 #     tools/live_test.sh deploy [files...]       push changed files to container, restart agent
 #   Observe:
 #     tools/live_test.sh watch <pattern> [since] tail the agent log for a pattern
-#   Scenarios: freeze | wood | raider [mob]
+#   Scenarios: freeze | wood | raider [mob] | hunger | night
 #
 # ponytail: bash + rcon-cli + one small socket client, no framework. Everything
 # here is one server command and an assertion; a harness would be more code
@@ -152,7 +157,43 @@ restore)
 # --- mindserver socket --------------------------------------------------------
 say)     shift; drive say "$@" ;;
 evt)     shift; drive listen "${1:?pattern}" "${2:-90}" ;;
-restart|stop|start) drive "$1" ;;
+restart|stop|start|policy) drive "$1" ;;
+# A busy agent starves the merge behind its goal-loop LLM calls until the
+# relay's 600s timeout -- quiesce it first. And !stop leaves self-prompting
+# alive, so the bot can !policy mid-merge, bump the revision, and get the
+# merge discarded -- hold the self-write lock across the regen.
+regen)   shift
+    drive say '!stop' 8 >/dev/null || true
+    drive lock >/dev/null || true
+    rc=0; drive regen "$@" || rc=$?
+    drive unlock >/dev/null || true
+    exit $rc ;;
+clearlayer) shift; drive clearlayer "${1:?layer}" ;;
+
+# Which rules fired, how often -- the cheap way to see where AI turns go.
+# Prompt rules show up by name; everything else firing is free.
+rules)   botlog "EVT rule:fire" "${2:-30m}" | grep -oE 'rule:fire:[a-z_:0-9]+' | sort | uniq -c | sort -rn ;;
+
+# The food story: chronological gains/losses/eats, then a tally. food:inv
+# lines are inventory deltas (+found/withdrawn, -eaten/deposited/dropped);
+# food:level lines are the hunger bar, ":ate" marking increases.
+# Pathing story: every non-success pathfinder verdict, resets, goals reached,
+# then the last stretch of breadcrumbs. Repeated noPath/timeout at the same
+# spot, or breadcrumbs that stop while a goal is active, are the pathing bugs.
+path)
+    botlog "EVT move:(path|goal)" "${2:-30m}"
+    echo "-- verdict tally:"
+    botlog "EVT move:path" "${2:-30m}" | grep -oE 'move:path[a-z_]*:[a-zA-Z]+' | sort | uniq -c | sort -rn
+    echo "-- last 20 breadcrumbs:"
+    botlog "EVT move:pos" "${2:-30m}" | tail -20
+    ;;
+
+food)
+    botlog "EVT food:" "${2:-30m}"
+    echo "-- tally:"
+    botlog "EVT food:inv" "${2:-30m}" | grep -oE 'food:inv:[a-z_]+:[+-][0-9]+' \
+        | awk -F: '{sum[$3] += $4} END {for (i in sum) printf "  %s %+d\n", i, sum[i]}'
+    ;;
 
 # --- push code and bounce only the agent -------------------------------------
 deploy)
@@ -241,6 +282,66 @@ raider)
     await "EVT rule:fire:[a-z]+:flee_ranged_raiders" 90 \
         && echo "-- the rule fires: the client spells this mob the way the policy does" \
         || echo "-- rule never fired. Either the mob did not spawn, or entity_nearby's name does not match what mineflayer calls it."
+    ;;
+
+# The food chain, end to end: empty the bag, drain the hunger bar, then watch
+# what feeds the bot back up. Passing = foodLevel recovers via named rules;
+# any find_food/go_find_food fire in the window means it needed a paid LLM turn.
+hunger)
+    require_pos >/dev/null || exit 1
+    foodlevel() { rcon "data get entity $PLAYER foodLevel" | grep -oE '[0-9]+' | tail -1; }
+    # Daytime, clear skies: the food-search rules are idle-gated, and a night
+    # full of raiders keeps the bot busy fleeing -- round one of this scenario
+    # proved that tests nothing about food.
+    rcon "time set day" >/dev/null; rcon "weather clear" >/dev/null
+    echo "-- clearing inventory and draining hunger (foodLevel starts at $(foodlevel))"
+    rcon "clear $PLAYER" >/dev/null
+    rcon "effect give $PLAYER minecraft:hunger 60 250 true" >/dev/null
+    for _ in $(seq 1 24); do
+        f=$(foodlevel); echo "foodLevel=$f"
+        [ "${f:-20}" -le 12 ] && break
+        sleep 5
+    done
+    rcon "effect clear $PLAYER minecraft:hunger" >/dev/null
+    [ "${f:-20}" -gt 12 ] && { echo "hunger never drained; effect did not take" >&2; exit 1; }
+    echo "-- hunger is low; watching the food chain fire"
+    await "EVT rule:fire:[a-z]+:(search_out_berries|search_out_game|take_food_from_storage|forage_|eat_)" 240 || true
+    recovered=0
+    for _ in $(seq 1 30); do
+        f=$(foodlevel); echo "foodLevel=$f"
+        [ "${f:-0}" -ge 15 ] && { recovered=1; break; }
+        sleep 10
+    done
+    echo "-- $([ $recovered = 1 ] && echo 'RECOVERED: bot fed itself' || echo 'NOT RECOVERED in 5m')"
+    echo "-- paid LLM turns during the window (want: none):"
+    botlog "rule:fire:[a-z]+:(find_food_when_low|go_find_food_when_none_in_reach)|POLICY RULE" 12m || echo "   none"
+    ;;
+
+# Prove the free night path end to end. The nearby swarm is cleared first so
+# the mechanics get a fair run -- the unaided version of this question is the
+# long soak, not this scenario. Passing = a shelter rule fires, no paid
+# shelter prompt, alive and mobile at dawn.
+# NOTE on patterns: docker logs carry "EVT rule:fire:<layer>:<rule>"; the
+# socket stream (evt command) carries "mode:fire:policy:<layer>:<rule>".
+night)
+    require_pos >/dev/null || exit 1
+    for m in zombie skeleton stray spider creeper drowned husk pillager vindicator \
+             ravager illusioner frostiful:chillager friendsandfoes:iceologer \
+             mutantmonsters:mutant_skeleton mutantmonsters:mutant_creeper graveyard:skeleton_creeper; do
+        rcon "execute at $PLAYER run kill @e[type=$m,distance=..48]" >/dev/null
+    done
+    rcon "give $PLAYER dirt 8" >/dev/null; rcon "give $PLAYER torch 4" >/dev/null
+    rcon "time set night" >/dev/null
+    echo "-- hostiles cleared, cap material given, night set; watching for the shelter chain"
+    await "rule:fire:[a-z]+:(dig_in_for_the_night|wait_out_the_night_under_cover|sleep_at_night)" 300 || true
+    sleep 60
+    echo "-- mid-night: pos $(pos 2>/dev/null || echo '?') health $(rcon "data get entity $PLAYER Health" | grep -oE '[0-9.]+f' | tail -1)"
+    echo "-- paid prompts + flee thrash over 6m (want: none):"
+    botlog "POLICY RULE|rule:fire:[a-z]+:flee_ranged_raiders" 1m >/dev/null; sleep 360
+    botlog "POLICY RULE|rule:fire:[a-z]+:flee_ranged_raiders" 7m || echo "   none"
+    rcon "time set day" >/dev/null
+    P1=$(pos 2>/dev/null); sleep 30; P2=$(pos 2>/dev/null)
+    echo "-- dawn: pos $P1 -> $P2 ($([ "$P1" != "$P2" ] && echo mobile || echo 'NOT MOVING')), health $(rcon "data get entity $PLAYER Health" | grep -oE '[0-9.]+f' | tail -1)"
     ;;
 
 watch) shift; botlog "$1" "${2:-5m}" ;;

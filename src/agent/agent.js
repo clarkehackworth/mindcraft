@@ -688,6 +688,58 @@ export class Agent {
             }
             prev_health = this.bot.health;
         });
+        // Food telemetry: every hunger-bar change and every edible item
+        // entering or leaving the bag, as EVT lines in the log. Rule fires
+        // alone cannot distinguish "found food and ate it" from "never found
+        // any" -- this can. grep "EVT food:" for the story.
+        let prev_food = this.bot.food;
+        this.bot.on('health', () => {
+            if (this.bot.food !== prev_food) {
+                // No single food restores 10+ at once -- a jump that size is a
+                // respawn or a scenario heal, not a meal.
+                const delta = this.bot.food - prev_food;
+                console.log(`EVT food:level:${prev_food}->${this.bot.food}${delta >= 10 ? ':reset' : delta > 0 ? ':ate' : ''}`);
+                prev_food = this.bot.food;
+            }
+        });
+        let prev_food_counts = {};
+        const food_watch = setInterval(() => {
+            try {
+                if (!this.bot?.registry || !this.bot.inventory) return;
+                const counts = {};
+                for (const i of this.bot.inventory.items())
+                    if (this.bot.registry.foods?.[i.type])
+                        counts[i.name] = (counts[i.name] ?? 0) + i.count;
+                for (const name of new Set([...Object.keys(counts), ...Object.keys(prev_food_counts)])) {
+                    const delta = (counts[name] ?? 0) - (prev_food_counts[name] ?? 0);
+                    if (delta) console.log(`EVT food:inv:${name}:${delta > 0 ? '+' : ''}${delta}`);
+                }
+                prev_food_counts = counts;
+            } catch (_) {}
+        }, 10000);
+        food_watch.unref?.();
+        // Movement telemetry for pathing analysis: a breadcrumb every 5s while
+        // actually moving, and every pathfinder verdict that is not success.
+        // grep "EVT move:" for the trail; noPath/timeout lines are the pathing
+        // bugs, breadcrumbs with d= near zero during a long goal are the
+        // stuck-in-place ones.
+        let prev_pos = this.bot.entity.position.clone();
+        const move_watch = setInterval(() => {
+            try {
+                const p = this.bot.entity.position;
+                const d = p.distanceTo(prev_pos);
+                if (d >= 1)
+                    console.log(`EVT move:pos:${p.x.toFixed(1)},${p.y.toFixed(1)},${p.z.toFixed(1)}:d=${d.toFixed(1)}`);
+                prev_pos = p.clone();
+            } catch (_) {}
+        }, 5000);
+        move_watch.unref?.();
+        this.bot.on('path_update', (r) => {
+            if (r?.status && r.status !== 'success')
+                console.log(`EVT move:path:${r.status}:visited=${r.visitedNodes?.length ?? r.visitedNodes ?? '?'}`);
+        });
+        this.bot.on('goal_reached', () => console.log('EVT move:goal_reached'));
+        this.bot.on('path_reset', (reason) => console.log(`EVT move:path_reset:${reason}`));
         // Logging callbacks
         this.bot.on('error' , (err) => {
             console.error('Error event!', err);

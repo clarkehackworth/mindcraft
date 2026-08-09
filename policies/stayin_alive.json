@@ -6,7 +6,8 @@
     "Stay out of water you cannot see the bottom of. Getting to air when drowning is already a rule; this is the half that stops it happening -- only enter shallow, open water, never enclosed or underground water, and never swim far from shore.",
     "Do not fight without a weapon in hand, and do not go back to where you last died until it is daylight and you are armed.",
     "Run from what you cannot fight. Strays and the illager family shoot and charge from further away than you notice them, so put real distance between you and them rather than backing off a few blocks. Standing still is never the answer to a mob: mobs do not wander off because you waited, so never answer a mob by staying put.",
-    "Cold is a way to die here, not just weather. If you start freezing, that is a countdown: get out of the snow and under cover, or put something warm between you and it. Standing where you are does not warm you up."
+    "Cold is a way to die here, not just weather. If you start freezing, that is a countdown: get out of the snow and under cover, or put something warm between you and it. Standing where you are does not warm you up.",
+    "Never walk off a drop of four blocks or more. Go around, or dig a staircase down -- falling is a way to die that nothing else in this policy can save you from."
   ],
   "goal": "Stay alive indefinitely and make yourself harder to kill: keep a home base with a bed and stocked chests, and keep food, shelter and a weapon between you and every way this world can end you.",
   "policy": {
@@ -34,29 +35,6 @@
           }
         ],
         "cooldown": 5,
-        "pinned": true
-      },
-      {
-        "name": "eat_when_starving",
-        "description": "Below 7 hunger the health bar is next. Drop everything and eat.",
-        "interrupts": "all",
-        "when": {
-          "all": [
-            {
-              "cond": "hunger_below",
-              "value": 7
-            },
-            {
-              "cond": "has_food"
-            }
-          ]
-        },
-        "do": [
-          {
-            "act": "consume"
-          }
-        ],
-        "cooldown": 8,
         "pinned": true
       },
       {
@@ -118,59 +96,73 @@
       },
       {
         "name": "flee_ranged_raiders",
-        "description": "Everything that kills this agent from outside cowardice's radius, in one rule, with the list taken from counting actual deaths rather than from what sounds dangerous. Stray, chillager and the illager family were the first; Illusioner, Iceologer, the mutant skeleton and two kinds of creeper earned their places later. Every id was checked against the server with `summon` before being added, because a name the client spells differently matches nothing and fails silently -- see tools/live_test.sh raider. Zombie is the biggest killer by far and is deliberately absent: it is melee, which is cowardice's job, and this rule is pinned and interrupts everything, so it must not fire for things fleeing cannot fix.",
+        "description": "Everything that kills this agent from outside cowardice's radius, in one rule, with the list taken from counting actual deaths rather than from what sounds dangerous. Stray, chillager and the illager family were the first; Illusioner, Iceologer, the mutant skeleton and two kinds of creeper earned their places later. Every id was checked against the server with `summon` before being added, because a name the client spells differently matches nothing and fails silently -- see tools/live_test.sh raider. Zombie is the biggest killer by far and is deliberately absent: it is melee, which is cowardice's job, and this rule is pinned and interrupts everything, so it must not fire for things fleeing cannot fix. Gated on not being under cover: a capped foxhole beats a footrace, and climbing out of one to flee is how the footrace starts. Skeleton earned its place the same way the others did. After the flee comes a dig_in: distance alone leaves the bot standing in the open for the next volley, and the agent kept teaching itself exactly this flee-then-burrow pattern until it was folded in here.",
         "interrupts": "all",
         "when": {
-          "any": [
+          "all": [
             {
-              "cond": "entity_nearby",
-              "name": "frostiful:chillager",
-              "range": 32
+              "not": {
+                "cond": "is_sheltered"
+              }
             },
             {
-              "cond": "entity_nearby",
-              "name": "stray",
-              "range": 24
-            },
-            {
-              "cond": "entity_nearby",
-              "name": "pillager",
-              "range": 24
-            },
-            {
-              "cond": "entity_nearby",
-              "name": "vindicator",
-              "range": 24
-            },
-            {
-              "cond": "entity_nearby",
-              "name": "ravager",
-              "range": 32
-            },
-            {
-              "cond": "entity_nearby",
-              "name": "illusioner",
-              "range": 24
-            },
-            {
-              "cond": "entity_nearby",
-              "name": "friendsandfoes:iceologer",
-              "range": 24
-            },
-            {
-              "cond": "entity_nearby",
-              "name": "mutantmonsters:mutant_skeleton",
-              "range": 32
-            },
-            {
-              "cond": "entity_nearby",
-              "name": "mutantmonsters:mutant_creeper",
-              "range": 16
-            },
-            {
-              "cond": "entity_nearby",
-              "name": "graveyard:skeleton_creeper",
-              "range": 16
+              "any": [
+                {
+                  "cond": "entity_nearby",
+                  "name": "frostiful:chillager",
+                  "range": 32
+                },
+                {
+                  "cond": "entity_nearby",
+                  "name": "stray",
+                  "range": 24
+                },
+                {
+                  "cond": "entity_nearby",
+                  "name": "skeleton",
+                  "range": 24
+                },
+                {
+                  "cond": "entity_nearby",
+                  "name": "pillager",
+                  "range": 24
+                },
+                {
+                  "cond": "entity_nearby",
+                  "name": "vindicator",
+                  "range": 24
+                },
+                {
+                  "cond": "entity_nearby",
+                  "name": "ravager",
+                  "range": 32
+                },
+                {
+                  "cond": "entity_nearby",
+                  "name": "illusioner",
+                  "range": 24
+                },
+                {
+                  "cond": "entity_nearby",
+                  "name": "friendsandfoes:iceologer",
+                  "range": 24
+                },
+                {
+                  "cond": "entity_nearby",
+                  "name": "mutantmonsters:mutant_skeleton",
+                  "range": 32
+                },
+                {
+                  "cond": "entity_nearby",
+                  "name": "mutantmonsters:mutant_creeper",
+                  "range": 16
+                },
+                {
+                  "cond": "entity_nearby",
+                  "name": "graveyard:skeleton_creeper",
+                  "range": 16
+                }
+              ]
             }
           ]
         },
@@ -178,6 +170,9 @@
           {
             "act": "flee",
             "distance": 40
+          },
+          {
+            "act": "dig_in"
           },
           {
             "act": "stay",
@@ -188,12 +183,79 @@
         "pinned": true
       },
       {
+        "name": "dig_in_when_hunted",
+        "description": "Something hostile closing and no roof: put ground between you and it, day or night, armed or not. Was night-or-unarmed only, and the agent kept writing itself a pinned always-shelter rule (46 fires in 20 minutes, no sheltered gate, digging deeper each time) because armed daytime chases had no answer but the cowardice footrace. The stay holds until the area is quiet AND it is not night, so a daytime dig does not pop back out while the mob is still pacing overhead; once capped there is no clear path to the bot, so cowardice and self_defense stand down on their own.",
+        "interrupts": "all",
+        "when": {
+          "all": [
+            {
+              "cond": "hostile_nearby",
+              "range": 14
+            },
+            {
+              "not": {
+                "cond": "is_sheltered"
+              }
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "flee",
+            "distance": 16
+          },
+          {
+            "act": "dig_in"
+          },
+          {
+            "act": "stay",
+            "until": "not hostile_nearby 12 and not is_night 1500",
+            "seconds": -1
+          }
+        ],
+        "cooldown": 60,
+        "pinned": true
+      },
+      {
+        "name": "dig_in_out_of_the_cold",
+        "description": "Freezing and no roof: a capped foxhole is out of the snowfall, which is what freezing means here -- and it is free, where the prompt version below costs a turn per firing and was the single biggest prompt bill on stormy nights. Digging down also exits powder snow. The prompt survives it, gated on not-sheltered, for the cold the hole cannot fix.",
+        "interrupts": "all",
+        "when": {
+          "all": [
+            {
+              "cond": "is_freezing"
+            },
+            {
+              "not": {
+                "cond": "is_sheltered"
+              }
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "dig_in"
+          }
+        ],
+        "cooldown": 45,
+        "pinned": true
+      },
+      {
         "name": "get_out_of_the_cold",
         "description": "The freeze meter is filling and there is about two seconds before it starts taking health. Andy has died \"froze to death\" here. This is a prompt rather than named actions because the fix genuinely depends on what is around -- dig into a hillside, get off the ice, put a roof and a light overhead, or craft leather -- and there is no single action that is right in all of them. What is certainly wrong is waiting, which is what the agent wrote for itself every time, having no is_freezing to compile against.",
         "interrupts": "all",
         "when": {
-          "cond": "is_freezing",
-          "ticks": 90
+          "all": [
+            {
+              "cond": "is_freezing",
+              "ticks": 90
+            },
+            {
+              "not": {
+                "cond": "is_sheltered"
+              }
+            }
+          ]
         },
         "do": [
           {
@@ -273,6 +335,84 @@
         "cooldown": 60
       },
       {
+        "name": "dig_in_for_the_night",
+        "description": "Night with no bed and no roof: foxhole up and wait for dawn, for free -- and do it even mid-task. Interrupts everything on purpose: the agent kept writing itself pinned shelter-beats-the-job rules every rough night until this was promoted to match. The is_sheltered gate keeps it silent while building indoors, so only surface wandering gets interrupted. The prompt version below only exists for the nights the dig fails -- lava underfoot, undiggable ground -- which its no-progress backoff surfaces on its own.",
+        "interrupts": "all",
+        "when": {
+          "all": [
+            {
+              "cond": "is_night",
+              "lead": 1500
+            },
+            {
+              "not": {
+                "cond": "block_nearby",
+                "name": "bed",
+                "range": 16
+              }
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "bed",
+                "count": 1
+              }
+            },
+            {
+              "not": {
+                "cond": "is_sheltered"
+              }
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "dig_in"
+          },
+          {
+            "act": "stay",
+            "until": "not is_night 1500",
+            "seconds": -1
+          }
+        ],
+        "cooldown": 120,
+        "pinned": true
+      },
+      {
+        "name": "wait_out_the_night_under_cover",
+        "description": "Already under a roof at night with no bed: hold position until dawn. Free, and it keeps the goal loop parked -- an idle sheltered bot would otherwise resume self-prompting and wander back out into the dark.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "is_night",
+              "lead": 1500
+            },
+            {
+              "cond": "is_sheltered"
+            },
+            {
+              "not": {
+                "cond": "block_nearby",
+                "name": "bed",
+                "range": 16
+              }
+            },
+            {
+              "cond": "is_idle"
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "stay",
+            "until": "not is_night 1500",
+            "seconds": -1
+          }
+        ],
+        "cooldown": 30
+      },
+      {
         "name": "shelter_when_night_and_no_bed",
         "description": "Nightfall with no bed anywhere. Without this the bot stands in the open until something kills it. But the old wording -- 'seal the hole, leaving no opening a mob can path through' -- is what made it entomb itself: its own memory records building 3x3 shelters around itself repeatedly and then being unable to travel, which is the 'every attempt to travel failed' loop that burned a whole session. A shelter you cannot leave is a grave. Long cooldown on purpose: a prompt does not change the world, so re-issuing it every minute only cancels the digging it asked for.",
         "interrupts": "idle",
@@ -297,6 +437,11 @@
               }
             },
             {
+              "not": {
+                "cond": "is_sheltered"
+              }
+            },
+            {
               "cond": "is_idle"
             }
           ]
@@ -307,7 +452,7 @@
             "message": "It is night and you have no bed, so you cannot sleep through it -- you have to survive it instead. Do NOT stand in the open. Dig two blocks into the nearest hillside, or straight down two, and cover the opening above you with dirt, cobblestone or planks. Place a torch inside so nothing spawns in with you.\nREAD THIS PART CAREFULLY, YOU HAVE GOT IT WRONG BEFORE. You have repeatedly walled yourself in on all sides and then been unable to travel at all for the rest of the night and the whole next day. Do not build a box around yourself. You need exactly enough cover to stop a mob reaching you and NOT ONE BLOCK MORE:\n- Cover yourself with blocks YOU CAN BREAK -- dirt, planks, cobblestone. Never seal yourself behind anything you have no tool for.\n- Do not place blocks on all four sides plus the roof. A two-deep hole with the entrance covered is enough.\n- Before you settle, know which single block you will break to get out, and make sure it is one you can reach and break from where you are standing.\nAT FIRST LIGHT, LEAVE. Break your way out and get back to work -- do not sit in the hole through the day. If you ever find that you cannot travel anywhere, the first thing to suspect is that you are still inside one of these shelters: break out sideways at your own feet level before trying to go anywhere."
           }
         ],
-        "cooldown": 600
+        "cooldown": 900
       },
       {
         "name": "craft_a_weapon",
@@ -332,35 +477,7 @@
             {
               "not": {
                 "cond": "has_item",
-                "item": "wooden_sword",
-                "count": 1
-              }
-            },
-            {
-              "not": {
-                "cond": "has_item",
-                "item": "stone_sword",
-                "count": 1
-              }
-            },
-            {
-              "not": {
-                "cond": "has_item",
-                "item": "iron_sword",
-                "count": 1
-              }
-            },
-            {
-              "not": {
-                "cond": "has_item",
-                "item": "golden_sword",
-                "count": 1
-              }
-            },
-            {
-              "not": {
-                "cond": "has_item",
-                "item": "diamond_sword",
+                "item": "weapon",
                 "count": 1
               }
             },
@@ -376,6 +493,60 @@
           }
         ],
         "cooldown": 90
+      },
+      {
+        "name": "craft_a_pickaxe",
+        "description": "Wood in the bag and no pickaxe. On this modded server bare hands cannot clear stone inside dig_in's time budget, so every foxhole attempt over stone failed and fell through to the paid prompt -- a wooden pickaxe is the difference between shelter being free and shelter costing an LLM turn. It also makes cobblestone drop, which is cap material and a furnace. craftRecipe crafts the planks and sticks on the way.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "any": [
+                {
+                  "cond": "has_item",
+                  "item": "log",
+                  "count": 1
+                },
+                {
+                  "cond": "has_item",
+                  "item": "planks",
+                  "count": 3
+                }
+              ]
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "wooden_pickaxe",
+                "count": 1
+              }
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "stone_pickaxe",
+                "count": 1
+              }
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "iron_pickaxe",
+                "count": 1
+              }
+            },
+            {
+              "cond": "is_idle"
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "craft",
+            "item": "wooden_pickaxe"
+          }
+        ],
+        "cooldown": 120
       },
       {
         "name": "craft_shovel_for_snow",
@@ -481,33 +652,9 @@
               }
             },
             {
-              "any": [
-                {
-                  "cond": "has_item",
-                  "item": "wooden_sword",
-                  "count": 1
-                },
-                {
-                  "cond": "has_item",
-                  "item": "stone_sword",
-                  "count": 1
-                },
-                {
-                  "cond": "has_item",
-                  "item": "iron_sword",
-                  "count": 1
-                },
-                {
-                  "cond": "has_item",
-                  "item": "golden_sword",
-                  "count": 1
-                },
-                {
-                  "cond": "has_item",
-                  "item": "diamond_sword",
-                  "count": 1
-                }
-              ]
+              "cond": "has_item",
+              "item": "weapon",
+              "count": 1
             },
             {
               "cond": "is_idle"
@@ -538,14 +685,14 @@
         "pinned": true
       },
       {
-        "name": "eat_before_hungry",
-        "description": "Top up long before hunger is a problem, while eating is still free.",
-        "interrupts": "idle",
+        "name": "eat_when_hungry",
+        "description": "One eating rule for the whole hunger band: at 14 hunger, eat, even mid-task. Replaces the old pair of eat_when_starving (7, interrupts all) and eat_before_hungry (17, idle-only) -- the idle gate meant a continuously busy bot ate nothing between comfortable and starving, which the agent noticed and wrote a self rule about. Gated on has_food so it never fires at an empty bag; consume clears its own trigger and the cooldown stops pantry chain-eating.",
+        "interrupts": "all",
         "when": {
           "all": [
             {
               "cond": "hunger_below",
-              "value": 17
+              "value": 14
             },
             {
               "cond": "has_food"
@@ -557,7 +704,8 @@
             "act": "consume"
           }
         ],
-        "cooldown": 30
+        "cooldown": 10,
+        "pinned": true
       },
       {
         "name": "take_food_from_storage",
@@ -599,19 +747,52 @@
             "act": "withdraw",
             "item": "cooked_porkchop",
             "num": 8
+          },
+          {
+            "act": "withdraw",
+            "item": "cooked_chicken",
+            "num": 8
+          },
+          {
+            "act": "withdraw",
+            "item": "cooked_rabbit",
+            "num": 8
+          },
+          {
+            "act": "withdraw",
+            "item": "sweet_berries",
+            "num": 16
           }
         ],
         "cooldown": 120
       },
       {
         "name": "find_food_when_low",
-        "description": "No food in the bag and none in reach: go get some while there is still time. Kept as a prompt on purpose: what is edible here depends on the biome, the season and the modpack, and no fixed list of collect steps answers it. Cooldown raised to 300s so it costs one turn every five minutes at worst.",
+        "description": "Deep-emergency food prompt for when stayin_alive runs WITHOUT the food_gathering attribute layered on. With it, go_find_food_when_none_in_reach fires at 11 and almost always resolves the episode first, so this stays silent -- both prompts firing in one starvation episode is one paid turn too many.",
         "interrupts": "idle",
         "when": {
           "all": [
             {
               "cond": "hunger_below",
-              "value": 15
+              "value": 8
+            },
+            {
+              "not": {
+                "cond": "has_food"
+              }
+            },
+            {
+              "not": {
+                "cond": "block_nearby",
+                "name": "sweet_berry_bush",
+                "range": 24
+              }
+            },
+            {
+              "not": {
+                "cond": "animal_nearby",
+                "range": 32
+              }
             },
             {
               "cond": "is_idle"
@@ -674,33 +855,9 @@
               }
             },
             {
-              "any": [
-                {
-                  "cond": "has_item",
-                  "item": "wooden_sword",
-                  "count": 1
-                },
-                {
-                  "cond": "has_item",
-                  "item": "stone_sword",
-                  "count": 1
-                },
-                {
-                  "cond": "has_item",
-                  "item": "iron_sword",
-                  "count": 1
-                },
-                {
-                  "cond": "has_item",
-                  "item": "golden_sword",
-                  "count": 1
-                },
-                {
-                  "cond": "has_item",
-                  "item": "diamond_sword",
-                  "count": 1
-                }
-              ]
+              "cond": "has_item",
+              "item": "weapon",
+              "count": 1
             },
             {
               "cond": "is_idle"

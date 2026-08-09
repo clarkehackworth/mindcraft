@@ -27,7 +27,9 @@ test('has_food is false with only inedible items', () => {
 test('every rule that eats is gated on having something to eat', () => {
     const p = JSON.parse(fs.readFileSync('policies/stayin_alive.json', 'utf8'));
     const eaters = p.policy.rules.filter(r => (r.do ?? []).some(a => a.act === 'consume'));
-    assert.ok(eaters.length >= 3, 'found the eating rules');
+    // Two since eat_when_starving and eat_before_hungry merged into one
+    // eat_when_hungry: the floor only proves the filter found the eaters.
+    assert.ok(eaters.length >= 2, 'found the eating rules');
     for (const r of eaters) {
         const conds = JSON.stringify(r.when);
         assert.match(conds, /has_food/, `${r.name} can fire with no food and re-trigger forever`);

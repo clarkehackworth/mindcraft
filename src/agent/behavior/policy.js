@@ -256,6 +256,18 @@ export const CONDITIONS = {
         desc: 'The bot is freezing: standing in powder snow, or out in snowfall in a cold biome. Freezing kills on this server and there is no freeze-meter reading to be had, so this fires on the cause rather than on damage already taken.',
         fn: (agent) => isFreezing(agent.bot)
     },
+    is_sheltered: {
+        args: {},
+        desc: 'A solid block sits two or three above the bot\'s feet -- it is under a roof (a capped dig_in foxhole, a house, a cave). Gate night-shelter and flee rules on "not is_sheltered" so a bot already under cover does not dig deeper, prompt for shelter it already has, or climb out of a safe hole to flee something that cannot reach it.',
+        fn: (agent) => {
+            const p = agent.bot.entity.position.floored();
+            for (const dy of [2, 3]) {
+                const b = agent.bot.blockAt(p.offset(0, dy, 0));
+                if (b && b.boundingBox === 'block') return true;
+            }
+            return false;
+        }
+    },
     is_idle: {
         args: {},
         desc: 'Bot has no current action or goal in progress.',
@@ -436,6 +448,34 @@ export const ACTIONS = {
         args: {},
         desc: 'Go to the nearest bed and sleep.',
         fn: async (agent) => await skills.goToBed(agent.bot)
+    },
+    dig_in: {
+        // is_freezing: a capped hole is out of the snowfall, and digging down
+        // exits powder snow -- both halves of what freezing means here.
+        cost: 'blocking', clears: ['hostile_nearby', 'entity_nearby', 'at_position', 'is_freezing'],
+        args: {},
+        desc: 'Dig a three-deep foxhole where standing, cap the opening with a carried cover block and place a torch if one is carried. The named-action form of "improvise a shelter for the night" -- pair it with a stay until dawn. It never seals the sides, so breaking the cap overhead is always enough to get out. Reports failure (for the prompt fallback) only when it could not get all the way down.',
+        fn: async (agent) => {
+            const bot = agent.bot;
+            // Three down, not two: after digging two the bot's head is at the
+            // old surface level, so the cap spot is surrounded by open air and
+            // there is nothing to place it against. At three deep the cap sits
+            // where the surface block was, flush with solid ground on every
+            // side. digDown already refuses lava, water and drops.
+            if (!await skills.digDown(bot, 3)) return false;
+            const p = bot.entity.position.floored();
+            // ponytail: first carried non-falling cover block wins; no gravel or
+            // sand, which would fall into the shaft onto the bot's head.
+            const cover = bot.inventory.items().find(i =>
+                /^(dirt|cobblestone|cobbled_deepslate|stone|netherrack|snow_block|.*planks|.*log)$/.test(i.name));
+            if (cover) {
+                try { await skills.placeBlock(bot, cover.name, p.x, p.y + 2, p.z, 'side'); } catch {}
+            }
+            if (bot.inventory.items().some(i => i.name === 'torch')) {
+                try { await skills.placeBlock(bot, 'torch', p.x, p.y, p.z, 'bottom', true); } catch {}
+            }
+            return true;
+        }
     },
     say: {
         cost: 'cheap', clears: [],
@@ -1426,7 +1466,7 @@ Rule format:
 {"name": "snake_case_id", "description": "short human summary", "when": <condition>, "do": [<actions>], "interrupts": "all"|"idle", "cooldown": <seconds, default 3>, "pinned": <true only for rules that keep the agent alive>}
 - "interrupts": "all" = rule fires even while the agent is busy (reflexes: fleeing, eating when dying). "idle" = only fires when the agent has nothing to do (opportunistic: collecting, exploring).
 - "pinned": true lifts a rule above every unpinned rule, including ones from higher-priority layers, so a job the agent is given cannot crowd out the reflex that keeps it alive. Pin ONLY rules that prevent death (fleeing a losing fight, eating before starving, surfacing when drowning, avoiding a mob that killed it). Never pin gathering, building, exploring or anything else that is merely useful: pinning everything ranks nothing.
-- prompt_self is the most expensive thing you can write. Every fire is a paid LLM generation and ~30 seconds during which the agent does nothing else, repeating on its cooldown for as long as the trigger holds. Before you write one, check whether the instruction names a thing: "craft a sword", "cook the meat", "put down a furnace", "get bread from the chest" are craft / smelt / place / withdraw, and cost nothing. A profile that had 23 prompt_self rules came down to 4 this way with no behaviour lost. Reach for it only when the answer depends on looking around and judging -- improvising a shelter out of whatever is underfoot, working out what is edible in this biome -- and give it the longest cooldown the situation tolerates.
+- prompt_self is the most expensive thing you can write. Every fire is a paid LLM generation and ~30 seconds during which the agent does nothing else, repeating on its cooldown for as long as the trigger holds. Before you write one, check whether the instruction names a thing: "craft a sword", "cook the meat", "put down a furnace", "get bread from the chest" are craft / smelt / place / withdraw, and cost nothing. A profile that had 23 prompt_self rules came down to 4 this way with no behaviour lost. Reach for it only when the answer depends on looking around and judging -- working out what is edible in this biome, deciding whether a base site is worth keeping -- and give it the longest cooldown the situation tolerates. "Improvise a shelter for the night" is NOT judgment work: that is the dig_in action followed by a stay until dawn.
 - Do not write a rule whose only trigger is is_idle and whose only action is prompt_self ("take stock", "review your situation", "plan ahead"). It has no world trigger, so it fires forever on a timer, and the agent already reasons on its own between actions. That is a bill for nothing.
 - A rule must react to something in the world. "when the agent is idle" and "when nothing bad is nearby" are its resting state, so a rule gated only on those fires forever: if it just wanders (move_away) or re-prompts (prompt_self), the agent walks in circles and every real action it starts is interrupted. Vague instructions like "move freely when safe" or "keep a low profile" are not rules -- either drop them or express them as a mode toggle.
 - Do NOT write a rule that answers "a mob is nearby" with only flee/move_away. That is the cowardice mode -- set {"cowardice": true} in "modes". A rule that retreats on proximity re-triggers from wherever it lands and loops forever.

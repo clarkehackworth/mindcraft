@@ -2,7 +2,7 @@ import { io } from 'socket.io-client';
 import convoManager from './conversation.js';
 import { setSettings } from './settings.js';
 import { getFullState } from './library/full_state.js';
-import { validatePolicy, LAYERS, loadPolicyState, savePolicyState, clearPolicyState, composePolicy, describePolicyState, setPolicyLocked, isPolicyLocked, generatePolicy, applyPolicyGoal, policyRevision } from './behavior/policy.js';
+import { validatePolicy, LAYERS, loadPolicyState, savePolicyState, clearPolicyState, composePolicy, describePolicyState, setPolicyLocked, isPolicyLocked, generatePolicy, applyPolicyGoal } from './behavior/policy.js';
 
 // agent's individual connection to the mindserver
 // always connect to localhost
@@ -207,26 +207,35 @@ class MindServerProxy {
                 // Observed: a raider rule that had just been installed by hand
                 // reverted to an older version minutes later, with nothing in
                 // the log to say why.
-                const revision_before = policyRevision(this.agent.name);
+                // The merge only ever produces the ACTIVE layer, but the agent
+                // keeps living while it runs -- a bad night's !policy writes
+                // land in the self layer mid-merge. Discarding the whole merge
+                // for that made regen effectively impossible on a rough night.
+                // So: discard only if the active layer itself changed under the
+                // merge; anything else is rebased under the merged result.
+                const active_before = JSON.stringify(loadPolicyState(this.agent.name).layers?.active ?? null);
                 const state = await generatePolicy(this.agent, base, attributes ?? []);
-                if (policyRevision(this.agent.name) !== revision_before) {
-                    console.warn('generate-policy: the policy changed while the merge was running; discarding the merged result rather than overwriting it.');
-                    return callback({ success: false, error: 'The policy was changed while this merge was running, so the merge was discarded. Nothing was overwritten. Try again if you still want it.' });
+                const state_now = loadPolicyState(this.agent.name);
+                if (JSON.stringify(state_now.layers?.active ?? null) !== active_before) {
+                    console.warn('generate-policy: the active layer changed while the merge was running; discarding the merged result rather than overwriting it.');
+                    return callback({ success: false, error: 'The active policy layer was changed while this merge was running, so the merge was discarded. Nothing was overwritten. Try again if you still want it.' });
                 }
+                state_now.layers.active = state.layers.active;
+                state_now.compose = state.compose;
                 const modes = this.agent.bot?.modes;
-                const composed = composePolicy(state);
+                const composed = composePolicy(state_now);
                 if (composed.rules.length === 0 && Object.keys(composed.modes).length === 0)
                     modes?.clearPolicy();
                 else
-                    modes?.installPolicy(composed, describePolicyState(state));
-                savePolicyState(this.agent.name, state);
-                this.agent.history.add('system', `Your policy was regenerated from the profile library. It is now:\n${describePolicyState(state)}`);
+                    modes?.installPolicy(composed, describePolicyState(state_now));
+                savePolicyState(this.agent.name, state_now);
+                this.agent.history.add('system', `Your policy was regenerated from the profile library. It is now:\n${describePolicyState(state_now)}`);
                 // The merged profiles may carry a goal, which is the only half of
                 // a policy that goes looking for work rather than waiting to be
                 // triggered. Starting it is an LLM loop, so it happens after the
                 // state is saved and never blocks the reply.
-                applyPolicyGoal(this.agent, state).catch(err => console.error('Error starting policy goal:', err));
-                callback({ success: true, state });
+                applyPolicyGoal(this.agent, state_now).catch(err => console.error('Error starting policy goal:', err));
+                callback({ success: true, state: state_now });
             } catch (error) {
                 console.error('Error generating policy:', error);
                 callback({ success: false, error: error.message });

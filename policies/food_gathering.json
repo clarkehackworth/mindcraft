@@ -2,9 +2,10 @@
   "source": [
     "Build up a food surplus instead of eating hand to mouth. Harvest carrots, potatoes, beetroot and sweet berries whenever they are in reach, and hunt nearby animals when the meat supply is short.",
     "Cook raw meat at a furnace before storing it, and bank the surplus in the base chests so there is always food to come home to.",
-    "Being unarmed is never a reason to stop feeding yourself. Foraging, baking, cooking and going out to look for food all happen whether or not there is a weapon in the bag -- an agent that cannot get wood must still be able to eat."
+    "Being unarmed is never a reason to stop feeding yourself. Foraging, baking, cooking and going out to look for food all happen whether or not there is a weapon in the bag -- an agent that cannot get wood must still be able to eat.",
+    "A base in a barren area starves you slowly. When no berry bushes, crops or animals live within reach of the base, ranging out to find them IS the job: explore until you find a berry patch, a herd, or ground fit for a farm, !rememberHere the spot, and haul the harvest home. If you ever hold seeds, till ground near water at the base and plant them -- a farm is the only food source that comes to you."
   ],
-  "goal": "Keep a standing food surplus in the base chests, going out to farm, forage and hunt for it rather than waiting until you are hungry.",
+  "goal": "Keep a standing food surplus in the base chests: farm, forage and hunt for it rather than waiting until you are hungry, and when nothing edible lives within reach of the base, go find where it does live, remember the spot, and bring the food home -- as harvest, as seeds for a farm, or as animals worth returning to.",
   "kind": "attribute",
   "policy": {
     "modes": {
@@ -264,7 +265,7 @@
       },
       {
         "name": "stock_the_pantry",
-        "description": "Bank the harvest at the base and keep a working supply on hand.",
+        "description": "Bank the harvest at the base and keep a working supply on hand. Triggered by a surplus of any staple, not only carrots -- a bot that farms potatoes all day should not need a carrot glut before it banks anything. Extra deposits are cheap no-ops when the item is absent.",
         "interrupts": "idle",
         "when": {
           "all": [
@@ -274,9 +275,28 @@
               "range": 24
             },
             {
-              "cond": "has_item",
-              "item": "carrot",
-              "count": 32
+              "any": [
+                {
+                  "cond": "has_item",
+                  "item": "carrot",
+                  "count": 32
+                },
+                {
+                  "cond": "has_item",
+                  "item": "potato",
+                  "count": 32
+                },
+                {
+                  "cond": "has_item",
+                  "item": "bread",
+                  "count": 12
+                },
+                {
+                  "cond": "has_item",
+                  "item": "sweet_berries",
+                  "count": 48
+                }
+              ]
             }
           ]
         },
@@ -295,22 +315,116 @@
             "act": "deposit",
             "item": "bread",
             "num": 8
+          },
+          {
+            "act": "deposit",
+            "item": "sweet_berries",
+            "num": 24
           }
         ],
         "cooldown": 180
       },
       {
-        "name": "go_find_food_when_none_in_reach",
-        "description": "Nothing edible in the bag and nothing to forage within 24 blocks. Every other rule here waits for food to come to it; this one goes out and looks, before hunger makes it an emergency.",
+        "name": "berry_run_while_stocked_low",
+        "description": "The gathering half of the profile, not the starving half: when berry stock is low, go walk the search radius for a bush regardless of how full the hunger bar is. Every earlier rule here waited for hunger or for food to be within 24 blocks, so a bot in a sparse biome survived fine but never built the surplus this attribute exists for. Backoff idles it in biomes with no bushes at all.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "sweet_berries",
+                "count": 24
+              }
+            },
+            {
+              "cond": "is_idle"
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "search_block",
+            "type": "sweet_berry_bush",
+            "range": 128
+          },
+          {
+            "act": "collect",
+            "type": "sweet_berry_bush",
+            "num": 16
+          }
+        ],
+        "cooldown": 300
+      },
+      {
+        "name": "hunt_for_the_larder",
+        "description": "Meat stock low and game in sight: walk to it while things are calm, and the hunting mode does the killing once in range. Stock-gated, not hunger-gated -- hunting only when starving means hunting at night, hurt, and unarmed.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "not": {
+                "any": [
+                  {
+                    "cond": "has_item",
+                    "item": "cooked_rabbit",
+                    "count": 6
+                  },
+                  {
+                    "cond": "has_item",
+                    "item": "cooked_mutton",
+                    "count": 6
+                  },
+                  {
+                    "cond": "has_item",
+                    "item": "cooked_beef",
+                    "count": 6
+                  },
+                  {
+                    "cond": "has_item",
+                    "item": "cooked_porkchop",
+                    "count": 6
+                  },
+                  {
+                    "cond": "has_item",
+                    "item": "cooked_chicken",
+                    "count": 6
+                  }
+                ]
+              }
+            },
+            {
+              "cond": "animal_nearby",
+              "range": 48
+            },
+            {
+              "cond": "is_idle"
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "search_entity",
+            "type": "rabbit",
+            "range": 48
+          },
+          {
+            "act": "search_entity",
+            "type": "sheep",
+            "range": 48
+          }
+        ],
+        "cooldown": 240
+      },
+      {
+        "name": "search_out_berries",
+        "description": "Hungry with nothing edible carried and no bush in sight: walk the 128-block search radius for one instead of asking the LLM where food is. Berry bushes regrow, so every patch found once is food forever. A search that finds nothing reports no progress and the engine's backoff slows this rule down on its own.",
         "interrupts": "idle",
         "when": {
           "all": [
             {
               "cond": "hunger_below",
-              "value": 18
-            },
-            {
-              "cond": "is_idle"
+              "value": 15
             },
             {
               "not": {
@@ -319,33 +433,86 @@
             },
             {
               "not": {
-                "any": [
-                  {
-                    "cond": "has_item",
-                    "item": "cooked_beef",
-                    "count": 1
-                  },
-                  {
-                    "cond": "has_item",
-                    "item": "cooked_mutton",
-                    "count": 1
-                  },
-                  {
-                    "cond": "has_item",
-                    "item": "cooked_porkchop",
-                    "count": 1
-                  },
-                  {
-                    "cond": "has_item",
-                    "item": "cooked_chicken",
-                    "count": 1
-                  },
-                  {
-                    "cond": "has_item",
-                    "item": "cooked_rabbit",
-                    "count": 1
-                  }
-                ]
+                "cond": "block_nearby",
+                "name": "sweet_berry_bush",
+                "range": 24
+              }
+            },
+            {
+              "cond": "is_idle"
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "search_block",
+            "type": "sweet_berry_bush",
+            "range": 128
+          },
+          {
+            "act": "collect",
+            "type": "sweet_berry_bush",
+            "num": 12
+          }
+        ],
+        "cooldown": 120
+      },
+      {
+        "name": "search_out_game",
+        "description": "Hungrier still, no berries found: walk to the nearest animal instead of prompting. The hunting mode does the killing once one is in range. Two searches, cheapest first -- a step that finds nothing returns false and the next one runs.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "hunger_below",
+              "value": 13
+            },
+            {
+              "not": {
+                "cond": "has_food"
+              }
+            },
+            {
+              "not": {
+                "cond": "animal_nearby",
+                "range": 32
+              }
+            },
+            {
+              "cond": "is_idle"
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "search_entity",
+            "type": "rabbit",
+            "range": 128
+          },
+          {
+            "act": "search_entity",
+            "type": "sheep",
+            "range": 128
+          }
+        ],
+        "cooldown": 180
+      },
+      {
+        "name": "go_find_food_when_none_in_reach",
+        "description": "The named searches above already walked the area for berries and game and came back empty, and hunger is now serious. Only judgment about what this biome offers can help, so this is the one place the profile pays for an LLM turn.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "hunger_below",
+              "value": 11
+            },
+            {
+              "cond": "is_idle"
+            },
+            {
+              "not": {
+                "cond": "has_food"
               }
             },
             {
@@ -372,6 +539,13 @@
               "not": {
                 "cond": "block_nearby",
                 "name": "potatoes",
+                "range": 24
+              }
+            },
+            {
+              "not": {
+                "cond": "block_nearby",
+                "name": "wheat",
                 "range": 24
               }
             }
