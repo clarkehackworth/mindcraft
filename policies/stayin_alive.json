@@ -8,7 +8,8 @@
     "Run from what you cannot fight. Strays and the illager family shoot and charge from further away than you notice them, so put real distance between you and them rather than backing off a few blocks. Standing still is never the answer to a mob: mobs do not wander off because you waited, so never answer a mob by staying put.",
     "Cold is a way to die here, not just weather. If you start freezing, that is a countdown: get out of the snow and under cover, or put something warm between you and it. Standing where you are does not warm you up.",
     "Never walk off a drop of four blocks or more. Go around, or dig a staircase down -- falling is a way to die that nothing else in this policy can save you from.",
-    "Never approach a hostile mob, and never chase one. Nothing worth having is standing next to a zombie: the mobs come to you, so closing distance only ever buys damage, and doing it unarmed is how this bot has died most often. This goes double for what the goal loop does between rules -- searching for an entity, walking back to a death spot for dropped gear, or looting near a spawner is approaching, whatever it is called. Endermen are the sharpest case: neutral until looked at or struck, lethal after, and they follow you when they teleport."
+    "Never approach a hostile mob, and never chase one. Nothing worth having is standing next to a zombie: the mobs come to you, so closing distance only ever buys damage, and doing it unarmed is how this bot has died most often. This goes double for what the goal loop does between rules -- searching for an entity, walking back to a death spot for dropped gear, or looting near a spawner is approaching, whatever it is called. Endermen are the sharpest case: neutral until looked at or struck, lethal after, and they follow you when they teleport.",
+    "A bed is the cheapest night there is: sleeping through the dark costs nothing and skips every shelter rule, so getting one is worth a detour long before it is urgent. It is three wool and three planks here, nothing exotic -- hunt sheep for the wool, craft it, and put it down somewhere sheltered. Do not spend an LLM turn asking how."
   ],
   "goal": "Stay alive indefinitely and make yourself harder to kill: keep a home base with a bed and stocked chests, and keep food, shelter and a weapon between you and every way this world can end you.",
   "policy": {
@@ -641,28 +642,24 @@
         "cooldown": 300
       },
       {
-        "name": "get_a_bed",
-        "description": "No bed means every night is spent in the open. Kept as a prompt rather than named crafts because the recipe is server-dependent -- this one wants feather_block, not wool -- so the agent has to look it up before it can act. Gated on wood as well: every known bed recipe needs planks, and this fired every six minutes at an agent that owned none.",
+        "name": "hunt_sheep_for_wool",
+        "description": "A bed is three wool and three planks, and the wool is the only part the bot cannot make: it has to walk to a sheep and let the hunting mode do the rest. Gated on owning no bed and less than three wool, so it stops the moment the bed is buildable rather than farming sheep forever.",
         "interrupts": "idle",
         "when": {
           "all": [
             {
-              "any": [
-                {
-                  "cond": "animal_nearby",
-                  "range": 48
-                },
-                {
-                  "cond": "block_nearby",
-                  "name": "crafting_table",
-                  "range": 16
-                },
-                {
-                  "cond": "block_nearby",
-                  "name": "chest",
-                  "range": 16
-                }
-              ]
+              "not": {
+                "cond": "has_item",
+                "item": "white_wool",
+                "count": 3
+              }
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "white_bed",
+                "count": 1
+              }
             },
             {
               "not": {
@@ -672,25 +669,33 @@
               }
             },
             {
-              "not": {
-                "cond": "has_item",
-                "item": "bed",
-                "count": 1
-              }
-            },
-            {
-              "not": {
-                "cond": "is_night",
-                "lead": 1500
-              }
-            },
-            {
-              "cond": "has_item",
-              "item": "weapon",
-              "count": 1
+              "cond": "animal_nearby",
+              "range": 48
             },
             {
               "cond": "is_idle"
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "search_entity",
+            "type": "sheep",
+            "range": 48
+          }
+        ],
+        "cooldown": 240
+      },
+      {
+        "name": "craft_a_bed",
+        "description": "Wool and wood in the bag: make the bed. This replaces the get_a_bed prompt, which paid for an LLM turn to look up a recipe that turned out to be the ordinary one -- three wool plus three planks, as !getCraftingPlan reports on this server. craft gathers the planks from logs itself.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "has_item",
+              "item": "white_wool",
+              "count": 3
             },
             {
               "any": [
@@ -705,17 +710,62 @@
                   "count": 1
                 }
               ]
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "white_bed",
+                "count": 1
+              }
+            },
+            {
+              "not": {
+                "cond": "block_nearby",
+                "name": "bed",
+                "range": 16
+              }
             }
           ]
         },
         "do": [
           {
-            "act": "prompt_self",
-            "message": "You have no bed, and without one every night is spent standing in the open where zombies kill you. Get one now.\nSTART BY ASKING WHAT A BED COSTS HERE: !getCraftingPlan(\"white_bed\", 1). This is a heavily modded server and the recipe is NOT the vanilla one -- it has been seen to want feather_block and planks rather than wool, so a sheep hunt may be entirely wasted effort. Read the plan, then go and get exactly what it lists, and match the colour name if it wants a coloured bed (red_wool -> red_bed).\nIf the plan needs an animal drop, remember animals are only on the surface: !goToSurface FIRST, then !searchForEntity for it.\nREAD THE FAILURE BEFORE YOU RETRY. If a search says it covered ground and found nothing, run it again from where you now stand, or with pattern \"random\" if the spiral keeps getting blocked. But if it says every attempt to TRAVEL failed, then this is not about what you were looking for -- you cannot move, and searching again cannot possibly work. In that case stop searching entirely. Digging straight UP does not fix it and usually leaves you standing in a tree canopy, which is not open ground: dig SIDEWAYS at your own feet level for at least 10 blocks to reach real terrain, then try once more from there. If travel still fails, give up on the bed for now, say so, and go do something you can actually do where you stand -- mine, craft, or wall yourself in before dark. A bed you cannot reach is worth less than surviving the night.\nOnce you have one: go to your base, !placeHere the bed, and !rememberHere base."
+            "act": "craft",
+            "item": "white_bed",
+            "num": 1
           }
         ],
-        "cooldown": 360,
-        "pinned": true
+        "cooldown": 120
+      },
+      {
+        "name": "place_the_bed",
+        "description": "A bed in the bag is worth nothing: it has to be on the ground before sleep_at_night can use it, and sleeping is what makes a night free. Placed only while sheltered, so the bed ends up in the hole or the base rather than in the open where the sleeping bot is a target.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "has_item",
+              "item": "white_bed",
+              "count": 1
+            },
+            {
+              "not": {
+                "cond": "block_nearby",
+                "name": "bed",
+                "range": 16
+              }
+            },
+            {
+              "cond": "is_sheltered"
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "place",
+            "block": "white_bed"
+          }
+        ],
+        "cooldown": 60
       },
       {
         "name": "eat_when_hungry",

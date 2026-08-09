@@ -56,8 +56,15 @@ socket.on('connect', () => {
         }
         case 'policy':
             socket.emit('get-policy', AGENT, res => {
+                // console.log to a pipe is async, and process.exit drops
+                // whatever has not flushed -- which cut the dump at exactly
+                // 65536 bytes, one pipe buffer, once the composed policy passed
+                // 64KB. It looked like a truncating server, not a lost write.
+                // Set the code and close the socket; node exits once stdout
+                // drains and nothing is left holding it open.
+                process.exitCode = res ? 0 : 1;
                 console.log(JSON.stringify(res, null, 2));
-                process.exit(res ? 0 : 1);
+                socket.close();
             });
             break;
         case 'regen': {
