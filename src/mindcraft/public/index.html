@@ -142,7 +142,7 @@
         .chat-log {
             display: flex;
             flex-direction: column;
-            gap: 6px;
+            gap: 3px;
             height: 240px;
             overflow-y: auto;
             overscroll-behavior: contain;
@@ -155,11 +155,11 @@
             box-sizing: border-box;
         }
         .chat-bubble {
-            max-width: 78%;
-            padding: 6px 10px;
-            border-radius: 12px;
+            max-width: 85%;
+            padding: 2px 8px;
+            border-radius: 10px;
             font-size: 0.9em;
-            line-height: 1.35;
+            line-height: 1.3;
             white-space: pre-wrap;
             overflow-wrap: anywhere;
         }
@@ -174,10 +174,10 @@
             border-bottom-right-radius: 3px;
         }
         .chat-who {
-            display: block;
             font-size: 0.75em;
             opacity: 0.6;
-            margin-bottom: 2px;
+            margin-right: 6px;
+            white-space: nowrap;
         }
         .chat-note {
             align-self: center;
@@ -1416,7 +1416,8 @@
             div.dataset.id = e.id;
             const who = document.createElement('span');
             who.className = 'chat-who';
-            who.textContent = `${e.from} · ${new Date(e.ts).toLocaleTimeString()}`;
+            const t = new Date(e.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            who.textContent = `${t} ${e.from}`;
             div.appendChild(who);
             div.appendChild(document.createTextNode(e.message));
             return div;

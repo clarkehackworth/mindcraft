@@ -166,6 +166,13 @@ class ConversationManager {
     }
 
     async receiveFromBot(sender, received) {
+        // The relay is happy to hand us our own message back; nothing good comes
+        // of answering it, and the loop above is expensive enough to be worth
+        // stopping at both ends.
+        if (sender === agent?.name) {
+            console.warn(`${agent.name} received a bot message from itself; ignoring.`);
+            return;
+        }
         const convo = this._getConvo(sender);
 
         if (convo.ignore_until_start && !received.start)
@@ -202,7 +209,13 @@ class ConversationManager {
     }
 
     isOtherAgent(name) {
-        return agent_names.some((n) => n === name);
+        // "other" was doing no work: agent_names includes this agent, so a model
+        // that addressed itself got a conversation with itself. The mindserver
+        // relays the message straight back, the reply quotes the message, and
+        // every round trip is a paid turn carrying the whole transcript -- Andy
+        // ran this alone on the server for hours, answering himself in messages
+        // that grew until the model gave up and emitted rows of asterisks.
+        return name !== agent?.name && agent_names.some((n) => n === name);
     }
 
     otherAgentInGame(name) {
