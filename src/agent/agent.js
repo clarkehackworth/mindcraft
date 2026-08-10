@@ -152,6 +152,7 @@ export class Agent {
         this.bot.on('login', () => {
             console.log(this.name, 'logged in!');
             this.login_time = Date.now();
+            this.alive_mark = Date.now(); // resume accumulating connected time
             serverProxy.login();
             
             // Set skin for profile, requires Fabric Tailor. (https://modrinth.com/mod/fabrictailor)
@@ -314,6 +315,8 @@ export class Agent {
         else await applyPolicyGoal(this, loadPolicyState(this.name));
         if (save_data?.last_death_time)
             this.last_death_time = save_data.last_death_time;
+        if (save_data?.alive_ms != null)
+            this.alive_ms_before = save_data.alive_ms;
         if (save_data?.last_sender) {
             this.last_sender = save_data.last_sender;
             if (convoManager.otherAgentInGame(this.last_sender)) {
@@ -735,8 +738,16 @@ export class Agent {
         }, 5000);
         move_watch.unref?.();
         this.bot.on('path_update', (r) => {
-            if (r?.status && r.status !== 'success')
-                console.log(`EVT move:path:${r.status}:visited=${r.visitedNodes?.length ?? r.visitedNodes ?? '?'}`);
+            if (r?.status && r.status !== 'success') {
+                // With the block the bot was standing on. A soak produced 8118
+                // of these in six game-days and there was no way to tell one
+                // impossible route attempted a thousand times from a thousand
+                // unlucky ones -- the count alone says the pathfinder is busy,
+                // not where it is stuck.
+                const p = this.bot.entity?.position;
+                const at = p ? `${Math.floor(p.x)},${Math.floor(p.y)},${Math.floor(p.z)}` : '?';
+                console.log(`EVT move:path:${r.status}:visited=${r.visitedNodes?.length ?? r.visitedNodes ?? '?'}:at=${at}`);
+            }
         });
         this.bot.on('goal_reached', () => console.log('EVT move:goal_reached'));
         this.bot.on('path_reset', (reason) => console.log(`EVT move:path_reset:${reason}`));
@@ -752,6 +763,8 @@ export class Agent {
         this.bot.on('end', (reason) => this._handleDisconnect(reason));
         this.bot.on('death', () => {
             this.last_death_time = Date.now();
+            this.alive_ms_before = 0;
+            this.alive_mark = Date.now();
             serverProxy.reportDeath();
             this.actions.cancelResume();
             this.actions.stop();
@@ -880,10 +893,13 @@ export class Agent {
         }
     }
 
-    // ms since the last death we know about (survives restarts via memory.json),
-    // or null if we've never seen one.
+    // ms spent *connected* since the last death we know about, or null if we've
+    // never seen one. Wall clock since the death would count the hours the bot
+    // spent offline as time it survived, which is not what "alive for" means.
+    // alive_ms_before carries the earlier sessions through memory.json.
     aliveMs() {
-        return this.last_death_time ? Date.now() - this.last_death_time : null;
+        if (!this.last_death_time) return null;
+        return (this.alive_ms_before ?? 0) + (this.alive_mark ? Date.now() - this.alive_mark : 0);
     }
 
     killAll() {

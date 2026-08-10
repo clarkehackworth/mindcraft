@@ -132,7 +132,7 @@
       },
       {
         "name": "bake_bread",
-        "description": "Wheat is worth more as bread. Named action, not a prompt: nothing here needs deciding. Interrupts on purpose: in place, and it stops itself as soon as the wheat is gone.",
+        "description": "Wheat is worth more as bread. Named action, not a prompt: nothing here needs deciding. Interrupts on purpose: in place, and it stops itself as soon as the wheat is gone. The is_idle gate came off with it: interrupt priority and an is_idle trigger cancel out, which is how the first pass at this audit left eight rules exactly as starved as before.",
         "interrupts": "all",
         "when": {
           "all": [
@@ -140,9 +140,6 @@
               "cond": "has_item",
               "item": "wheat",
               "count": 3
-            },
-            {
-              "cond": "is_idle"
             }
           ]
         },
@@ -157,7 +154,7 @@
       },
       {
         "name": "cook_raw_meat",
-        "description": "Raw meat feeds half as well and can poison you. A smelt step per meat: each one is a no-op if you have none of it, which is cheaper than one LLM turn asking which you have. Interrupts on purpose: in place at a furnace, and it stops itself as soon as the raw meat is gone.",
+        "description": "Raw meat feeds half as well and can poison you. A smelt step per meat: each one is a no-op if you have none of it, which is cheaper than one LLM turn asking which you have. Interrupts on purpose: in place at a furnace, and it stops itself as soon as the raw meat is gone. The is_idle gate came off with it: interrupt priority and an is_idle trigger cancel out, which is how the first pass at this audit left eight rules exactly as starved as before.",
         "interrupts": "all",
         "when": {
           "all": [
@@ -194,9 +191,6 @@
               "cond": "block_nearby",
               "name": "furnace",
               "range": 16
-            },
-            {
-              "cond": "is_idle"
             }
           ]
         },
@@ -231,7 +225,7 @@
       },
       {
         "name": "build_a_furnace_for_cooking",
-        "description": "No furnace in reach and cobblestone in the bag: make one and put it down where you stand. Two named actions -- the LLM turn this replaced only ever said the same two things. Interrupts on purpose: one shot, in place, and no meat gets cooked until it exists.",
+        "description": "No furnace in reach and cobblestone in the bag: make one and put it down where you stand. Two named actions -- the LLM turn this replaced only ever said the same two things. Interrupts on purpose: one shot, in place, and no meat gets cooked until it exists. The is_idle gate came off with it: interrupt priority and an is_idle trigger cancel out, which is how the first pass at this audit left eight rules exactly as starved as before.",
         "interrupts": "all",
         "when": {
           "all": [
@@ -246,9 +240,6 @@
                 "name": "furnace",
                 "range": 24
               }
-            },
-            {
-              "cond": "is_idle"
             }
           ]
         },

@@ -159,7 +159,11 @@ class AgentConnection {
         this.full_state = null;
         this.viewer_port = viewer_port;
         this.login_time = null; // set on login-agent, cleared on logout/disconnect
-        this.alive_since = null; // last death, as reported by the agent (survives its restarts)
+        // Connected time survived since the last death: ms banked before this
+        // login (reported by the agent, survives its restarts) plus the time
+        // since alive_mark. Not a "since" timestamp -- offline time must not count.
+        this.alive_base_ms = 0;
+        this.alive_mark = null;
     }
     setSettings(settings) {
         // Merge, don't replace. The UI form only knows the keys in
@@ -478,7 +482,8 @@ if (state.n < 15) {
                 agent_connections[agentName].login_time = Date.now();
                 // the agent reports elapsed ms, not a timestamp: its clock need
                 // not match ours. No death on record means alive since login.
-                agent_connections[agentName].alive_since = alive_ms == null ? Date.now() : Date.now() - alive_ms;
+                agent_connections[agentName].alive_base_ms = alive_ms ?? 0;
+                agent_connections[agentName].alive_mark = Date.now();
                 curAgentName = agentName;
                 agentsStatusUpdate();
             }
@@ -489,7 +494,8 @@ if (state.n < 15) {
 
         socket.on('agent-died', (agentName) => {
             if (agent_connections[agentName]) {
-                agent_connections[agentName].alive_since = Date.now();
+                agent_connections[agentName].alive_base_ms = 0;
+                agent_connections[agentName].alive_mark = Date.now();
                 agentsStatusUpdate();
             }
         });
@@ -740,7 +746,7 @@ function agentsStatusUpdate(socket) {
             policy_locked: isPolicyLocked(agentName),
             // ms, not a timestamp: the browser's clock need not match the server's
             active_ms: conn.login_time ? Date.now() - conn.login_time : null,
-            alive_ms: conn.login_time && conn.alive_since ? Date.now() - conn.alive_since : null
+            alive_ms: conn.login_time && conn.alive_mark ? conn.alive_base_ms + (Date.now() - conn.alive_mark) : null
         });
     };
     socket.emit('agents-status', agents);

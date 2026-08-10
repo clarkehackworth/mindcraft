@@ -49,3 +49,14 @@ test('every interrupting rule has a cooldown that can hold it back', () => {
         if (r.interrupts === 'all')
             assert.ok((r.cooldown ?? 3) >= 5, `${r.name} can re-interrupt every 3 seconds`);
 });
+
+test('no rule is both promoted and still waiting for idle', () => {
+    // The first pass at this audit promoted seventeen rules to interrupts:all
+    // and left eight of them carrying an is_idle trigger, which cancels the
+    // promotion exactly. craft_a_weapon was one: it fired twice in six game-days
+    // while eleven of seventeen deaths were unarmed.
+    for (const r of rules)
+        if (r.interrupts === 'all')
+            assert.ok(!JSON.stringify(r.when).includes('"is_idle"'),
+                `${r.name} interrupts, then waits for an idle that never comes`);
+});

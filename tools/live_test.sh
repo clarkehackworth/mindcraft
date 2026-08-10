@@ -202,6 +202,16 @@ path)
     botlog "EVT move:pos" "${2:-30m}" | tail -20
     ;;
 
+# Where the pathfinder gives up, binned to 16-block boxes. A count of failures
+# says the pathfinder is busy; a count per box says which terrain is eating the
+# actions, which is the only version of the number worth acting on.
+stuckspots)
+    botlog "EVT move:path" "${2:-2h}" \
+        | grep -oE 'at=-?[0-9]+,-?[0-9]+,-?[0-9]+' \
+        | awk -F'[=,]' '{printf "%d %d %d\n", int($2/16)*16, int($3/16)*16, int($4/16)*16}' \
+        | sort | uniq -c | sort -rn | head -15
+    ;;
+
 food)
     botlog "EVT food:" "${2:-30m}"
     echo "-- tally:"
