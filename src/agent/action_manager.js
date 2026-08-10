@@ -89,6 +89,11 @@ export class ActionManager {
         if (this.executing) {
             console.warn(`action "${this.currentActionLabel}" ignored the interrupt for ${STOP_GRACE_MS / 1000}s, abandoning it`);
             this.executing = false;
+            // The bump is what releases whoever is awaiting this action. Without
+            // it, abandonment only meant the flag was clear: if no replacement
+            // action ever arrived to bump the generation itself, the original
+            // caller waited forever.
+            this.generation++;
         }
     }
 
@@ -178,8 +183,26 @@ export class ActionManager {
                 TIMEOUT = this._startTimeout(timeout, gen);
             }
 
-            // start the action
-            await actionFn();
+            // start the action, but do not wait on it forever. "Abandoning it"
+            // used to mean only that the flag was cleared: this await still sat
+            // on a promise the stuck action would never settle, so whoever
+            // called us -- the self-prompt loop, usually -- was blocked for
+            // good. A collectBlocks that never returned held the agent for 90
+            // minutes on 2026-08-10, alive and doing nothing, which reads in the
+            // logs exactly like a calm bot.
+            //
+            // Abandonment is a generation bump, so waiting for one is how we
+            // stop waiting for the action. The ceiling from stop() still holds:
+            // the orphan keeps running and can still touch the bot. We stop
+            // listening, we do not stop it.
+            const outcome = await Promise.race([
+                actionFn().then(() => 'finished'),
+                this._abandonment(gen),
+            ]);
+            if (outcome === 'abandoned') {
+                clearTimeout(TIMEOUT);
+                return { success: false, message: '', interrupted: true, timedout: this.timedout };
+            }
 
             // An abandoned action landing here would otherwise clear the
             // executing flag and bot logs belonging to its replacement.
@@ -292,6 +315,22 @@ export class ActionManager {
             output = 'Action was interrupted and did not finish. What it managed before being cut short:\n' + output;
         bot.output = '';
         return output;
+    }
+
+    // Resolves once this action's generation is no longer the current one --
+    // i.e. something abandoned it. Polling rather than a stored resolver because
+    // abandonment happens in three places (stop, a replacement action, the
+    // timeout) and none of them should have to know a waiter exists.
+    _abandonment(gen) {
+        return new Promise(resolve => {
+            const poll = setInterval(() => {
+                if (gen !== this.generation) {
+                    clearInterval(poll);
+                    resolve('abandoned');
+                }
+            }, 500);
+            poll.unref?.();
+        });
     }
 
     _startTimeout(TIMEOUT_MINS = 10, gen) {

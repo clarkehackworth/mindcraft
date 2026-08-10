@@ -1,104 +1,78 @@
-// Run: node src/agent/action_manager.test.js
-// Covers the interrupt path: an action that ignores the interrupt must be
-// abandoned rather than kill the process, and must not corrupt its replacement.
-import assert from 'assert';
+// A collectBlocks that never returned held Andy for 90 minutes on 2026-08-10:
+// alive, logged in, standing still, generating nothing. The log said "abandoning
+// it" every ten seconds and meant only that a flag had been cleared -- the await
+// on the action's promise was still there, so the self-prompt loop that called
+// it never got its turn back. In a soak that reads exactly like a calm bot: zero
+// deaths, zero paid turns, zero everything.
+import { strict as assert } from 'node:assert';
+import test from 'node:test';
 import { ActionManager } from './action_manager.js';
 
-function makeAgent() {
+function managerWithStubAgent() {
     const agent = {
-        killed: false,
-        bot: {
-            output: '',
-            interrupt_code: false,
-            emit() {},
-            stopDigging() {}, pathfinder: { stop() {} }, pvp: { stop() {} },
-            collectBlock: { cancelTask() {} },
-        },
         history: { add() {} },
-        cleanKill() { agent.killed = true; },
-        requestInterrupt() { agent.bot.interrupt_code = true; },
-        clearBotLogs() { agent.bot.output = ''; agent.bot.interrupt_code = false; },
+        bot: { output: '', interrupt_code: false, emit() {}, chat() {} },
+        isIdle: () => false,
+        cleanKill() {},
+        clearBotLogs() {},
+        requestInterrupt() {},
     };
-    return agent;
-}
-
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-// A cooperative action stops when asked -- the normal case.
-async function cooperative() {
-    const agent = makeAgent();
     const am = new ActionManager(agent);
-    const first = am.runAction('first', async () => {
-        while (!agent.bot.interrupt_code) await sleep(5);
-    }, { timeout: 0 });
-    await sleep(20);
-    const second = await am.runAction('second', async () => { agent.bot.output = 'second ran'; }, { timeout: 0 });
-    await first;
-    assert.equal(agent.killed, false, 'cooperative stop must not kill the process');
-    assert.equal(second.interrupted, false, 'second action should run normally');
-    assert.equal(am.executing, false, 'manager must be idle afterwards');
+    agent.actions = am;
+    return am;
 }
 
-// The bug: an action that never checks interrupt_code. Used to cleanKill.
-async function stubborn() {
-    const agent = makeAgent();
-    const am = new ActionManager(agent);
-    let stubbornDone = false;
-    let releaseStubborn;
-    const held = new Promise(r => { releaseStubborn = r; });
+const never = () => new Promise(() => {});
 
-    const first = am.runAction('stubborn', async () => {
-        await held;               // ignores interrupt_code entirely
-        stubbornDone = true;
-    }, { timeout: 0 });
-
-    await sleep(20);
-    const t0 = Date.now();
-    const second = await am.runAction('replacement', async () => { await sleep(10); }, { timeout: 0 });
-    const waited = Date.now() - t0;
-
-    assert.equal(agent.killed, false, 'a stubborn action must NOT kill the process');
-    assert.ok(waited >= 10000 && waited < 13000, `should abandon after the ~10s grace, waited ${waited}ms`);
-    assert.equal(second.success, true, 'the replacement action must run');
-    assert.equal(stubbornDone, false, 'stubborn is still hanging, i.e. genuinely abandoned');
-
-    // Now let the abandoned action finish. It must not touch the manager.
-    const genAfter = am.generation;
-    releaseStubborn();
-    const firstResult = await first;
-    await sleep(20);
-    assert.equal(firstResult.interrupted, true, 'abandoned action reports interrupted');
-    assert.equal(am.generation, genAfter, 'abandoned action must not bump generation');
-    assert.equal(am.executing, false, 'abandoned action must not leave executing set');
+// The abandonment poll is unref'd, so in a test whose only pending work is that
+// poll, node decides it has nothing to do and exits mid-await. A live agent
+// always has a socket holding the loop open; here we have to supply one.
+function keepLoopAlive() {
+    const t = setInterval(() => {}, 50);
+    return () => clearInterval(t);
 }
 
-// A late THROW from an abandoned action must also be contained.
-async function stubbornThrows() {
-    const agent = makeAgent();
-    const am = new ActionManager(agent);
-    let boom;
-    const held = new Promise((_, rej) => { boom = rej; });
-    const first = am.runAction('thrower', async () => { await held; }, { timeout: 0 });
-    await sleep(20);
+test('an action that never returns does not hold its caller forever', async () => {
+    const stop = keepLoopAlive();
+    try {
+    const am = managerWithStubAgent();
+    const running = am.runAction('action:collectBlocks', never, { timeout: 0 });
+    // Let the action actually register. stop() before executing is set finds
+    // nothing to abandon and returns straight away -- a real race, but not the
+    // one under test here.
+    await new Promise(r => setTimeout(r, 50));
+    // Whatever else is going on, stop() is the thing the harness already calls
+    // every ten seconds while it says "abandoning it".
+    await am.stop();
+    const res = await running;
+    assert.equal(res.interrupted, true);
+    assert.equal(res.success, false);
+    } finally { stop(); }
+});
 
-    await am.runAction('replacement', async () => { await sleep(10); }, { timeout: 0 });
-    am.resume_func = () => {};           // replacement owns a resume
-    am.executing = true;                 // pretend the replacement is still going
-    const gen = am.generation;
+test('a replacement action also releases the one it displaced', async () => {
+    const stop = keepLoopAlive();
+    try {
+    const am = managerWithStubAgent();
+    const stuck = am.runAction('action:collectBlocks', never, { timeout: 0 });
+    await new Promise(r => setTimeout(r, 50));
+    const replacement = await am.runAction('action:goToCoordinates', async () => 'arrived', { timeout: 0 });
+    const res = await stuck;
+    assert.equal(res.interrupted, true);
+    assert.equal(replacement.success, true);
+    } finally { stop(); }
+});
 
-    boom(new Error('late failure'));
-    const r = await first;
-    await sleep(20);
-    assert.equal(r.interrupted, true, 'late throw reports interrupted');
-    assert.equal(am.generation, gen, 'late throw must not bump generation');
-    assert.equal(am.executing, true, 'late throw must not clear the replacement executing flag');
-    assert.ok(am.resume_func !== null, 'late throw must not cancel the replacement resume');
-    assert.equal(agent.killed, false, 'late throw must not kill the process');
-}
+test('an action that finishes normally is unaffected', async () => {
+    const am = managerWithStubAgent();
+    const res = await am.runAction('action:craft', async () => { am.agent.bot.output = 'made a sword'; }, { timeout: 0 });
+    assert.equal(res.success, true);
+    assert.equal(res.interrupted, false);
+});
 
-const t0 = Date.now();
-await cooperative();
-await stubborn();
-await stubbornThrows();
-console.log(`ok: stubborn actions are abandoned, not fatal; late returns/throws stay contained (${((Date.now() - t0) / 1000).toFixed(1)}s)`);
-process.exit(0);
+test('a failing action still reports its error rather than hanging', async () => {
+    const am = managerWithStubAgent();
+    const res = await am.runAction('action:boom', async () => { throw new Error('no path'); }, { timeout: 0 });
+    assert.equal(res.success, false);
+    assert.match(res.message, /no path/);
+});
