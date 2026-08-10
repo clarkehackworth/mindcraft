@@ -16,8 +16,8 @@
     "rules": [
       {
         "name": "forage_carrots",
-        "description": "Carrots in reach are free food. Take them.",
-        "interrupts": "idle",
+        "description": "Carrots in reach are free food. Take them. Interrupts on purpose: the crop is already within reach, so this is picking up what the bot is standing on.",
+        "interrupts": "all",
         "when": {
           "all": [
             {
@@ -45,8 +45,8 @@
       },
       {
         "name": "forage_potatoes",
-        "description": "Potatoes in reach are free food. Take them.",
-        "interrupts": "idle",
+        "description": "Potatoes in reach are free food. Take them. Interrupts on purpose: the crop is already within reach.",
+        "interrupts": "all",
         "when": {
           "all": [
             {
@@ -74,8 +74,8 @@
       },
       {
         "name": "forage_berries",
-        "description": "Berry bushes restock themselves, so pick them every time you pass one.",
-        "interrupts": "idle",
+        "description": "Berry bushes restock themselves, so pick them every time you pass one. Interrupts on purpose: the bush is already within reach.",
+        "interrupts": "all",
         "when": {
           "all": [
             {
@@ -103,8 +103,8 @@
       },
       {
         "name": "harvest_wheat_for_bread",
-        "description": "Wheat is not edible on its own -- it is bread once there are three of them.",
-        "interrupts": "idle",
+        "description": "Wheat is not edible on its own -- it is bread once there are three of them. Interrupts on purpose: the wheat is already within reach.",
+        "interrupts": "all",
         "when": {
           "all": [
             {
@@ -132,8 +132,8 @@
       },
       {
         "name": "bake_bread",
-        "description": "Wheat is worth more as bread. Named action, not a prompt: nothing here needs deciding.",
-        "interrupts": "idle",
+        "description": "Wheat is worth more as bread. Named action, not a prompt: nothing here needs deciding. Interrupts on purpose: in place, and it stops itself as soon as the wheat is gone.",
+        "interrupts": "all",
         "when": {
           "all": [
             {
@@ -157,8 +157,8 @@
       },
       {
         "name": "cook_raw_meat",
-        "description": "Raw meat feeds half as well and can poison you. A smelt step per meat: each one is a no-op if you have none of it, which is cheaper than one LLM turn asking which you have.",
-        "interrupts": "idle",
+        "description": "Raw meat feeds half as well and can poison you. A smelt step per meat: each one is a no-op if you have none of it, which is cheaper than one LLM turn asking which you have. Interrupts on purpose: in place at a furnace, and it stops itself as soon as the raw meat is gone.",
+        "interrupts": "all",
         "when": {
           "all": [
             {
@@ -231,8 +231,8 @@
       },
       {
         "name": "build_a_furnace_for_cooking",
-        "description": "No furnace in reach and cobblestone in the bag: make one and put it down where you stand. Two named actions -- the LLM turn this replaced only ever said the same two things.",
-        "interrupts": "idle",
+        "description": "No furnace in reach and cobblestone in the bag: make one and put it down where you stand. Two named actions -- the LLM turn this replaced only ever said the same two things. Interrupts on purpose: one shot, in place, and no meat gets cooked until it exists.",
+        "interrupts": "all",
         "when": {
           "all": [
             {
@@ -266,8 +266,8 @@
       },
       {
         "name": "remember_the_berry_patch",
-        "description": "Standing at a bush, write the spot down. Finding a patch is what costs -- a 128-block search, or the LLM turn that decided where to look -- and until now that cost was paid again every time stock ran low, because nothing survived the walk home. One free tick here turns the last expensive discovery into a permanent route for walk_the_berry_route. Bushes regrow, so the address stays good.",
-        "interrupts": "idle",
+        "description": "Standing at a bush, write the spot down. Finding a patch is what costs -- a 128-block search, or the LLM turn that decided where to look -- and until now that cost was paid again every time stock ran low, because nothing survived the walk home. One free tick here turns the last expensive discovery into a permanent route for walk_the_berry_route. Bushes regrow, so the address stays good. Interrupts on purpose: it costs one tick and only ever fires once, and an idle gate meant the bot walked past patches without recording them.",
+        "interrupts": "all",
         "when": {
           "all": [
             {
@@ -293,8 +293,8 @@
       },
       {
         "name": "remember_the_pantry",
-        "description": "Same trick for the chest: note where the base storage is the first time the bot stands near it. Without this, banking only ever happened if a harvest ended within 24 blocks of a chest by luck -- the live bot's chest sat 60 blocks from where it forages and stayed empty for days.",
-        "interrupts": "idle",
+        "description": "Same trick for the chest: note where the base storage is the first time the bot stands near it. Without this, banking only ever happened if a harvest ended within 24 blocks of a chest by luck -- the live bot's chest sat 60 blocks from where it forages and stayed empty for days. Interrupts on purpose: it costs one tick and only ever fires once.",
+        "interrupts": "all",
         "when": {
           "all": [
             {

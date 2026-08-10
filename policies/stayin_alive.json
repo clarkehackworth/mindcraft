@@ -42,8 +42,8 @@
       },
       {
         "name": "keep_out_of_water",
-        "description": "Stay out of the water in the first place. surface_when_drowning is the rescue; this is the part the bot kept writing for itself, because its own memory has said 'avoid water' since the first session and nothing in the profile ever acted on it. Wading also means freezing in a snowy biome and pathing that gives up halfway across.",
-        "interrupts": "idle",
+        "description": "Stay out of the water in the first place. surface_when_drowning is the rescue; this is the part the bot kept writing for itself, because its own memory has said 'avoid water' since the first session and nothing in the profile ever acted on it. Wading also means freezing in a snowy biome and pathing that gives up halfway across. Interrupts on purpose: a bot that only avoids water while idle avoids nothing, because the wading happens mid-path. It drowned on 2026-08-09 doing exactly that.",
+        "interrupts": "all",
         "when": {
           "all": [
             {
@@ -521,8 +521,8 @@
       },
       {
         "name": "craft_a_weapon",
-        "description": "Unarmed with wood in the bag. craftRecipe already crafts the planks and sticks on the way, so this needs no reasoning -- and the LLM turn it replaced was the difference between having a sword at dusk and not.",
-        "interrupts": "idle",
+        "description": "Unarmed with wood in the bag. craftRecipe already crafts the planks and sticks on the way, so this needs no reasoning -- and the LLM turn it replaced was the difference between having a sword at dusk and not. Interrupts on purpose: being unarmed is what most of this bot's deaths have in common, and an idle-gated craft never got a turn to fix it.",
+        "interrupts": "all",
         "when": {
           "all": [
             {
@@ -561,8 +561,8 @@
       },
       {
         "name": "craft_a_pickaxe",
-        "description": "Wood in the bag and no pickaxe. On this modded server bare hands cannot clear stone inside dig_in's time budget, so every foxhole attempt over stone failed and fell through to the paid prompt -- a wooden pickaxe is the difference between shelter being free and shelter costing an LLM turn. It also makes cobblestone drop, which is cap material and a furnace. craftRecipe crafts the planks and sticks on the way.",
-        "interrupts": "idle",
+        "description": "Wood in the bag and no pickaxe. On this modded server bare hands cannot clear stone inside dig_in's time budget, so every foxhole attempt over stone failed and fell through to the paid prompt -- a wooden pickaxe is the difference between shelter being free and shelter costing an LLM turn. It also makes cobblestone drop, which is cap material and a furnace. craftRecipe crafts the planks and sticks on the way. Interrupts on purpose: one shot, in place, and everything downstream is blocked without it.",
+        "interrupts": "all",
         "when": {
           "all": [
             {
@@ -615,8 +615,8 @@
       },
       {
         "name": "craft_shovel_for_snow",
-        "description": "Snow underfoot and nothing to dig it with. A named craft; there was never a decision here. It still needs the wood the craft consumes: without that guard this fired twenty times in six hours on an agent that owned no planks, and every one of them ended in \"You do not have the resources to craft a wooden_shovel\". craft_a_weapon already carries the same guard.",
-        "interrupts": "idle",
+        "description": "Snow underfoot and nothing to dig it with. A named craft; there was never a decision here. It still needs the wood the craft consumes: without that guard this fired twenty times in six hours on an agent that owned no planks, and every one of them ended in \"You do not have the resources to craft a wooden_shovel\". craft_a_weapon already carries the same guard. Interrupts on purpose: one shot and in place.",
+        "interrupts": "all",
         "when": {
           "all": [
             {
@@ -823,8 +823,8 @@
       },
       {
         "name": "take_food_from_storage",
-        "description": "Hungry with a chest in reach: restock from it. One withdraw per staple -- a withdraw for food you do not have is a cheap no-op, where asking the LLM which food is in the chest costs a full turn and it cannot see inside either. It deliberately does NOT eat: filling the bag makes has_food true, and eat_before_hungry/eat_when_starving take it from there on the next tick. Adding a consume here would make this an eating rule that fires with no food and re-triggers forever.",
-        "interrupts": "idle",
+        "description": "Hungry with a chest in reach: restock from it. One withdraw per staple -- a withdraw for food you do not have is a cheap no-op, where asking the LLM which food is in the chest costs a full turn and it cannot see inside either. It deliberately does NOT eat: filling the bag makes has_food true, and eat_before_hungry/eat_when_starving take it from there on the next tick. Adding a consume here would make this an eating rule that fires with no food and re-triggers forever. Interrupts on purpose: the bot is already standing at the chest, so this is seconds of work, and going hungry next to full storage is the failure it exists to prevent.",
+        "interrupts": "all",
         "when": {
           "all": [
             {
@@ -952,8 +952,8 @@
       },
       {
         "name": "build_storage_chests",
-        "description": "Wood in the bag and nowhere to put anything. Craft and place; remembering where it is stays the reasoning loop's job, which it does from the behavior log without being asked.",
-        "interrupts": "idle",
+        "description": "Wood in the bag and nowhere to put anything. Craft and place; remembering where it is stays the reasoning loop's job, which it does from the behavior log without being asked. Interrupts on purpose: one shot, in place, and nothing can be banked until it exists.",
+        "interrupts": "all",
         "when": {
           "all": [
             {
@@ -1027,8 +1027,8 @@
       },
       {
         "name": "stow_bulk_at_base",
-        "description": "Dump the heavy junk in the chest so there is room for what matters.",
-        "interrupts": "idle",
+        "description": "Dump the heavy junk in the chest so there is room for what matters. Interrupts on purpose: it only fires next to a chest with a full bag, so the walk is already paid for.",
+        "interrupts": "all",
         "when": {
           "all": [
             {
@@ -1065,8 +1065,8 @@
       },
       {
         "name": "stow_surplus_food",
-        "description": "Bank the extra food at the base, keeping a working stack on hand.",
-        "interrupts": "idle",
+        "description": "Bank the extra food at the base, keeping a working stack on hand. Interrupts on purpose: it only fires next to a chest with a surplus, so the walk is already paid for.",
+        "interrupts": "all",
         "when": {
           "all": [
             {

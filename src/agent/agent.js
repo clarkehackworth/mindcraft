@@ -768,6 +768,17 @@ export class Agent {
             if (jsonMsg.translate && jsonMsg.translate.startsWith('death') && died) {
                 console.log('Agent died: ', message);
                 let death_pos = this.bot.entity.position;
+                // Structured so deaths can be counted instead of read. Every
+                // fold this loop has made came from noticing a death pattern by
+                // eye in the log, which only works while there are few of them.
+                // The four fields are the ones that have actually decided a
+                // rule: what killed it, where, whether it was night, and
+                // whether it was carrying a weapon at the time.
+                const armed = this.bot.inventory.items().some(i => /sword|axe/.test(i.name));
+                const evt = `EVT death:${jsonMsg.translate}:${Math.floor(death_pos.x)},${Math.floor(death_pos.y)},${Math.floor(death_pos.z)}`
+                    + `:${this.bot.time.timeOfDay >= 13000 ? 'night' : 'day'}:${armed ? 'armed' : 'unarmed'}`;
+                console.log(evt);
+                try { sendOutputToServer(this.name, evt); } catch (_) {}
                 this.memory_bank.rememberPlace('last_death_position', death_pos.x, death_pos.y, death_pos.z);
                 let death_pos_text = null;
                 if (death_pos) {

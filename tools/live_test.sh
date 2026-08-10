@@ -174,6 +174,20 @@ clearlayer) shift; drive clearlayer "${1:?layer}" ;;
 # Prompt rules show up by name; everything else firing is free.
 rules)   botlog "EVT rule:fire" "${2:-30m}" | grep -oE 'rule:fire:[a-z_:0-9]+' | sort | uniq -c | sort -rn ;;
 
+# Deaths, by cause and by circumstance. `deaths` tallies what is killing it;
+# `deaths <since> raw` lists them with coordinates, which is what shows a single
+# bad place killing it repeatedly. The last two fields are the ones that decide
+# rules: night or day, armed or unarmed.
+deaths)
+    if [ "${3:-}" = raw ]; then
+        botlog "EVT death:" "${2:-6h}" | grep -oE 'death:[^ ]+'
+    else
+        botlog "EVT death:" "${2:-6h}" | grep -oE 'death:[a-zA-Z.]+' | sort | uniq -c | sort -rn
+        echo "-- circumstances --"
+        botlog "EVT death:" "${2:-6h}" | grep -oE ':(night|day):(armed|unarmed)$' | sort | uniq -c | sort -rn
+    fi
+    ;;
+
 # The food story: chronological gains/losses/eats, then a tally. food:inv
 # lines are inventory deltas (+found/withdrawn, -eaten/deposited/dropped);
 # food:level lines are the hunger bar, ":ate" marking increases.
