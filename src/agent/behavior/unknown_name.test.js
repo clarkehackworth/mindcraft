@@ -17,8 +17,11 @@ const registry = {
     blocksByName: { oak_log: {}, oak_planks: {}, chest: {}, water: {} },
 };
 
+// The action is incidental here -- this file is about names -- but it cannot be
+// say-only any more: a rule that only talks is rejected on its own merits, and
+// that error would mask the name error these tests are checking for.
 const rule = (extra) => ({
-    rules: [{ name: 'r', description: 'd', when: { cond: 'always' }, do: [{ act: 'say', message: 'x' }], ...extra }],
+    rules: [{ name: 'r', description: 'd', when: { cond: 'always' }, do: [{ act: 'go_to_surface' }], ...extra }],
 });
 
 test('a name the registry does not know is rejected, with the reason', () => {

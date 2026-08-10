@@ -13,7 +13,8 @@
     "Keep out of the water rather than only climbing out of it. Wading is how this bot freezes, loses its path halfway across, and drowns; the shore is always the better route even when it is longer.",
     "Be armed before you need to be. Crafting a weapon and drawing it are both free, and going into the dark without one is what most of this bot's deaths have had in common -- eleven of seventeen in one soak.",
     "Never go back to where you died until it is daylight and you are holding a weapon. Whatever killed you is still there, your gear is next to it, and the bot has died five times at one spot in a single game-day doing exactly this.",
-    "A bed is only worth having where it is safe to sleep. Do not place one within reach of something hunting, and do not cross a killing field to reach one -- digging in for the night is better than a bed you die in."
+    "A bed is only worth having where it is safe to sleep. Do not place one within reach of something hunting, and do not cross a killing field to reach one -- digging in for the night is better than a bed you die in.",
+    "When the pathfinder keeps failing from the same block, stop asking it. The route is not there; go somewhere else and try from a different place. Retrying in position is how whole game-days disappear into a single hole."
   ],
   "goal": "Stay alive indefinitely and make yourself harder to kill: keep a home base with a bed and stocked chests, and keep food, shelter and a weapon between you and every way this world can end you.",
   "policy": {
@@ -69,6 +70,23 @@
           }
         ],
         "cooldown": 60
+      },
+      {
+        "name": "give_up_on_a_stuck_path",
+        "description": "Forty failed pathfinds in a row without moving a block means the route is not happening from here, and the forty-first will not be the one. Walking somewhere else is the only thing that changes the answer. Measured: 6281 pathfinds burned on one block in a single game-day, and another grind to 1106 visited nodes at one block immediately before the agent dropped off the server.",
+        "interrupts": "all",
+        "pinned": true,
+        "when": {
+          "cond": "path_stuck",
+          "count": 40
+        },
+        "do": [
+          {
+            "act": "move_away",
+            "distance": 24
+          }
+        ],
+        "cooldown": 20
       },
       {
         "name": "flee_when_hurt",

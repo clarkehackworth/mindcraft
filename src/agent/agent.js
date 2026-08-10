@@ -747,9 +747,21 @@ export class Agent {
                 const p = this.bot.entity?.position;
                 const at = p ? `${Math.floor(p.x)},${Math.floor(p.y)},${Math.floor(p.z)}` : '?';
                 console.log(`EVT move:path:${r.status}:visited=${r.visitedNodes?.length ?? r.visitedNodes ?? '?'}:at=${at}`);
+                // Failing in the same block over and over is a different problem
+                // from failing a lot: one is terrain the bot cannot cross, the
+                // other is bad luck. A soak burned 6281 pathfinds on a single
+                // block, and another ground out 1106 visited nodes there before
+                // the agent dropped off the server entirely. Count the repeats
+                // so a rule can decide the route is not happening; the count is
+                // the whole state, and moving anywhere at all resets it.
+                if (at === this.path_stuck_at) this.path_stuck_count++;
+                else { this.path_stuck_at = at; this.path_stuck_count = 1; }
             }
         });
-        this.bot.on('goal_reached', () => console.log('EVT move:goal_reached'));
+        this.bot.on('goal_reached', () => {
+            console.log('EVT move:goal_reached');
+            this.path_stuck_count = 0;
+        });
         this.bot.on('path_reset', (reason) => console.log(`EVT move:path_reset:${reason}`));
         // Logging callbacks
         this.bot.on('error' , (err) => {

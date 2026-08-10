@@ -229,6 +229,11 @@ export const CONDITIONS = {
         fn: (agent, a) => agent.bot.entity.position.distanceTo(
             { x: a.x, y: a.y, z: a.z }) <= (a.range ?? 3)
     },
+    path_stuck: {
+        args: { count: 'number (default 40), consecutive failed pathfinds from the same block' },
+        desc: 'The pathfinder has failed this many times in a row without the bot moving a block. Not "pathing is hard" -- that is normal and constant -- but "this exact route is not happening from here", which no amount of retrying fixes. Answer it by going somewhere else; standing still and asking again is what burned 6281 pathfinds on one block.',
+        fn: (agent, a) => (agent.path_stuck_count ?? 0) >= (a.count ?? 40)
+    },
     place_known: {
         args: { name: 'string place name, as given to remember_here' },
         desc: 'A place with this name has been remembered (by remember_here or !rememberHere). Pair it with remember_here under a "not" to record a spot once, and use it positively to gate goto_place so the rule stays quiet until there is somewhere to go.',
@@ -357,7 +362,7 @@ export const ACTIONS = {
         // snowfield into another, just as you can flee into a second zombie --
         // but it is real progress rather than waiting, and waiting is the rule
         // shape this vocabulary exists to keep the model away from.
-        cost: 'blocking', clears: ['hostile_nearby', 'entity_nearby', 'animal_nearby', 'player_nearby', 'at_position', 'block_nearby', 'at_death_position', 'is_freezing'],
+        cost: 'blocking', clears: ['hostile_nearby', 'entity_nearby', 'animal_nearby', 'player_nearby', 'at_position', 'block_nearby', 'at_death_position', 'is_freezing', 'path_stuck'],
         args: { distance: 'number (default 8)' },
         desc: 'Move away from the current position in any direction. Also the reflex for standing in something that is hurting you, like powder snow.',
         fn: async (agent, a) => await skills.moveAway(agent.bot, a.distance ?? 8)
@@ -746,8 +751,22 @@ export function validatePolicy(policy) {
     for (const rule of policy.rules) {
         const loop = livelockRisk(rule);
         if (loop) return loop;
+
         const unknown = unknownName(rule);
         if (unknown) return unknown;
+
+        // Talking is not doing. A rule whose every action is "say" cannot change
+        // the condition that fired it, so it fires again next cooldown and
+        // narrates the same problem forever. The agent wrote itself exactly that
+        // -- mine_only_with_proper_tool said "Waiting for a proper pickaxe
+        // before mining stone" 103 times in four game-days, while craft_a_pickaxe
+        // sat there ready to fix it. livelockRisk misses it because "say" is
+        // cheap and cheap actions are exempt; that exemption is about actions
+        // whose repetition is harmless, and this one's repetition IS the harm.
+        // Checked last, so a misspelled name or a livelock is reported first.
+        if (rule.do.length && rule.do.every(step => step.act === 'say'))
+            return `Rule "${rule.name}" only says something. Chat changes nothing, so its trigger stays true ` +
+                'and it fires forever. Give it an action that resolves the situation it is describing, or drop it.';
     }
     const dupe = findDuplicateRule(policy.rules);
     if (dupe) return dupe;
