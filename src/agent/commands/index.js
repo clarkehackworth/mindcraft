@@ -1,6 +1,10 @@
 import { getBlockId, getItemId, suggestNames, isKnownBlockName } from "../../utils/mcdata.js";
 import { actionsList } from './actions.js';
 import { queryList } from './queries.js';
+import convoManager from '../conversation.js';
+
+// Only usable when there is another agent to use them on.
+const BOT_TO_BOT_COMMANDS = ['!startConversation', '!endConversation'];
 
 let suppressNoDomainWarning = true;
 
@@ -285,8 +289,18 @@ export function getCommandDocs(agent) {
     let docs = `\n*COMMAND DOCS\n You can use the following commands to perform actions and get information about the world. 
     Use the commands with the syntax: !commandName or !commandName("arg1", 1.2, ...) if the command takes arguments.\n
     Do not use codeblocks. Use double quotes for strings. Only use one command in each response, trailing commands and comments will be ignored.\n`;
+    // Andy runs alone on this server and spent hours addressing messages to
+    // "Andy", because the docs advertise a command for talking to other bots and
+    // the only bot he knows of is himself. The relay handed each one straight
+    // back and he answered it, at a paid turn per round trip. Guards now stop
+    // the loop, but the message is still generated -- and a command the agent
+    // cannot use has no business being in a prompt that is re-sent every turn.
+    const alone = convoManager.getInGameAgents().filter(n => n !== agent.name).length === 0;
     for (let command of commandList) {
         if (agent.blocked_actions.includes(command.name)) {
+            continue;
+        }
+        if (alone && BOT_TO_BOT_COMMANDS.includes(command.name)) {
             continue;
         }
         docs += command.name + ': ' + command.description + '\n';
