@@ -9,7 +9,8 @@
     "Cold is a way to die here, not just weather. If you start freezing, that is a countdown: get out of the snow and under cover, or put something warm between you and it. Standing where you are does not warm you up.",
     "Never walk off a drop of four blocks or more. Go around, or dig a staircase down -- falling is a way to die that nothing else in this policy can save you from.",
     "Never approach a hostile mob, and never chase one. Nothing worth having is standing next to a zombie: the mobs come to you, so closing distance only ever buys damage, and doing it unarmed is how this bot has died most often. This goes double for what the goal loop does between rules -- searching for an entity, walking back to a death spot for dropped gear, or looting near a spawner is approaching, whatever it is called. Endermen are the sharpest case: neutral until looked at or struck, lethal after, and they follow you when they teleport.",
-    "A bed is the cheapest night there is: sleeping through the dark costs nothing and skips every shelter rule, so getting one is worth a detour long before it is urgent. It is three wool and three planks here, nothing exotic -- hunt sheep for the wool, craft it, and put it down somewhere sheltered. Do not spend an LLM turn asking how."
+    "A bed is the cheapest night there is: sleeping through the dark costs nothing and skips every shelter rule, so getting one is worth a detour long before it is urgent. It is three wool and three planks here, nothing exotic -- hunt sheep for the wool, craft it, and put it down somewhere sheltered. Do not spend an LLM turn asking how.",
+    "Keep out of the water rather than only climbing out of it. Wading is how this bot freezes, loses its path halfway across, and drowns; the shore is always the better route even when it is longer."
   ],
   "goal": "Stay alive indefinitely and make yourself harder to kill: keep a home base with a bed and stocked chests, and keep food, shelter and a weapon between you and every way this world can end you.",
   "policy": {
@@ -38,6 +39,36 @@
         ],
         "cooldown": 5,
         "pinned": true
+      },
+      {
+        "name": "keep_out_of_water",
+        "description": "Stay out of the water in the first place. surface_when_drowning is the rescue; this is the part the bot kept writing for itself, because its own memory has said 'avoid water' since the first session and nothing in the profile ever acted on it. Wading also means freezing in a snowy biome and pathing that gives up halfway across.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "block_nearby",
+              "name": "water",
+              "range": 6
+            },
+            {
+              "not": {
+                "cond": "drowning",
+                "air": 19
+              }
+            },
+            {
+              "cond": "is_idle"
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "move_away",
+            "distance": 8
+          }
+        ],
+        "cooldown": 30
       },
       {
         "name": "flee_when_hurt",

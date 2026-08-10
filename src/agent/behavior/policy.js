@@ -1527,6 +1527,38 @@ export function summarizeRules(policy) {
         .join('\n');
 }
 
+// Every condition name a trigger mentions, ignoring how they are nested.
+function conditionNames(when, into = new Set()) {
+    if (!when) return into;
+    if (when.not) return conditionNames(when.not, into);
+    for (const branch of when.all ?? when.any ?? []) conditionNames(branch, into);
+    if (when.cond) into.add(when.cond);
+    return into;
+}
+
+// "Do not restate the rules already installed" is prose, and a small local model
+// reads it as a suggestion. Told four times over that it should shelter at night
+// -- four accumulated source lines saying the same thing -- it wrote four rules
+// that all dig_in and stay, on top of the dig_in_for_the_night already running.
+// So drop them here instead of asking again: same actions in the same order, and
+// at least one trigger condition in common, is a rule that already exists. It is
+// deliberately coarse and deliberately loud -- a dropped rule is a lesson the
+// profile may still be missing, and the log is the only place that shows up.
+function dropDuplicates(policy, existingRules, log = console.log) {
+    const acts = rule => (rule.do ?? []).map(s => s.act).join(',');
+    const kept = [];
+    for (const rule of policy.rules ?? []) {
+        const names = conditionNames(rule.when);
+        const twin = existingRules.find(e => acts(e) === acts(rule)
+            && [...conditionNames(e.when)].some(c => names.has(c)));
+        if (twin) log(`policy: dropped "${rule.name}" -- "${twin.name}" already does ${acts(rule)}`);
+        else kept.push(rule);
+    }
+    policy.rules = kept;
+    return policy;
+}
+export const dropDuplicatesForTest = dropDuplicates;
+
 export async function compilePolicy(agent, instructions, activeGoal = null, existing = null) {
     let prompt = COMPILE_PROMPT
         .replace('$REGISTRY', registryDocs())
@@ -1566,7 +1598,7 @@ export async function compilePolicy(agent, instructions, activeGoal = null, exis
             const cleaned = res.replace(/```json|```/g, '').trim();
             const policy = repairPolicy(JSON.parse(cleaned.substring(cleaned.indexOf('{'), cleaned.lastIndexOf('}') + 1)));
             const err = validatePolicy(policy);
-            if (!err) return policy;
+            if (!err) return existing ? dropDuplicates(policy, existing.rules ?? []) : policy;
             lastErr = err;
         } catch (e) {
             // The length matters more than the parser's complaint: a reply that
