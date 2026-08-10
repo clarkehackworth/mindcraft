@@ -18,6 +18,17 @@ alive, gathers food, and pays as few LLM turns as possible doing either.
   (with proper gates — the bot's own versions thrash), then clear the layer.
   Clearing without folding just makes it rewrite the rule, at LLM cost.
   Zero self-writes over a rough night = the profiles are complete for now.
+- **Idle-priority rules are close to dead code on a bot with a goal.** Every
+  gate on `craft_a_bed` was satisfied -- 3 wool and a log confirmed by rcon, no
+  bed anywhere, hostiles cleared, healed, daylight -- and it sat unfired for
+  five minutes. In that window only two rules fired at all, both `interrupts:
+  all`. The goal loop never goes quiet long enough to hand an idle rule a turn,
+  so "idle" in practice means "maybe never", not "when convenient". Promoting
+  the rule to `all` made it fire within one regen cycle. This is why the pantry
+  walk kept getting preempted too, and it puts a question mark over the whole
+  gathering half of food_gathering, which is idle-gated throughout. Reserve
+  idle for rules that are genuinely optional or that travel; anything one-shot
+  and cheap should interrupt, since it can only do so once.
 - **Gate gathering on stock, not hunger.** Hunger-gated rules produce a bot
   that eats but never banks. `berry_run_while_stocked_low` and
   `hunt_for_the_larder` are the pattern: fire when inventory is low and things
@@ -172,9 +183,15 @@ active layer is ~37 rules from stayin_alive + food_gathering.
    `shelter_when_night_and_no_bed` stays deliberately, as the fallback for
    nights when digging in fails.
 
-   Not yet observed firing: it needs daylight and sheep, and the bot was
-   underground at night when this landed. Watch for `rule:fire:active:
-   hunt_sheep_for_wool` and a bed appearing before calling it proven.
+   Half proven, 2026-08-09. `place_the_bed` fired and there is a real bed at
+   (-52,88,-66); `sleep_at_night`, which the entry above says had barely ever
+   fired, has now fired three times. `craft_a_bed` has still not been seen --
+   that bed was crafted by the goal loop, on a paid turn, and only the placing
+   was free. `hunt_sheep_for_wool` remains unobserved too.
+
+   Getting there took promoting `craft_a_bed` and `place_the_bed` from idle to
+   `interrupts: all`, for the reason below, which is the more important half of
+   what this attempt found.
 
 3. **Path failure clustering.** `path 2h` — do `partial:visited=4` /
    `noPath` verdicts cluster at coordinates? If yes, that terrain is eating

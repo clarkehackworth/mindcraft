@@ -719,8 +719,8 @@
       },
       {
         "name": "craft_a_bed",
-        "description": "Wool and wood in the bag: make the bed. This replaces the get_a_bed prompt, which paid for an LLM turn to look up a recipe that turned out to be the ordinary one -- three wool plus three planks, as !getCraftingPlan reports on this server. craft gathers the planks from logs itself.",
-        "interrupts": "idle",
+        "description": "Wool and wood in the bag: make the bed. This replaces the get_a_bed prompt, which paid for an LLM turn to look up a recipe that turned out to be the ordinary one -- three wool plus three planks, as !getCraftingPlan reports on this server. craft gathers the planks from logs itself. Runs at interrupt priority, not idle: with the wool and the wood in the bag and every gate satisfied, this sat unfired for five minutes while the goal loop talked -- only two rules fired at all in eight minutes, both of them interrupts:all. It is one shot, since owning or standing near a bed silences it, so it can interrupt exactly once and never again.",
+        "interrupts": "all",
         "when": {
           "all": [
             {
@@ -769,8 +769,8 @@
       },
       {
         "name": "place_the_bed",
-        "description": "A bed in the bag is worth nothing: it has to be on the ground before sleep_at_night can use it, and sleeping is what makes a night free. Placed only while sheltered, so the bed ends up in the hole or the base rather than in the open where the sleeping bot is a target.",
-        "interrupts": "idle",
+        "description": "A bed in the bag is worth nothing: it has to be on the ground before sleep_at_night can use it, and sleeping is what makes a night free. Placed only while sheltered, so the bed ends up in the hole or the base rather than in the open where the sleeping bot is a target. Runs at interrupt priority, not idle: with the wool and the wood in the bag and every gate satisfied, this sat unfired for five minutes while the goal loop talked -- only two rules fired at all in eight minutes, both of them interrupts:all. It is one shot, since owning or standing near a bed silences it, so it can interrupt exactly once and never again.",
+        "interrupts": "all",
         "when": {
           "all": [
             {
