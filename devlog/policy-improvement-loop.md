@@ -70,6 +70,31 @@ alive, gathers food, and pays as few LLM turns as possible doing either.
 
 ## Gotchas that cost hours
 
+- **The merge is slow, big, and lands after it "fails".** Three things bite in
+  a row, and all three cost an afternoon on 2026-08-09:
+  1. *A cap, not a mistake.* The profile's `max_tokens` (8000) is sized for a
+     chat turn, but a two-profile merge re-emits the whole policy. It came back
+     cut off three times -- "Response was not valid JSON: Unexpected end of
+     JSON input" -- and `compilePolicy` dutifully retried each one three times,
+     because a truncation looks like a coin flip. It is not; retries cannot fix
+     a ceiling. `compilePolicy` now asks for 16000 and puts the reply's length
+     in the error, so the next cap is one line to read.
+  2. *Client timeouts below the relay timeout.* Wrapping regen in
+     `timeout 1750` killed a merge 50 seconds before the 1800s relay would have
+     answered. Keep any client timeout comfortably above the relay's.
+  3. *It installs late anyway.* With the bigger cap the merge now exceeds even
+     1800s, so `regen` reports "Agent did not respond" and then the policy
+     appears about seven minutes later. Never retry on that error -- watch
+     `compose.generated_at` until it changes.
+- **`drive.js` output over 64KB used to vanish.** It printed and then called
+  `process.exit`, which drops whatever stdout has not flushed to a pipe: the
+  policy dump arrived cut at exactly 65536 bytes and parsed as invalid JSON,
+  which reads like a truncating server. Fixed by setting `process.exitCode` and
+  closing the socket. If a harness command ever returns suspiciously round
+  output again, this is the shape of it.
+- **Ask the bot before believing a note about the world.** `get_a_bed` carried
+  a description asserting the bed recipe needed `feather_block`, and that alone
+  kept it a paid prompt. One free `!getCraftingPlan` disproved it.
 - **Regen on a busy bot starves >600s and "fails".** The harness regen already
   sends `!stop` and holds the policy lock. Even so, merges can exceed the 600s
   relay timeout ("Agent did not respond") **and still install late** — always
@@ -131,10 +156,26 @@ active layer is ~37 rules from stayin_alive + food_gathering.
      to interruptions before one completed. Idle rules that travel need a quiet
      window, so measure them in one.
 
-2. **The bed.** `sleep_at_night` has barely ever fired because the bot never
-   holds a bed (needs wool → sheep). Getting a bed makes every night free and
-   removes two prompt rules from play. Check whether `get_a_bed` (paid) fires
-   and goes anywhere; consider a named chain if sheep are ever nearby.
+2. ~~**The bed.**~~ Done, 2026-08-09. `get_a_bed` justified staying a prompt
+   in its own description -- "the recipe is server-dependent, this one wants
+   feather_block, not wool" -- and that was simply wrong. `!getCraftingPlan`
+   (free, no LLM) ends its plan with `3 magenta_wool + 3 oak_planks -> 1
+   magenta_bed`: the ordinary recipe. Ask the bot before believing a note
+   about the world; it can check for nothing.
+
+   Replaced by a free chain: `hunt_sheep_for_wool` (the wool is the only part
+   that needs walking anywhere; hunting mode does the killing), `craft_a_bed`,
+   `place_the_bed` -- each gated on *both* "no bed in the bag" and "no bed
+   within 16", so putting one down silences the whole chain instead of sending
+   it back out for more sheep. `sleep_at_night` was already waiting on a
+   nearby bed. Survival prompts are down from five to four;
+   `shelter_when_night_and_no_bed` stays deliberately, as the fallback for
+   nights when digging in fails.
+
+   Not yet observed firing: it needs daylight and sheep, and the bot was
+   underground at night when this landed. Watch for `rule:fire:active:
+   hunt_sheep_for_wool` and a bed appearing before calling it proven.
+
 3. **Path failure clustering.** `path 2h` — do `partial:visited=4` /
    `noPath` verdicts cluster at coordinates? If yes, that terrain is eating
    actions (failed berry runs may be pathing, not absence of bushes).
