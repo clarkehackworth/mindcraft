@@ -214,3 +214,43 @@ active layer is ~37 rules from stayin_alive + food_gathering.
 8. **The policy lock experiment.** With the profiles this complete, locking
    self-writes (`lock`) may be pure win — but it also silences the signal that
    found every gap so far. If you lock, watch death rates for regression.
+
+## Soak 8 (2026-08-10 22:51 UTC → 2026-08-11 ~13:50 UTC, 15h)
+
+The clean measurement finally happened, and it measured a disaster:
+
+- **80 deaths** (62 mob, 6 drown, 4 arrow, 2 freeze). 36 of them within two
+  blocks of the bed at (-52,88,-66): a `mutantmonsters:mutant_zombie`
+  spawn-camped the respawn point. 37 deaths in the 06:00 UTC hour alone,
+  ~10 s apart, tagged `day:unarmed` — so `dig_in_at_your_death_spot`
+  (night-gated, commit 242a16b) never applied, and `leave_your_death_spot`
+  ran its 24-block daytime walk 14 times and lost the footrace every time.
+- **2,039 paid prompts**, ~136/h — the death spiral IS the prompt bill: every
+  respawn restarts the goal loop.
+- **1,411 `noPath` lines.** Target was single digits. Most are presumed
+  spiral fallout; remeasure after the fix before believing them.
+- **Self-layer regrew 8 rules** overnight (was zero). All eight restate two
+  gaps: "never be unarmed at night" and "avoid last_death_position" — the
+  second is unsatisfiable advice when respawn *places* you there.
+- MC server itself restarted at 12:15 UTC (restart count 3, health flapping
+  "unhealthy") — some agent reconnect noise is server-side, not ours.
+
+**Root cause found in the engine, not the rules.** `Rule.last_fire`,
+`last_eval` and the no-progress `backoff` multiplier persist across death
+(policy.js `eligible()`). In a respawn-camp spiral every protective rule
+fires once, fails (it died mid-dig), doubles its backoff, and is then
+ineligible through the next several deaths — `dig_in_when_hunted` at
+cooldown 60×backoff sat silent while deaths came every 10 s. The rules were
+right; the engine muted them exactly when they were needed.
+
+**Fix (2026-08-11):** the `death` handler in agent.js now resets
+`last_fire`/`last_eval`/`backoff` on every rule and logs
+`EVT policy:cooldowns_reset:death`. Death already resets position and
+inventory; now it resets the rulebook too. The existing no-progress backoff
+re-arms immediately after respawn, so a rule that fails post-respawn still
+backs off — it just doesn't inherit last life's penalties.
+
+Next: soak 9 to remeasure noPath and prompt budget on a spiral-free day.
+`craft_a_weapon` also failed repeatedly with "missing ingredient" after
+crafting pine planks/sticks (Prominence recipe path) — 22 fires; worth its
+own look if soak 9 still shows it.

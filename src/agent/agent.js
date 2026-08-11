@@ -795,6 +795,17 @@ export class Agent {
             serverProxy.reportDeath();
             this.actions.cancelResume();
             this.actions.stop();
+            // Cooldowns and no-progress backoff persist across death, so in a
+            // respawn-camp spiral (soak 8: 36 deaths at the bed, ~10s apart)
+            // every protective rule that fired-and-failed sat silent through
+            // the next five deaths. Death resets the world for the bot;
+            // it resets the rules too.
+            for (const r of this.bot.modes?.rules ?? []) {
+                r.last_fire = 0;
+                r.last_eval = 0;
+                r.backoff = 1;
+            }
+            console.log('EVT policy:cooldowns_reset:death');
         });
         this.bot.on('kicked', (reason) => this._handleDisconnect(reason));
         this.bot.on('messagestr', async (message, _, jsonMsg) => {
