@@ -18,6 +18,7 @@ import settings from './settings.js';
 import { Task } from './tasks/tasks.js';
 import { speak } from './speak.js';
 import { log, validateNameFormat, handleDisconnection } from './connection_handler.js';
+import { notePathFailure } from './path_spin.js';
 
 // sysexits EX_TEMPFAIL: "try again shortly, and do not hold it against me".
 // agent_process restarts on this without counting it as a crash. Keep in sync
@@ -754,8 +755,16 @@ export class Agent {
                 // the agent dropped off the server entirely. Count the repeats
                 // so a rule can decide the route is not happening; the count is
                 // the whole state, and moving anywhere at all resets it.
-                if (at === this.path_stuck_at) this.path_stuck_count++;
-                else { this.path_stuck_at = at; this.path_stuck_count = 1; }
+                // The count is also a deadlock detector: see path_spin.js for
+                // why a bot that cannot move takes the whole agent down with it.
+                // give_up_on_a_stuck_path fires at 40 and moves the bot; this is
+                // the backstop for when the arbiter is the thing that is stuck.
+                if (notePathFailure(this, at)) {
+                    console.log(`EVT move:path:spin_abort:at=${at}`);
+                    // Rejects the pending goto with GoalChanged, which unwinds
+                    // whatever was awaiting it and gives the arbiter its loop back.
+                    try { this.bot.pathfinder.setGoal(null); } catch (_) {}
+                }
             }
         });
         this.bot.on('goal_reached', () => {
