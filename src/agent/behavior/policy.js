@@ -266,6 +266,20 @@ export const CONDITIONS = {
         desc: 'The bot is freezing: standing in powder snow, or out in snowfall in a cold biome. Freezing kills on this server and there is no freeze-meter reading to be had, so this fires on the cause rather than on damage already taken.',
         fn: (agent) => isFreezing(agent.bot)
     },
+    can_dig_down: {
+        args: {},
+        desc: 'The block underfoot is breakable with something the bot is carrying (or bare hands within the no-drop dig-time cap). Gate stationary dig_in rules on this: without it a bare-handed bot standing on deepslate re-fires "dig in" all night, failing every time, while the rule that could actually help never gets a turn.',
+        fn: (agent) => {
+            const bot = agent.bot;
+            const b = bot.blockAt(bot.entity.position.floored().offset(0, -1, 0));
+            if (!b || b.boundingBox !== 'block') return false;
+            if (b.canHarvest(null)) return true;
+            if (bot.inventory.items().some(i => b.canHarvest(i.type))) return true;
+            // same escape hatch breakBlockAt's allowNoDrop uses: clearable
+            // without a drop if the held item gets through it in under 10s.
+            return bot.digTime(b) <= 10000;
+        }
+    },
     is_sheltered: {
         args: {},
         desc: 'A solid block sits two or three above the bot\'s feet -- it is under a roof (a capped dig_in foxhole, a house, a cave). Gate night-shelter and flee rules on "not is_sheltered" so a bot already under cover does not dig deeper, prompt for shelter it already has, or climb out of a safe hole to flee something that cannot reach it.',
@@ -1210,7 +1224,14 @@ export class Rule {
                         skills.log(agent.bot, `Rule '${this.spec.name}' step ${step.act} failed: ${err.message}`);
                     }
                 }
-            }, has_exit ? 0 : undefined);
+            // A stay needs more than the 2-minute default, but "no watchdog at
+            // all" let flee_ranged_raiders spin for 85 minutes at the bottom of
+            // a shaft (avoidEnemies loops as long as any hostile is in range,
+            // and only a LoginGuard kick broke it). Night is ~11 real minutes,
+            // so 20 covers every legitimate stay-until-dawn with room to spare;
+            // the watchdog's interrupt_code is honored inside the skill loops,
+            // so this cancels cleanly and the rule re-fires after cooldown.
+            }, has_exit ? 20 : undefined);
             // ponytail: capped at ~17 min so a rule that starts working again is
             // not dead forever. Per-step backoff if one bad step ever masks a
             // good one in the same rule.

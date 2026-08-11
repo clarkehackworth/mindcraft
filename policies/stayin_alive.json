@@ -342,6 +342,9 @@
               "not": {
                 "cond": "is_sheltered"
               }
+            },
+            {
+              "cond": "can_dig_down"
             }
           ]
         },
@@ -395,6 +398,9 @@
             },
             {
               "cond": "is_night"
+            },
+            {
+              "cond": "can_dig_down"
             }
           ]
         },
@@ -509,6 +515,9 @@
               "not": {
                 "cond": "is_sheltered"
               }
+            },
+            {
+              "cond": "can_dig_down"
             }
           ]
         },
