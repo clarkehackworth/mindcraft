@@ -51,7 +51,22 @@ const modes_list = [
             // 17 times. You cannot drown with your head in air; requiring a wet
             // head costs nothing and still covers kelp, seagrass and waterlogged
             // stairs, which are the cases a name === 'water' test missed.
-            const head_wet = blockAbove.name !== 'air';
+            // ...and a wet head is not enough on its own either: "not air" is
+            // also every ceiling the bot digs itself, so a dug-in bot with an
+            // air bar still refilling read as drowning under solid stone. The
+            // physics engine already knows, and only fails to when a test has
+            // not bothered to say -- absent means the old answer.
+            const in_water = bot.entity.isInWater ?? true;
+            const head_wet = blockAbove.name !== 'air' && in_water;
+            // Before anything else, and outside the chain below: a bot holding
+            // jump on dry land is climbing, and the release has to run even on
+            // the ticks when some earlier branch would have won. This used to be
+            // one more `else if` after the branch that sets jump, so it could
+            // never fire while that branch kept winning -- which is exactly the
+            // situation it existed to end.
+            if (!in_water && bot.controlState?.jump && !bot.pathfinder.goal) {
+                bot.setControlState('jump', false); // out of the water, stop swimming
+            }
             if (bot.oxygenLevel === undefined || bot.oxygenLevel > 15)
                 this._said_drowning = false; // air recovered: next episode announces again
             if (head_wet && bot.oxygenLevel !== undefined && bot.oxygenLevel <= 12) {
@@ -69,6 +84,15 @@ const modes_list = [
                     await skills.surface(bot);
                 });
             }
+            // Only ever hold jump in actual liquid. head_wet is "the block above
+            // is not air", which is also true of every ceiling the bot digs
+            // itself, and this branch re-asserted jump every tick for as long as
+            // the bot stood under one with less than a full air bar. Held jump
+            // plus mineflayer's swim physics walked Andy 2,000 blocks straight
+            // up, over and over: soak 6 spent days 2-6 in the sky with nothing
+            // under it to path to, which is why its path partials read zero.
+            // The server takes the client's word for position, so nothing
+            // downstairs ever argued.
             else if (submerged && head_wet) {
                 // Head is wet but there is air to spare: nudge upward without
                 // interrupting whatever the bot is busy with.
@@ -78,9 +102,6 @@ const modes_list = [
                 else {
                     bot.setControlState('jump', false);
                 }
-            }
-            else if (bot.controlState?.jump && !bot.pathfinder.goal) {
-                bot.setControlState('jump', false); // out of the water, stop swimming
             }
             else if (this.fall_blocks.some(name => blockAbove.name.includes(name))) {
                 execute(this, agent, async () => {
