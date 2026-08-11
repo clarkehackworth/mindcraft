@@ -384,8 +384,36 @@
         "pinned": true
       },
       {
+        "name": "dig_in_at_your_death_spot",
+        "description": "Your respawn point is where you died, so at night the reflex to walk away is a walk through whatever killed you. Measured: 28 deaths in one game-day, every one of them at -53,88,-66, which was both the bed and an exposed cliff -- leave_your_death_spot fired, set out on its 24-block walk unarmed in the dark, and lost the bot again before it arrived, doubling its own backoff each time until it stopped mattering. Ground goes over your head where you stand, in the two seconds you reliably have, and you wait for morning. Daylight is leave_your_death_spot's job.",
+        "interrupts": "all",
+        "when": {
+          "all": [
+            {
+              "cond": "at_death_position",
+              "range": 10
+            },
+            {
+              "cond": "is_night"
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "dig_in"
+          },
+          {
+            "act": "stay",
+            "until": "not is_night 1500",
+            "seconds": -1
+          }
+        ],
+        "cooldown": 30,
+        "pinned": true
+      },
+      {
         "name": "leave_your_death_spot",
-        "description": "Whatever killed you is probably still standing there and your gear is on the ground next to it, so walking back in unarmed is how you die twice. This was previously inexpressible: the compiler wanted it, had no condition for \"where I died\", and wrote at_position 0,0,0 -- a placeholder matching only the world origin, so the rule never fired once. Gated on not holding a weapon, because armed and in daylight is exactly when going back to collect your things is the right call. Night counts as well as unarmed now: the bot said 'do not return to my last death position until it is daytime and I have a weapon' in five separate self-written rules, and the soak showed it dying at the same spot five times in one game-day.",
+        "description": "Whatever killed you is probably still standing there and your gear is on the ground next to it, so walking back in unarmed is how you die twice. This was previously inexpressible: the compiler wanted it, had no condition for \"where I died\", and wrote at_position 0,0,0 -- a placeholder matching only the world origin, so the rule never fired once. Gated on not holding a weapon, because armed and in daylight is exactly when going back to collect your things is the right call. Night was folded in here once and it made things worse -- the walk is what killed the bot, 28 times in one game-day -- so dig_in_at_your_death_spot owns the dark now and this rule owns the daylight.",
         "interrupts": "all",
         "when": {
           "all": [
@@ -394,17 +422,10 @@
               "range": 12
             },
             {
-              "any": [
-                {
-                  "not": {
-                    "cond": "holding",
-                    "item": "weapon"
-                  }
-                },
-                {
-                  "cond": "is_night"
-                }
-              ]
+              "not": {
+                "cond": "holding",
+                "item": "weapon"
+              }
             }
           ]
         },
