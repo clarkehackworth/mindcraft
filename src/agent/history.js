@@ -54,9 +54,20 @@ export class History {
 
     async summarizeMemories(turns) {
         console.log("Storing memories...");
-        this.memory = await this.agent.prompter.promptMemSaving(turns);
+        const summary = await this.agent.prompter.promptMemSaving(turns);
 
-        this.memory = truncateMemory(this.memory, 500);
+        // Every provider returns this string when the request fails, through
+        // the same path as a real completion, and it used to be written
+        // straight into memory: two game-days of an OpenAI outage left Andy
+        // remembering "My brain disconnected, try again." and nothing else --
+        // no base coordinates, no chest contents, no death lessons. Yesterday's
+        // memory beats an error message, so a failed summary changes nothing.
+        if (!summary?.trim() || summary.includes('My brain disconnected')) {
+            console.log('Memory kept: summarizer failed, previous memory stands.');
+            return;
+        }
+
+        this.memory = truncateMemory(summary, 500);
 
         console.log("Memory updated to: ", this.memory);
     }
