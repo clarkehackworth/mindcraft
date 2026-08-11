@@ -80,12 +80,21 @@ export class ActionManager {
         // one that replaces it. Ceiling: an abandoned action is still running
         // and can still touch the bot. Move insecure code to a worker thread
         // if one is ever seen doing damage after being abandoned.
-        const deadline = Date.now() + STOP_GRACE_MS;
+        // One line per stop, naming the action and what it cost, rather than one
+        // per poll: a soak counted 236 "waiting for code to finish" lines in a
+        // game-day and there was no way to tell nine slow stops from one very
+        // slow one, or to name a single culprit. Every stop that waits at all is
+        // dead time for the whole agent, so it is worth a number.
+        const label = this.currentActionLabel;
+        const started = Date.now();
+        const deadline = started + STOP_GRACE_MS;
+        let waited = false;
         while (this.executing && Date.now() < deadline) {
             this.agent.requestInterrupt();
-            console.log('waiting for code to finish executing...');
+            waited = true;
             await new Promise(resolve => setTimeout(resolve, 300));
         }
+        if (waited) console.log(`EVT action:stop_wait:${label}:ms=${Date.now() - started}`);
         if (this.executing) {
             console.warn(`action "${this.currentActionLabel}" ignored the interrupt for ${STOP_GRACE_MS / 1000}s, abandoning it`);
             this.executing = false;

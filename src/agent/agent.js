@@ -460,6 +460,12 @@ export class Agent {
         this.bot.stopDigging();
         this.bot.collectBlock.cancelTask();
         this.bot.pathfinder.stop();
+        // stop() is cooperative too: it only lands when the bot arrives at its
+        // next node or the path resets, so the one bot that most needs stopping
+        // -- the one that cannot move -- is the one it does not stop, and the
+        // goto stays pending until the grace period abandons the whole action.
+        // Clearing the goal rejects it now.
+        try { this.bot.pathfinder.setGoal(null); } catch (_) {}
         this.bot.pvp.stop();
     }
 
@@ -754,12 +760,12 @@ export class Agent {
                 // block, and another ground out 1106 visited nodes there before
                 // the agent dropped off the server entirely. Count the repeats
                 // so a rule can decide the route is not happening; the count is
-                // the whole state, and moving anywhere at all resets it.
+                // the whole state, and leaving the box it started in resets it.
                 // The count is also a deadlock detector: see path_spin.js for
                 // why a bot that cannot move takes the whole agent down with it.
                 // give_up_on_a_stuck_path fires at 40 and moves the bot; this is
                 // the backstop for when the arbiter is the thing that is stuck.
-                if (notePathFailure(this, at)) {
+                if (p && notePathFailure(this, Math.floor(p.x), Math.floor(p.y), Math.floor(p.z))) {
                     console.log(`EVT move:path:spin_abort:at=${at}`);
                     // Rejects the pending goto with GoalChanged, which unwinds
                     // whatever was awaiting it and gives the arbiter its loop back.
