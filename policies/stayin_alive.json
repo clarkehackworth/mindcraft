@@ -16,7 +16,7 @@
     "A bed is only worth having where it is safe to sleep. Do not place one within reach of something hunting, and do not cross a killing field to reach one -- digging in for the night is better than a bed you die in.",
     "When the pathfinder keeps failing from the same block, stop asking it. The route is not there; go somewhere else and try from a different place. Retrying in position is how whole game-days disappear into a single hole."
   ],
-  "goal": "Stay alive indefinitely and make yourself harder to kill: keep a home base with a bed and stocked chests, and keep food, shelter and a weapon between you and every way this world can end you.",
+  "goal": "Stay alive indefinitely and make yourself harder to kill: keep a home base with a bed and stocked chests, and keep food, shelter and a weapon between you and every way this world can end you. If the land within your search radius has no food to gather or hunt, your base is in the wrong place: relocate it to a biome that can feed you, and move your bed and stores there.",
   "policy": {
     "modes": {
       "self_preservation": true,

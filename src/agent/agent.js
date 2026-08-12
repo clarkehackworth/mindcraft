@@ -799,8 +799,11 @@ export class Agent {
             // respawn-camp spiral (soak 8: 36 deaths at the bed, ~10s apart)
             // every protective rule that fired-and-failed sat silent through
             // the next five deaths. Death resets the world for the bot;
-            // it resets the rules too.
-            for (const r of this.bot.modes?.rules ?? []) {
+            // it resets the rules too. Pinned (protective) rules only: economy
+            // rules rely on backoff to idle in biomes that cannot satisfy them,
+            // and resetting those on every death resurrected a berry-search
+            // treadmill (30 doomed 128-block walks in 6h) in a bushless biome.
+            for (const r of (this.bot.modes?.rules ?? []).filter(r => r.spec?.pinned)) {
                 r.last_fire = 0;
                 r.last_eval = 0;
                 r.backoff = 1;

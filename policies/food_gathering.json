@@ -419,7 +419,7 @@
       },
       {
         "name": "berry_run_while_stocked_low",
-        "description": "The gathering half of the profile, not the starving half: when berry stock is low, go walk the search radius for a bush regardless of how full the hunger bar is. Every earlier rule here waited for hunger or for food to be within 24 blocks, so a bot in a sparse biome survived fine but never built the surplus this attribute exists for. Backoff idles it in biomes with no bushes at all.",
+        "description": "The gathering half of the profile, not the starving half: when berry stock is low, go walk the search radius for a bush regardless of how full the hunger bar is. Every earlier rule here waited for hunger or for food to be within 24 blocks, so a bot in a sparse biome survived fine but never built the surplus this attribute exists for. Backoff idles it in biomes with no bushes at all. Cooldown 1800: this is discovery, and a region proven empty stays empty for a while -- retrying every 5 minutes burned 30 fires in one 6-hour window of a berry-free biome.",
         "interrupts": "idle",
         "when": {
           "all": [
@@ -447,7 +447,7 @@
             "num": 16
           }
         ],
-        "cooldown": 300
+        "cooldown": 1800
       },
       {
         "name": "hunt_for_the_larder",
