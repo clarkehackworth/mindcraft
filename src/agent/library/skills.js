@@ -91,6 +91,13 @@ export async function equipHighestAttack(bot) {
 // Works identically on vanilla servers. Returns the number of completed
 // crafts. ponytail: assumes 1 item per grid slot, true of every vanilla-style
 // recipe; teach it counts if a mod recipe ever needs stacks in the grid.
+// openWithRetry's retry path referenced this before it existed: sleep was a
+// local inside tableCraft, so the one branch that needed it -- the second
+// attempt at a window that did not open -- threw "sleep is not defined" instead
+// of retrying. Live: "Rule 'active:build_a_furnace_for_cooking' step craft
+// failed: sleep is not defined". Module scope, where both callers can see it.
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
 // mineflayer waits 20 seconds for the server's windowOpen packet and then
 // throws; 23 of those in one session, each a 20-second stall ending in a stack
 // trace whose real cause is mundane -- the block drifted out of reach after the
@@ -109,7 +116,6 @@ async function openWithRetry(bot, block, open) {
 }
 
 export async function tableCraft(bot, recipe, count, craftingTable) {
-    const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
     // Without a table this drives the player inventory's own 2x2 grid: same
     // click dance, slots 1-4 two wide instead of 1-9 three wide.
     const width = craftingTable ? 3 : 2;
@@ -438,6 +444,19 @@ export async function smeltItem(bot, itemName, num=1) {
      * await skills.smeltItem(bot, "raw_iron");
      * await skills.smeltItem(bot, "beef");
      **/
+
+    // "log" is a family, not an item. has_item resolves families and smeltItem
+    // did not, so the torch chain's smelt step asked the furnace for something
+    // called "log" and answered "You do not have enough log to smelt" seven
+    // times over while the bot stood there holding larch. Resolve to the wood
+    // actually in the bag before anything else reads the name.
+    const variants = mc.expandBlockName(itemName);
+    if (variants.length > 1) {
+        const counts = world.getInventoryCounts(bot);
+        itemName = variants.find(n => (counts[n] ?? 0) >= num)
+            ?? variants.find(n => (counts[n] ?? 0) > 0)
+            ?? itemName;
+    }
 
     if (!mc.isSmeltable(itemName)) {
         log(bot, `Cannot smelt ${itemName}. Hint: make sure you are smelting the 'raw' item.`);
