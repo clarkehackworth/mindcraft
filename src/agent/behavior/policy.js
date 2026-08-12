@@ -397,7 +397,7 @@ export const ACTIONS = {
         }
     },
     go_to_surface: {
-        cost: 'blocking', clears: ['drowning', 'at_position', 'block_nearby'],
+        cost: 'blocking', clears: ['drowning', 'at_position', 'block_nearby', 'y_below'],
         args: {},
         desc: 'Swim or climb up to the surface. Use for drowning or being stuck underground; never prompt_self for this.',
         // skills.goToSurface pathfinds to the highest block at x,z, which is the
