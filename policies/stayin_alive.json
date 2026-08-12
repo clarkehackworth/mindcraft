@@ -1222,6 +1222,93 @@
         "cooldown": 120
       },
       {
+        "name": "mine_stone_for_a_furnace",
+        "description": "The torch chain never fired once in soak 11 because it starts at a furnace and nothing ever built one. A furnace is eight cobblestone and cobblestone is one pickaxe swing away, so this is the missing first link, not a new ambition. Gated on already owning a pickaxe and on there being no furnace nearby, so it stops the moment the chain can proceed.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "any": [
+                {
+                  "cond": "has_item",
+                  "item": "wooden_pickaxe",
+                  "count": 1
+                },
+                {
+                  "cond": "has_item",
+                  "item": "stone_pickaxe",
+                  "count": 1
+                },
+                {
+                  "cond": "has_item",
+                  "item": "iron_pickaxe",
+                  "count": 1
+                }
+              ]
+            },
+            {
+              "not": {
+                "cond": "block_nearby",
+                "name": "furnace",
+                "range": 16
+              }
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "cobblestone",
+                "count": 8
+              }
+            },
+            {
+              "cond": "block_nearby",
+              "name": "stone",
+              "range": 16
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "collect",
+            "type": "stone",
+            "num": 8
+          }
+        ],
+        "cooldown": 300
+      },
+      {
+        "name": "build_a_furnace",
+        "description": "Second link of the torch chain: cobblestone in the bag and no furnace at camp. One shot, in place, and smelt_logs_for_torch_fuel is blocked until it happens, so it interrupts rather than waiting for an idle moment that a bad night never gives.",
+        "interrupts": "all",
+        "when": {
+          "all": [
+            {
+              "cond": "has_item",
+              "item": "cobblestone",
+              "count": 8
+            },
+            {
+              "not": {
+                "cond": "block_nearby",
+                "name": "furnace",
+                "range": 16
+              }
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "craft",
+            "item": "furnace"
+          },
+          {
+            "act": "place",
+            "block": "furnace"
+          }
+        ],
+        "cooldown": 300
+      },
+      {
         "name": "smelt_logs_for_torch_fuel",
         "description": "Free half of the torch chain: charcoal from logs beats hunting coal ore (no stone pick, no paid search -- gather_wood_for_base already keeps logs coming). Gated on a furnace being near and torches actually being low, so it does not turn every furnace visit into a smelting session.",
         "interrupts": "idle",
@@ -1302,14 +1389,28 @@
       },
       {
         "name": "light_the_camp",
-        "description": "Spawn-proof the respawn area: soak 8 lost 36 deaths to a mob camping the bed, and dark ground at camp is where bed-campers come from. Places ONE torch per fire, gated on no torch within 8, so coverage accumulates as the bot moves around camp instead of re-placing forever (the remember_here lesson).",
+        "description": "Spawn-proof the respawn area: soak 8 lost 36 deaths to a mob camping the bed, and dark ground at camp is where bed-campers come from. Places ONE torch per fire, gated on no torch within 8, so coverage accumulates as the bot moves around camp instead of re-placing forever (the remember_here lesson). \"Camp\" was originally a bed within 16, but eleven soaks in there has never been a bed -- a chest or a furnace marks the place the bot actually keeps returning to, and those are the ground worth lighting.",
         "interrupts": "idle",
         "when": {
           "all": [
             {
-              "cond": "block_nearby",
-              "name": "bed",
-              "range": 16
+              "any": [
+                {
+                  "cond": "block_nearby",
+                  "name": "bed",
+                  "range": 16
+                },
+                {
+                  "cond": "block_nearby",
+                  "name": "chest",
+                  "range": 16
+                },
+                {
+                  "cond": "block_nearby",
+                  "name": "furnace",
+                  "range": 16
+                }
+              ]
             },
             {
               "cond": "has_item",

@@ -586,6 +586,21 @@ export class Agent {
                 }
 
                 if (checkInterrupt()) break;
+                // A rule action already under way outranks a command the model
+                // settled on before the rule fired. An `interrupts: idle` rule
+                // deliberately does NOT discard the pending command (discarding
+                // on every fire starved the loop -- see stopLoop), so the stale
+                // command arrives mid-collect and cancels the rule's goal:
+                // ~30% of policy actions in soak 11 ended "interrupted", and a
+                // hand-issued !collectBlocks was killed twice in a row by the
+                // loop's own !collectBlocks. The call can only be made here,
+                // where we know the rule is still working. The turn is already
+                // paid for either way; this only decides who wins.
+                if (self_prompt && this.actions.executing && this.actions.currentActionLabel.startsWith('mode:')) {
+                    console.log(`self-prompt command ${command_name} dropped: "${this.actions.currentActionLabel}" is still running`);
+                    used_command = true; // a command WAS produced; don't count a no-command strike
+                    break;
+                }
                 this.self_prompter.handleUserPromptedCmd(self_prompt, isAction(command_name));
 
                 if (settings.show_command_syntax === "full") {
