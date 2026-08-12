@@ -254,3 +254,44 @@ Next: soak 9 to remeasure noPath and prompt budget on a spiral-free day.
 `craft_a_weapon` also failed repeatedly with "missing ingredient" after
 crafting pine planks/sticks (Prominence recipe path) — 22 fires; worth its
 own look if soak 9 still shows it.
+
+## Soak 10 (2026-08-12, ~01:30–07:10 UTC, taiga relocation) and the crafting fix
+
+Relocated Andy to a real taiga at (-235,118,245) after the frozen_pine_taiga
+proved a food desert (36 failed berry searches, NEARBY_ENTITIES: none). The
+walk there is impossible -- the rule set cannot cross open water (29 drown
+aborts; 10 drown deaths later when he tried walking home) -- so rcon moved
+him. Getting him settled cost real lessons: /locate's y is a placeholder
+(two suffocation deaths teleporting onto it -- use a slow-falling drop from
+y=180); a mindserver agent restart SAVES in-RAM memory over any memory.json
+edit made underneath it (my rewrite was clobbered; edit, then kill without
+save, or edit between stop and start); and his goal-loop walked home to its
+remembered chests twice until enough respawns-at-taiga (spawnpoint set via
+rcon) let new memories out-vote the old ones.
+
+Numbers (5.7h): 46 deaths (26 back at the old camp mid-window, 10 drowned in
+crossings, the rest taiga nights), 1281 paid prompts -- death-driven again --
+84 noPath, 58 self-fires. Interventions: killed a day spawn-camper (2 mobs),
+and a night skeleton siege at the spawnpoint (5 mobs + time set day) after 8
+respawn-deaths in minutes. The cooldown-reset-on-death fix verified: 46
+deaths, 46 resets, dig_in_when_hunted re-armed every time.
+
+The signal through all of it: 33 of 46 deaths were night:unarmed, and his own
+memory said why -- "no crafting_table; !craftRecipe fails if system wrongly
+claims missing resources". Root cause: bot.recipesFor and bot.craft only know
+vanilla ids. This taiga's wood is Regions Unexplored larch; every recipe from
+it resolved to "missing ingredient" (35 in the window) or a null .length
+crash. The old biome worked only because spruce is vanilla. No weapon, no
+bed, no torches -- everything funnels through crafting.
+
+**Fix (skills.js + mcdata.js):** parsedRecipes keeps the raw recipe;
+getCraftableRawRecipe() returns a mod-aware recipe the inventory can pay for;
+tableCraft drives the player's own 2x2 grid when no table is passed and
+substitutes same-family items (larch_planks for oak_planks -- the server's
+result slot stays the arbiter); craftRecipe falls back to mod recipes when
+recipesFor is empty, and catches bot.craft's "missing ingredient" to re-drive
+the same recipe through the grid, acquiring a table if the shape needs one.
+Verified live: 8 larch logs -> planks -> sticks -> table -> wooden_sword.
+
+Soak 11 question: with crafting working, does the bed/torch/weapon economy
+assemble itself and pull night deaths down?

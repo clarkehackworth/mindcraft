@@ -110,8 +110,12 @@ async function openWithRetry(bot, block, open) {
 
 export async function tableCraft(bot, recipe, count, craftingTable) {
     const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-    const gridSlot = (x, y) => 1 + x + 3 * y;
-    const gridEmpty = (window) => window.slots.slice(1, 10).every(s => !s);
+    // Without a table this drives the player inventory's own 2x2 grid: same
+    // click dance, slots 1-4 two wide instead of 1-9 three wide.
+    const width = craftingTable ? 3 : 2;
+    const gridEnd = craftingTable ? 10 : 5;
+    const gridSlot = (x, y) => 1 + x + width * y;
+    const gridEmpty = (window) => window.slots.slice(1, gridEnd).every(s => !s);
 
     // One craft's worth of [grid slot, item id] placements.
     const placements = [];
@@ -131,16 +135,27 @@ export async function tableCraft(bot, recipe, count, craftingTable) {
         }
     }
 
-    const window = await openWithRetry(bot, craftingTable, b => bot.openBlock(b));
+    const window = craftingTable
+        ? await openWithRetry(bot, craftingTable, b => bot.openBlock(b))
+        : bot.inventory;
     if (!window) return 0;
+    // Tag recipes (#planks) accept any family member, but the recipe object
+    // names one concrete id -- oak_planks in a larch forest. If the named item
+    // is absent, offer any same-suffix item and let the result slot judge.
+    const familyAlt = (id) => {
+        const want = bot.registry.items[id]?.name ?? '';
+        const m = want.match(/^[a-z0-9]+(_[a-z_]+)$/);
+        if (!m) return null;
+        return window.slots.find((s, i) => s && i >= gridEnd && s.name !== want && s.name.endsWith(m[1])) ?? null;
+    };
     let done = 0;
     let missing = null;
     try {
         await sleep(300); // authoritative window_items, plus a VW sync tick
         for (let i = 0; i < count && !bot.interrupt_code; i++) {
             for (const [dest, id] of placements) {
-                if (window.slots[dest]?.type === id) continue; // already there (left by an earlier attempt)
-                const source = window.findInventoryItem(id, null);
+                if (window.slots[dest]) continue; // already there (left by an earlier attempt)
+                let source = window.findInventoryItem(id, null) ?? familyAlt(id);
                 // Running out of an ingredient partway through a batch is a
                 // normal outcome, not an exception. Thrown, it escaped as
                 // "Error: Error: missing ingredient" 51 times in one session
@@ -171,13 +186,13 @@ export async function tableCraft(bot, recipe, count, craftingTable) {
             done++;
         }
         // Withdraw anything left in the grid so nothing is stranded in the table.
-        for (let s = 1; s <= 9; s++) {
+        for (let s = 1; s < gridEnd; s++) {
             if (!window.slots[s]) continue;
             try { await bot.clickWindow(s, 0, 1); } catch {}
             await sleep(120);
         }
     } finally {
-        bot.closeWindow(window);
+        if (craftingTable) bot.closeWindow(window);
     }
     if (missing && done === 0) log(bot, `Ran out of ${missing} before crafting anything.`);
     return done;
@@ -206,7 +221,7 @@ export async function craftRecipe(bot, itemName, num=1) {
      **/
     let placedTable = false;
 
-    if (mc.getItemCraftingRecipes(itemName).length == 0) {
+    if ((mc.getItemCraftingRecipes(itemName) ?? []).length == 0) {
         log(bot, `${itemName} is either not an item, or it does not have a crafting recipe!`);
         return false;
     }
@@ -269,12 +284,52 @@ export async function craftRecipe(bot, itemName, num=1) {
             }
             return await craftRecipe(bot, itemName, num);
         }
+        // bot.recipesFor only knows vanilla ids: a craft from larch or pine
+        // resolves to no recipe even with every ingredient in hand, which left
+        // Andy unarmed through 41 deaths in one soak. Our own recipe data has
+        // the mod packs; drive the grid clicks manually and let the server's
+        // result slot judge whether the recipe is real.
+        const modded = mc.getCraftableRawRecipe(itemName, world.getInventoryCounts(bot));
+        if (modded) {
+            let table = craftingTable;
+            if (modded.needsTable && !table) {
+                if (world.getInventoryCounts(bot)['crafting_table'] > 0) {
+                    const p = bot.entity.position;
+                    await placeBlock(bot, 'crafting_table', p.x, p.y, p.z);
+                    for (let i = 0; i < 10 && !table; i++) {
+                        table = world.getNearestBlock(bot, 'crafting_table', craftingTableRange);
+                        if (!table) await new Promise(r => setTimeout(r, 200));
+                    }
+                    placedTable = !!table;
+                } else if (mc.getCraftableRawRecipe('crafting_table', world.getInventoryCounts(bot)) && itemName !== 'crafting_table') {
+                    // The table itself is 2x2-craftable from the same modded planks.
+                    if (await craftRecipe(bot, 'crafting_table', 1))
+                        return await craftRecipe(bot, itemName, num);
+                }
+                if (!table) {
+                    log(bot, `Crafting ${itemName} needs a crafting table and there is none within ${craftingTableRange} blocks.`);
+                    return false;
+                }
+            }
+            if (table && bot.entity.position.distanceTo(table.position) > 4)
+                await goToNearestBlock(bot, 'crafting_table', 4, craftingTableRange);
+            const before = world.getInventoryCounts(bot)[itemName] ?? 0;
+            const done = await tableCraft(bot, modded.recipe, num, modded.needsTable ? table : null);
+            if (placedTable) await collectBlock(bot, 'crafting_table', 1);
+            if (done > 0) {
+                log(bot, `Successfully crafted ${itemName}, you now have ${before + done * (modded.recipe.result?.count ?? 1)} ${itemName}.`);
+                return true;
+            }
+            log(bot, `Tried to craft ${itemName} from a modded recipe but the server offered no result.`);
+            return false;
+        }
         // Ranked against what the bot is holding, so the message names the wood
         // it actually has instead of always naming oak. Holding none of it, rank
         // against what is standing within sight too: empty-handed in a pine
         // forest the tiebreak used to name oak_planks, and Andy spent a day of
         // real time hunting an oak tree that does not grow in this biome.
-        log(bot, `You do not have the resources to craft a ${itemName}. It requires: ${Object.entries(mc.getItemCraftingRecipes(itemName, reachableCounts(bot))[0][0]).map(([key, value]) => `${key}: ${value}`).join(', ')}.`);
+        const req = mc.getItemCraftingRecipes(itemName, reachableCounts(bot))?.[0]?.[0];
+        log(bot, `You do not have the resources to craft a ${itemName}.` + (req ? ` It requires: ${Object.entries(req).map(([key, value]) => `${key}: ${value}`).join(', ')}.` : ''));
         if (placedTable) {
             await collectBlock(bot, 'crafting_table', 1);
         }
@@ -319,7 +374,29 @@ export async function craftRecipe(bot, itemName, num=1) {
             return false;
         }
     } else {
-        await bot.craft(recipe, Math.min(craftLimit.num, num), null);
+        try {
+            await bot.craft(recipe, Math.min(craftLimit.num, num), null);
+        } catch (err) {
+            // Vanilla recipe objects name concrete ids (#planks -> oak_planks),
+            // so holding only modded planks makes bot.craft throw "missing
+            // ingredient" on a recipe the server would accept. Re-drive it
+            // through the grid clicks, which substitute same-family items.
+            if (!String(err).includes('missing ingredient')) throw err;
+            const shape = recipe.inShape ?? [];
+            const fits2x2 = shape.length > 0 && shape.length <= 2 && shape.every(r => r.length <= 2);
+            let table = fits2x2 ? null : world.getNearestBlock(bot, 'crafting_table', craftingTableRange);
+            if (!fits2x2 && !table) {
+                if (itemName !== 'crafting_table' && await craftRecipe(bot, 'crafting_table', 1)) {
+                    const p = bot.entity.position;
+                    await placeBlock(bot, 'crafting_table', p.x, p.y, p.z);
+                    return await craftRecipe(bot, itemName, num);
+                }
+                throw err;
+            }
+            if (table && bot.entity.position.distanceTo(table.position) > 4)
+                await goToNearestBlock(bot, 'crafting_table', 4, craftingTableRange);
+            await tableCraft(bot, recipe, Math.min(craftLimit.num, num), table);
+        }
     }
     // Report what was actually gained: "crafted 6" used to mean 6 crafting
     // operations at 4 planks each, and the "you now have N" total hid it.

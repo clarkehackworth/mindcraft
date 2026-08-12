@@ -880,7 +880,8 @@ function parsedRecipes(itemId) {
         }
         parsed.push([
             recipe,
-            {craftedCount : r.result.count}
+            {craftedCount : r.result.count},
+            r // raw minecraft-data recipe, kept for manual grid crafting
         ]);
     }
     parsed_recipes.set(itemId, parsed);
@@ -957,6 +958,29 @@ export function getItemCraftingRecipes(itemName, inventory = null, lookahead = t
     recipes = ranked.map(s => s.r);
 
     return recipes;
+}
+
+/**
+ * A recipe the inventory can pay for right now, in the raw shape tableCraft's
+ * manual grid clicks consume. bot.recipesFor only knows vanilla ids, so on a
+ * modded server a craft from larch or pine resolves to nothing even with every
+ * ingredient in hand -- while these recipes (mod packs included) know it fine.
+ * The server's result slot stays the arbiter of whether the recipe is real.
+ */
+export function getCraftableRawRecipe(itemName, inventory = {}) {
+    const ranked = getItemCraftingRecipes(itemName, inventory) ?? [];
+    for (const [ings, , raw] of ranked) {
+        if (!raw) continue;
+        if (!Object.entries(ings).every(([name, count]) => (inventory[name] ?? 0) >= count)) continue;
+        const wrap = id => ({ id: (id === null || id === undefined) ? -1 : id });
+        const inShape = raw.inShape ? raw.inShape.map(row => row.map(wrap)) : undefined;
+        const ingredients = raw.ingredients ? raw.ingredients.map(id => ({ id })) : undefined;
+        const needsTable = inShape
+            ? (inShape.length > 2 || inShape.some(row => row.length > 2))
+            : (raw.ingredients?.length ?? 0) > 4;
+        return { recipe: { inShape, ingredients, result: raw.result }, needsTable };
+    }
+    return null;
 }
 
 export function isSmeltable(itemName) {
