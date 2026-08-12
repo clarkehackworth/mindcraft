@@ -1716,15 +1716,25 @@ export function buildMergeInstructions(base, attributes) {
 // merge also compresses descriptions and the sentence explaining why it interrupts
 // was the part it cut. A rewrite is indistinguishable from a considered choice, so
 // the profile's declaration wins outright rather than only filling a blank.
-function restoreInterrupts(policy, profiles) {
+// Cooldown travels with it. The two are one decision -- the validator rejects
+// "interrupts": "all" under a 5s cooldown, because a rule that cancels everything
+// every three seconds means nothing else ever finishes -- so restoring one without
+// the other builds the exact policy the validator refuses. That is not theory: the
+// merge kept climb_out_of_the_deep's "all" and dropped its 60s cooldown, and the
+// regen died on its own output.
+function restoreDeclaredPacing(policy, profiles) {
     const declared = new Map();
     for (const p of profiles)
         for (const r of p.policy?.rules ?? [])
-            if (r.interrupts) declared.set(r.name, r.interrupts);
-    for (const rule of policy.rules ?? [])
-        if (declared.has(rule.name)) rule.interrupts = declared.get(rule.name);
+            if (r.interrupts || r.cooldown != null) declared.set(r.name, r);
+    for (const rule of policy.rules ?? []) {
+        const src = declared.get(rule.name);
+        if (!src) continue;
+        if (src.interrupts) rule.interrupts = src.interrupts;
+        if (src.cooldown != null) rule.cooldown = src.cooldown;
+    }
 }
-export const restoreInterruptsForTest = restoreInterrupts;
+export const restoreInterruptsForTest = restoreDeclaredPacing;
 
 // Returns the state with a freshly generated "active" layer. It does NOT
 // install it -- every caller already has its own install-and-save path, and
@@ -1748,7 +1758,7 @@ export async function generatePolicy(agent, baseName, attributeNames = []) {
         if (base.goal) policy.goal = base.goal;
     } else {
         policy = await compilePolicy(agent, buildMergeInstructions({ ...base, name: baseName }, attributes));
-        restoreInterrupts(policy, [base, ...attributes]);
+        restoreDeclaredPacing(policy, [base, ...attributes]);
         const err = validatePolicy(policy);
         if (err) throw new Error(`The merged policy is not valid: ${err}`);
         // A goal starts an endless LLM loop, so it takes a profile asking for

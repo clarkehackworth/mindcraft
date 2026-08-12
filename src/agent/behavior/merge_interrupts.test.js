@@ -8,7 +8,7 @@ import { restoreInterruptsForTest } from './policy.js';
 
 const profiles = [
     { policy: { rules: [
-        { name: 'dig_in_when_hunted', interrupts: 'all' },
+        { name: 'dig_in_when_hunted', interrupts: 'all', cooldown: 60 },
         { name: 'gather_wood_for_base', interrupts: 'idle' },
     ] } },
     { policy: { rules: [{ name: 'walk_the_berry_route', interrupts: 'idle' }] } },
@@ -43,4 +43,14 @@ test('profiles with no rules of their own do not throw', () => {
     const merged = { rules: [{ name: 'x' }] };
     restoreInterruptsForTest(merged, [{ source: ['prose only'] }]);
     assert.equal(merged.rules[0].interrupts, undefined);
+});
+
+// interrupts and cooldown are one decision: the validator rejects "all" under a
+// 5s cooldown, so restoring the first without the second builds a policy the
+// validator refuses. The merge kept climb_out_of_the_deep's "all", dropped its
+// 60s cooldown, and the regen died on its own output.
+test('cooldown is restored alongside interrupts', () => {
+    const merged = { rules: [{ name: 'dig_in_when_hunted', interrupts: 'all', cooldown: 3 }] };
+    restoreInterruptsForTest(merged, profiles);
+    assert.equal(merged.rules[0].cooldown, 60);
 });
