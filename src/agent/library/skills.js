@@ -219,7 +219,6 @@ export async function craftRecipe(bot, itemName, num=1) {
      * @example
      * await skills.craftRecipe(bot, "stick");
      **/
-    let placedTable = false;
 
     if ((mc.getItemCraftingRecipes(itemName) ?? []).length == 0) {
         log(bot, `${itemName} is either not an item, or it does not have a crafting recipe!`);
@@ -258,7 +257,6 @@ export async function craftRecipe(bot, itemName, num=1) {
                 }
                 if (craftingTable) {
                     recipes = bot.recipesFor(mc.getItemId(itemName), null, 1, craftingTable);
-                    placedTable = true;
                 }
             }
             else {
@@ -300,7 +298,6 @@ export async function craftRecipe(bot, itemName, num=1) {
                         table = world.getNearestBlock(bot, 'crafting_table', craftingTableRange);
                         if (!table) await new Promise(r => setTimeout(r, 200));
                     }
-                    placedTable = !!table;
                 } else if (mc.getCraftableRawRecipe('crafting_table', world.getInventoryCounts(bot)) && itemName !== 'crafting_table') {
                     // The table itself is 2x2-craftable from the same modded planks.
                     if (await craftRecipe(bot, 'crafting_table', 1))
@@ -315,7 +312,6 @@ export async function craftRecipe(bot, itemName, num=1) {
                 await goToNearestBlock(bot, 'crafting_table', 4, craftingTableRange);
             const before = world.getInventoryCounts(bot)[itemName] ?? 0;
             const done = await tableCraft(bot, modded.recipe, num, modded.needsTable ? table : null);
-            if (placedTable) await collectBlock(bot, 'crafting_table', 1);
             if (done > 0) {
                 log(bot, `Successfully crafted ${itemName}, you now have ${before + done * (modded.recipe.result?.count ?? 1)} ${itemName}.`);
                 return true;
@@ -330,9 +326,6 @@ export async function craftRecipe(bot, itemName, num=1) {
         // real time hunting an oak tree that does not grow in this biome.
         const req = mc.getItemCraftingRecipes(itemName, reachableCounts(bot))?.[0]?.[0];
         log(bot, `You do not have the resources to craft a ${itemName}.` + (req ? ` It requires: ${Object.entries(req).map(([key, value]) => `${key}: ${value}`).join(', ')}.` : ''));
-        if (placedTable) {
-            await collectBlock(bot, 'crafting_table', 1);
-        }
         return false;
     }
     
@@ -368,9 +361,6 @@ export async function craftRecipe(bot, itemName, num=1) {
         const done = await tableCraft(bot, recipe, Math.min(craftLimit.num, num), craftingTable);
         if (done === 0) {
             log(bot, `Crafting ${itemName} FAILED: the crafting table never produced the result. If ingredients are stuck inside the table (VisualWorkbench stores them), break the table to recover them.`);
-            if (placedTable) {
-                await collectBlock(bot, 'crafting_table', 1);
-            }
             return false;
         }
     } else {
@@ -404,9 +394,6 @@ export async function craftRecipe(bot, itemName, num=1) {
     const gained_from_craft = total_after_craft - count_before_craft;
     if(craftLimit.num<num) log(bot, `Not enough ${craftLimit.limitingResource} for ${num} crafts, made ${gained_from_craft} ${itemName}. You now have ${total_after_craft} ${itemName}.`);
     else log(bot, `Crafted ${gained_from_craft} ${itemName}, you now have ${total_after_craft} ${itemName}.`);
-    if (placedTable) {
-        await collectBlock(bot, 'crafting_table', 1);
-    }
 
     //Equip any armor the bot may have crafted.
     //There is probablly a more efficient method than checking the entire inventory but this is all mineflayer-armor-manager provides. :P

@@ -611,6 +611,52 @@
         "cooldown": 900
       },
       {
+        "name": "keep_a_crafting_table_at_camp",
+        "description": "Every craft above a 2x2 grid needs a table, and the bot has been building a throwaway one per craft: soak 11 shows \"Crafted 1 crafting_table / Placed / Collected 0 crafting_table\" over and over, four planks burned each time because the pickup after the break keeps failing. Worse, when the planks run short the table cannot be built at all and the craft dies with \"needs a crafting table and none was found within 16 blocks\" -- which is exactly how build_a_furnace failed on its first two fires. One standing table where the bot lives fixes both. If a table is already in the bag the craft step is a no-op and the place step still puts it down.",
+        "interrupts": "all",
+        "when": {
+          "all": [
+            {
+              "not": {
+                "cond": "block_nearby",
+                "name": "crafting_table",
+                "range": 16
+              }
+            },
+            {
+              "any": [
+                {
+                  "cond": "has_item",
+                  "item": "crafting_table",
+                  "count": 1
+                },
+                {
+                  "cond": "has_item",
+                  "item": "planks",
+                  "count": 4
+                },
+                {
+                  "cond": "has_item",
+                  "item": "log",
+                  "count": 1
+                }
+              ]
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "craft",
+            "item": "crafting_table"
+          },
+          {
+            "act": "place",
+            "block": "crafting_table"
+          }
+        ],
+        "cooldown": 300
+      },
+      {
         "name": "craft_a_weapon",
         "description": "Unarmed with wood in the bag. craftRecipe already crafts the planks and sticks on the way, so this needs no reasoning -- and the LLM turn it replaced was the difference between having a sword at dusk and not. Interrupts on purpose: being unarmed is what most of this bot's deaths have in common, and an idle-gated craft never got a turn to fix it. The is_idle gate came off after a soak: eleven of seventeen deaths were unarmed and this fired twice in six game-days, because interrupt priority means nothing while the trigger still waits for an idle that does not come.",
         "interrupts": "all",
