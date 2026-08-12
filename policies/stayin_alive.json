@@ -89,6 +89,22 @@
         "cooldown": 20
       },
       {
+        "name": "climb_out_of_the_deep",
+        "description": "Nothing in this policy could see how deep the bot was. The goal loop writes its own mining code, and in the first forty minutes of soak 12 that code took it to y=20, y=19 and y=-7 -- three lives, each one a creeper or a fall, each followed by a respawn at camp and a hundred-and-fifty-block walk straight back down to the corpse. The death-spot rules cannot help: they only trigger once it has already arrived, and two of those deaths were armed, which is the one case leave_your_death_spot ignores. A bot whose best weapon is a wooden sword has no business below the ore line, so the depth itself is the trigger.",
+        "interrupts": "all",
+        "pinned": true,
+        "when": {
+          "cond": "y_below",
+          "y": 45
+        },
+        "do": [
+          {
+            "act": "go_to_surface"
+          }
+        ],
+        "cooldown": 60
+      },
+      {
         "name": "flee_when_hurt",
         "description": "Get clear and eat back the health lost. Gated on actually having food: fleeing and failing to eat does not raise health, so without this it re-fires every cooldown and cancels every other action forever.",
         "interrupts": "all",

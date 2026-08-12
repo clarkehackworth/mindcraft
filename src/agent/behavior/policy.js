@@ -280,6 +280,11 @@ export const CONDITIONS = {
             return bot.digTime(b) <= 10000;
         }
     },
+    y_below: {
+        args: { y: 'number, altitude to compare feet against' },
+        desc: 'The bot is standing below this altitude. The goal loop writes its own mining code and nothing in the policy could see how deep that took it: soak 12 lost three lives in forty minutes at y=20, y=19 and y=-7, each one a respawn at camp followed by a walk back down to the corpse. Gate a go_to_surface rule on this.',
+        fn: (agent, args) => agent.bot.entity.position.y < (args.y ?? 0)
+    },
     is_sheltered: {
         args: {},
         desc: 'A solid block sits two or three above the bot\'s feet -- it is under a roof (a capped dig_in foxhole, a house, a cave). Gate night-shelter and flee rules on "not is_sheltered" so a bot already under cover does not dig deeper, prompt for shelter it already has, or climb out of a safe hole to flee something that cannot reach it.',
