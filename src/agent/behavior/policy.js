@@ -1710,13 +1710,19 @@ export function buildMergeInstructions(base, attributes) {
 // "I'm stuck" and "I'm looping" 200 times an hour. Copy the declaration back
 // from the profile the rule came from. A rule the merge invented has no source
 // to copy from and keeps whatever it declared.
+//
+// Dropping it is not the only way the merge gets this wrong: climb_out_of_the_deep
+// went in declaring "all" and came out of the merge declaring "idle", because the
+// merge also compresses descriptions and the sentence explaining why it interrupts
+// was the part it cut. A rewrite is indistinguishable from a considered choice, so
+// the profile's declaration wins outright rather than only filling a blank.
 function restoreInterrupts(policy, profiles) {
     const declared = new Map();
     for (const p of profiles)
         for (const r of p.policy?.rules ?? [])
             if (r.interrupts) declared.set(r.name, r.interrupts);
     for (const rule of policy.rules ?? [])
-        if (!rule.interrupts && declared.has(rule.name)) rule.interrupts = declared.get(rule.name);
+        if (declared.has(rule.name)) rule.interrupts = declared.get(rule.name);
 }
 export const restoreInterruptsForTest = restoreInterrupts;
 
