@@ -1220,6 +1220,118 @@
           }
         ],
         "cooldown": 120
+      },
+      {
+        "name": "smelt_logs_for_torch_fuel",
+        "description": "Free half of the torch chain: charcoal from logs beats hunting coal ore (no stone pick, no paid search -- gather_wood_for_base already keeps logs coming). Gated on a furnace being near and torches actually being low, so it does not turn every furnace visit into a smelting session.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "block_nearby",
+              "name": "furnace",
+              "range": 16
+            },
+            {
+              "cond": "has_item",
+              "item": "log",
+              "count": 3
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "charcoal",
+                "count": 1
+              }
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "torch",
+                "count": 4
+              }
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "smelt",
+            "item": "log",
+            "num": 2
+          }
+        ],
+        "cooldown": 300
+      },
+      {
+        "name": "craft_torches",
+        "description": "Middle of the torch chain: fuel plus sticks becomes light. craft gathers intermediate sticks itself, so the only real gates are fuel on hand and torches low. dig_in already places a carried torch, and light_the_camp spends the rest.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "any": [
+                {
+                  "cond": "has_item",
+                  "item": "charcoal",
+                  "count": 1
+                },
+                {
+                  "cond": "has_item",
+                  "item": "coal",
+                  "count": 1
+                }
+              ]
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "torch",
+                "count": 4
+              }
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "craft",
+            "item": "torch",
+            "num": 4
+          }
+        ],
+        "cooldown": 120
+      },
+      {
+        "name": "light_the_camp",
+        "description": "Spawn-proof the respawn area: soak 8 lost 36 deaths to a mob camping the bed, and dark ground at camp is where bed-campers come from. Places ONE torch per fire, gated on no torch within 8, so coverage accumulates as the bot moves around camp instead of re-placing forever (the remember_here lesson).",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "block_nearby",
+              "name": "bed",
+              "range": 16
+            },
+            {
+              "cond": "has_item",
+              "item": "torch",
+              "count": 1
+            },
+            {
+              "not": {
+                "cond": "block_nearby",
+                "name": "torch",
+                "range": 8
+              }
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "place",
+            "block": "torch"
+          }
+        ],
+        "cooldown": 120
       }
     ]
   },
