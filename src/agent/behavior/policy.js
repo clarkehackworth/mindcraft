@@ -247,7 +247,9 @@ export const CONDITIONS = {
         // drowning OUT, never in: kelp, seagrass and waterlogged slabs all drown
         // you without being called water, and all of them fail the air test.
         fn: (agent, a) => {
-            if (agent.bot.oxygenLevel === undefined || agent.bot.oxygenLevel > (a.air ?? 12)) return false;
+            // Compared as a fraction: this server's full tank is 400, not 20.
+            if (agent.bot.oxygenLevel === undefined) return false;
+            if (mc.oxygenFraction(agent.bot) > (a.air ?? 12) / 20) return false;
             const head = agent.bot.blockAt(agent.bot.entity.position.offset(0, agent.bot.entity.eyeHeight ?? 1.62, 0));
             return !!head && head.name !== 'air' && head.name !== 'cave_air';
         }
