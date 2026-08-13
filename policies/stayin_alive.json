@@ -89,6 +89,34 @@
         "cooldown": 20
       },
       {
+        "name": "surface_when_night_finds_you_underground",
+        "description": "Interrupts on purpose, and pinned: climb_out_of_the_deep only reaches below y=45, but soak 12 died over and over between y=55 and y=80 -- caving at night, where the arrows and the creepers are. Andy worked this out before the policy did and wrote it into its own self layer twice: \"if it is night and I am underground, immediately go to the surface and stay there until morning\". The is_sheltered exemption keeps a dug-in foxhole from being dragged out of its own roof.",
+        "interrupts": "all",
+        "pinned": true,
+        "when": {
+          "all": [
+            {
+              "cond": "is_night"
+            },
+            {
+              "cond": "y_below",
+              "y": 60
+            },
+            {
+              "not": {
+                "cond": "is_sheltered"
+              }
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "go_to_surface"
+          }
+        ],
+        "cooldown": 60
+      },
+      {
         "name": "climb_out_of_the_deep",
         "description": "Interrupts on purpose, and pinned: depth is not something to fix when convenient, and the first merge of this rule quietly rewrote it to idle. Nothing in this policy could see how deep the bot was. The goal loop writes its own mining code, and in the first forty minutes of soak 12 that code took it to y=20, y=19 and y=-7 -- three lives, each one a creeper or a fall, each followed by a respawn at camp and a hundred-and-fifty-block walk straight back down to the corpse. The death-spot rules cannot help: they only trigger once it has already arrived, and two of those deaths were armed, which is the one case leave_your_death_spot ignores. A bot whose best weapon is a wooden sword has no business below the ore line, so the depth itself is the trigger.",
         "interrupts": "all",
@@ -815,6 +843,59 @@
           }
         ],
         "cooldown": 300
+      },
+      {
+        "name": "weave_wool_from_string",
+        "description": "The bed chain has never once completed, and the reason is not the policy: hunt_sheep_for_wool fired fifteen times in soak 12 and answered \"Could not find any sheep in 48 blocks\" twenty-four times. There are no sheep in this taiga. Four string is a wool, spiders drop string, and the hunting mode kills spiders already -- so this is the wool source that exists here. A bed is worth more than any other item in this policy: it skips the night entirely, and seventeen of soak 12's twenty-three deaths were at night.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "has_item",
+              "item": "string",
+              "count": 4
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "white_wool",
+                "count": 3
+              }
+            },
+            {
+              "not": {
+                "cond": "block_nearby",
+                "name": "bed",
+                "range": 16
+              }
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "craft",
+            "item": "white_wool"
+          }
+        ],
+        "cooldown": 120
+      },
+      {
+        "name": "steer_clear_of_lava",
+        "description": "First lava death in twelve soaks, at (-243,93,223), and there was no rule against it because there had never been a reason for one. keep_out_of_water already does exactly this shape for the other liquid that kills; lava only needs the same treatment, and unlike water there is no such thing as safely wading in.",
+        "interrupts": "all",
+        "pinned": true,
+        "when": {
+          "cond": "block_nearby",
+          "name": "lava",
+          "range": 4
+        },
+        "do": [
+          {
+            "act": "move_away",
+            "distance": 10
+          }
+        ],
+        "cooldown": 30
       },
       {
         "name": "hunt_sheep_for_wool",
