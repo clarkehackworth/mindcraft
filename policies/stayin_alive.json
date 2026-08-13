@@ -735,8 +735,8 @@
       },
       {
         "name": "stash_a_spare_weapon",
-        "description": "The other half of arm_yourself_from_the_chest, and the half that has to happen first: a chest can only re-arm the bot if someone put a weapon in it while things were going well. Gated on holding two, so it never deposits the one in its hand.",
-        "interrupts": "idle",
+        "description": "Interrupts on purpose, the craft_a_pickaxe argument: the other half of arm_yourself_from_the_chest, and the half that has to happen first, because a chest can only re-arm the bot if a weapon went into it while things were going well. Idle-gated it did not fire in two live tests -- 200 seconds standing beside the chest holding two swords, while the goal loop searched for berries and the bot walked away from the chest that satisfied the trigger. Gated on holding two, so it never deposits the one in its hand.",
+        "interrupts": "all",
         "when": {
           "all": [
             {
