@@ -1493,23 +1493,32 @@ export async function takeFromChest(bot, itemName, num=-1) {
      * @example
      * await skills.takeFromChest(bot, "oak_log");
      * **/
-    let chest = world.getNearestBlock(bot, 'chest', 32);
-    if (!chest) {
+    // The nearest chest is not the chest with the thing in it. Andy has built
+    // twenty chests across this world, and arm_yourself_from_the_chest kept
+    // opening whichever empty one it happened to be standing near and
+    // reporting "Could not find any weapon in the chest" while a sword sat in
+    // the camp chest -- through nine deaths in one night. Walk the nearest few
+    // until one actually holds it.
+    const chests = world.getNearestBlocks(bot, ['chest'], 32, 4);
+    if (chests.length === 0) {
         log(bot, `Could not find a chest nearby.`);
         return false;
     }
-    await goToPosition(bot, chest.position.x, chest.position.y, chest.position.z, 2);
-    const chestContainer = await openWithRetry(bot, chest, b => bot.openContainer(b));
-    if (!chestContainer) return false;
-    
-    // Find all matching items in the chest. Family names included: "weapon"
-    // is the only definition of a weapon anywhere, and a rule that re-arms
-    // from a chest after death has nothing else to ask for.
+    // Family names included: "weapon" is the only definition of a weapon
+    // anywhere, and a rule that re-arms after death has nothing else to ask for.
     const matches = mc.itemMatcher(itemName);
-    let matchingItems = chestContainer.containerItems().filter(item => matches(item.name));
-    if (matchingItems.length === 0) {
-        log(bot, `Could not find any ${itemName} in the chest.`);
-        await chestContainer.close();
+    let chestContainer = null;
+    let matchingItems = [];
+    for (const chest of chests) {
+        await goToPosition(bot, chest.position.x, chest.position.y, chest.position.z, 2);
+        const opened = await openWithRetry(bot, chest, b => bot.openContainer(b));
+        if (!opened) continue;
+        const found = opened.containerItems().filter(item => matches(item.name));
+        if (found.length > 0) { chestContainer = opened; matchingItems = found; break; }
+        await opened.close();
+    }
+    if (!chestContainer) {
+        log(bot, `Could not find any ${itemName} in the ${chests.length} nearest chests.`);
         return false;
     }
     
