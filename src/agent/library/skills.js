@@ -1467,7 +1467,8 @@ export async function putInChest(bot, itemName, num=-1) {
         log(bot, `Could not find a chest nearby.`);
         return false;
     }
-    let item = bot.inventory.findInventoryItem(itemName);
+    const matches = mc.itemMatcher(itemName);
+    let item = bot.inventory.items().find(i => matches(i.name));
     if (!item) {
         log(bot, `You do not have any ${itemName} to put in the chest.`);
         return false;
@@ -1501,8 +1502,11 @@ export async function takeFromChest(bot, itemName, num=-1) {
     const chestContainer = await openWithRetry(bot, chest, b => bot.openContainer(b));
     if (!chestContainer) return false;
     
-    // Find all matching items in the chest
-    let matchingItems = chestContainer.containerItems().filter(item => item.name === itemName);
+    // Find all matching items in the chest. Family names included: "weapon"
+    // is the only definition of a weapon anywhere, and a rule that re-arms
+    // from a chest after death has nothing else to ask for.
+    const matches = mc.itemMatcher(itemName);
+    let matchingItems = chestContainer.containerItems().filter(item => matches(item.name));
     if (matchingItems.length === 0) {
         log(bot, `Could not find any ${itemName} in the chest.`);
         await chestContainer.close();

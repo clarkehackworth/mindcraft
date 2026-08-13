@@ -123,6 +123,29 @@ export function expandBlockName(name) {
     return [name];
 }
 
+// What counts as a weapon, in one place. equipHighestAttack picks from exactly
+// this set, so the condition that gates an equip_weapon rule and the action
+// that satisfies it can never disagree -- which is how
+// hold_weapon_when_threatened ended up firing every few seconds at an empty
+// inventory, with nothing it could possibly equip.
+//
+// It lives here rather than in the policy engine because chests need it too:
+// "withdraw a weapon" was unanswerable while the only definition of "weapon"
+// sat in a module skills.js must not import.
+export const isWeaponName = (name) =>
+    !!name && (name.includes('sword') || (name.includes('axe') && !name.includes('pickaxe')));
+
+// One predicate for "does this item satisfy that name", family names included.
+// expandBlockName covers the families that are just a naming convention (wood,
+// wool, ores); "weapon" is a family only isWeaponName can answer. Callers that
+// search a container want to ask once, not open the chest once per candidate
+// name -- takeFromChest used to be driven through 60-odd names that way.
+export function itemMatcher(query) {
+    if (query === 'weapon') return isWeaponName;
+    const names = new Set(expandBlockName(query));
+    return (name) => names.has(name);
+}
+
 // A block name the agent is allowed to use: a real block, or a family name that
 // stands for a set of them ("log", "planks", "bed", "iron_ore").
 //

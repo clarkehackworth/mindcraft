@@ -701,6 +701,66 @@
         "cooldown": 300
       },
       {
+        "name": "arm_yourself_from_the_chest",
+        "description": "Interrupts on purpose, and pinned: nothing the bot owns survives its own death. The gear stays on the corpse, it respawns unarmed into the dark, and it dies again before craft_a_weapon can find wood and a table -- sixteen of soak 12's twenty-three deaths were unarmed and seventeen were at night, which is one failure, not two. A chest does survive, and taking a sword out of one is seconds rather than a whole crafting chain. Ordered before craft_a_weapon because the stored spare is always the faster answer.",
+        "interrupts": "all",
+        "pinned": true,
+        "when": {
+          "all": [
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "weapon",
+                "count": 1
+              }
+            },
+            {
+              "cond": "block_nearby",
+              "name": "chest",
+              "range": 32
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "withdraw",
+            "item": "weapon",
+            "num": 1
+          },
+          {
+            "act": "equip_weapon"
+          }
+        ],
+        "cooldown": 60
+      },
+      {
+        "name": "stash_a_spare_weapon",
+        "description": "The other half of arm_yourself_from_the_chest, and the half that has to happen first: a chest can only re-arm the bot if someone put a weapon in it while things were going well. Gated on holding two, so it never deposits the one in its hand.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "has_item",
+              "item": "weapon",
+              "count": 2
+            },
+            {
+              "cond": "block_nearby",
+              "name": "chest",
+              "range": 16
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "deposit",
+            "item": "weapon",
+            "num": 1
+          }
+        ],
+        "cooldown": 300
+      },
+      {
         "name": "craft_a_weapon",
         "description": "Unarmed with wood in the bag. craftRecipe already crafts the planks and sticks on the way, so this needs no reasoning -- and the LLM turn it replaced was the difference between having a sword at dusk and not. Interrupts on purpose: being unarmed is what most of this bot's deaths have in common, and an idle-gated craft never got a turn to fix it. The is_idle gate came off after a soak: eleven of seventeen deaths were unarmed and this fired twice in six game-days, because interrupt priority means nothing while the trigger still waits for an idle that does not come.",
         "interrupts": "all",

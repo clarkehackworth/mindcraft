@@ -24,13 +24,9 @@ import { writeFileSync, readFileSync, readdirSync, mkdirSync, existsSync, unlink
 // constructing Blocks -- worth doing if world scanning stays this hot.
 const MAX_COND_SCAN = 16;
 
-// What counts as a weapon, in one place. equipHighestAttack picks from exactly
-// this set, so the condition that gates an equip_weapon rule and the action
-// that satisfies it can never disagree -- which is how
-// hold_weapon_when_threatened ended up firing every few seconds at an empty
-// inventory, with nothing it could possibly equip.
-export const isWeaponName = (name) =>
-    !!name && (name.includes('sword') || (name.includes('axe') && !name.includes('pickaxe')));
+// Defined in mcdata so skills.js can share it; re-exported because this module
+// is where every existing caller looks for it.
+export const isWeaponName = mc.isWeaponName;
 
 // Entity metadata key 7 is ticks_frozen for 1.17+; mineflayer indexes
 // entity.metadata by key, so this is where the freeze meter lives.
@@ -430,6 +426,11 @@ export const ACTIONS = {
         args: { item: 'string item name', num: 'number (default all)' },
         desc: 'Put items into the nearest chest (within 32 blocks). Use goto first to reach a specific chest. Family names deposit all variants: "log" is every wood\'s log.',
         fn: async (agent, a) => {
+            // "weapon" is not a naming convention expandBlockName can unfold,
+            // so it never matched an inventory count and this quietly did
+            // nothing. putInChest knows the family; hand it straight over.
+            if (a.item === 'weapon')
+                return await skills.putInChest(agent.bot, 'weapon', a.num ?? -1);
             const counts = world.getInventoryCounts(agent.bot);
             for (const name of mc.expandBlockName(a.item))
                 if (counts[name])
