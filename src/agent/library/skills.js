@@ -2219,7 +2219,7 @@ export function isBreathing(bot) {
         const head = bot.blockAt(bot.entity.position.offset(0, bot.entity.eyeHeight ?? 1.62, 0));
         return !head || head.name === 'air';
     }
-    return mc.oxygenFraction(bot) >= 1;
+    return bot.oxygenLevel >= 20;
 }
 
 export async function surface(bot, timeout_seconds=20) {

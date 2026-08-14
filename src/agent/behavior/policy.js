@@ -246,12 +246,20 @@ export const CONDITIONS = {
         // be drowning whatever the number says. Names are only used to rule
         // drowning OUT, never in: kelp, seagrass and waterlogged slabs all drown
         // you without being called water, and all of them fail the air test.
+        // Use exactly the test self_preservation uses. That one detects drowning
+        // on this server -- it said "I'm drowning!" in a controlled test where
+        // this condition stayed false and the bot died -- and its shape is paid
+        // for in past bugs: a head in kelp is not "water", the air bar reads 0
+        // for a tick after respawn, and "block above is not air" is also every
+        // ceiling the bot digs. The eye-height variant this replaced failed at
+        // the surface, where a drowning bot's eye block is air.
         fn: (agent, a) => {
-            // Compared as a fraction: this server's full tank is 400, not 20.
-            if (agent.bot.oxygenLevel === undefined) return false;
-            if (mc.oxygenFraction(agent.bot) > (a.air ?? 12) / 20) return false;
-            const head = agent.bot.blockAt(agent.bot.entity.position.offset(0, agent.bot.entity.eyeHeight ?? 1.62, 0));
-            return !!head && head.name !== 'air' && head.name !== 'cave_air';
+            const bot = agent.bot;
+            if (bot.oxygenLevel === undefined) return false;
+            if (bot.oxygenLevel > (a.air ?? 12)) return false;
+            const above = bot.blockAt(bot.entity.position.offset(0, 1, 0)) ?? { name: 'air' };
+            const in_water = bot.entity.isInWater ?? true;
+            return above.name !== 'air' && in_water;
         }
     },
     is_night: {

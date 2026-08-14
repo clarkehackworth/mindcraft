@@ -123,21 +123,6 @@ export function expandBlockName(name) {
     return [name];
 }
 
-// Air, as a fraction of full, because "full" is not 20 here. This modpack
-// reports oxygenLevel in raw ticks -- 400 at the surface -- so every check
-// written against vanilla's 0-20 scale reads as "plenty of air, always".
-// surface_when_drowning is pinned with a five-second cooldown and is the
-// highest-priority rule in the policy; it fired zero times across four
-// drownings in soak 13, because oxygenLevel > 12 was true underwater.
-// The maximum is observed rather than assumed: mineflayer exposes no cap, but
-// the bot spends most of its life at full air, so the highest value seen is it.
-let observed_max_oxygen = 20;
-export function oxygenFraction(bot) {
-    if (bot.oxygenLevel === undefined) return 1;
-    if (bot.oxygenLevel > observed_max_oxygen) observed_max_oxygen = bot.oxygenLevel;
-    return bot.oxygenLevel / observed_max_oxygen;
-}
-
 // What counts as a weapon, in one place. equipHighestAttack picks from exactly
 // this set, so the condition that gates an equip_weapon rule and the action
 // that satisfies it can never disagree -- which is how
