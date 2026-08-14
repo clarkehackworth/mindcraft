@@ -257,9 +257,16 @@ export const CONDITIONS = {
             const bot = agent.bot;
             if (bot.oxygenLevel === undefined) return false;
             if (bot.oxygenLevel > (a.air ?? 12)) return false;
-            const above = bot.blockAt(bot.entity.position.offset(0, 1, 0)) ?? { name: 'air' };
-            const in_water = bot.entity.isInWater ?? true;
-            return above.name !== 'air' && in_water;
+            // isInWater and nothing else. Requiring a non-air block overhead
+            // looks like the safe extra clause and is the bug: a bot drowning
+            // at the SURFACE has air above it, which is how it died at
+            // (-331,57,236) with both this rule and self_preservation silent,
+            // twice, in a controlled test. The clause was added when "wet head"
+            // was the only signal and a dug ceiling read as water; isInWater
+            // came later and covers that case properly -- you are not in water
+            // under a ceiling you dug, and not in water on the tick after a
+            // respawn, which are the two bugs it was protecting against.
+            return bot.entity.isInWater ?? false;
         }
     },
     is_night: {
