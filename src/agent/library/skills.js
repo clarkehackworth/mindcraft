@@ -3,6 +3,7 @@ import * as world from "./world.js";
 import pf from 'mineflayer-pathfinder';
 import Vec3 from 'vec3';
 import settings from "../../../settings.js";
+import { isUnreachable } from '../path_spin.js';
 
 // How many blocks collectBlocks may break before it stops to pick the drops up,
 // when nothing is arriving in the bag on its own. See the sweep in collectBlocks.
@@ -1687,6 +1688,12 @@ export async function goToGoal(bot, goal) {
      * @param {MinecraftBot} bot, reference to the minecraft bot.
      * @param {pf.goals.Goal} goal, e.g. new pf.goals.GoalNear(x, y, z, range).
      **/
+
+    // A target that just spun the pathfinder into the ground is not worth
+    // walking at again a tick later. Fail the same way a walled-off goal fails,
+    // so callers that already handle "no path" pick something else instead.
+    if (isUnreachable(bot, goal.x, goal.y, goal.z))
+        throw new Error('No path to the goal: it was unreachable moments ago');
 
     const nonDestructiveMovements = new pf.Movements(bot);
     const dontBreakBlocks = ['glass', 'glass_pane'];

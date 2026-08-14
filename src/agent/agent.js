@@ -18,7 +18,7 @@ import settings from './settings.js';
 import { Task } from './tasks/tasks.js';
 import { speak } from './speak.js';
 import { log, validateNameFormat, handleDisconnection } from './connection_handler.js';
-import { notePathFailure } from './path_spin.js';
+import { notePathFailure, noteUnreachable } from './path_spin.js';
 
 // sysexits EX_TEMPFAIL: "try again shortly, and do not hold it against me".
 // agent_process restarts on this without counting it as a crash. Keep in sync
@@ -782,6 +782,14 @@ export class Agent {
                 // the backstop for when the arbiter is the thing that is stuck.
                 if (p && notePathFailure(this, Math.floor(p.x), Math.floor(p.y), Math.floor(p.z))) {
                     console.log(`EVT move:path:spin_abort:at=${at}`);
+                    // Remember WHERE it was trying to get to, not just where it
+                    // was standing: clearing the goal does not clear the reason
+                    // for it, and the next tick asks for the same place again.
+                    const g = this.bot.pathfinder.goal;
+                    if (g) {
+                        noteUnreachable(this.bot, g.x, g.y, g.z);
+                        console.log(`EVT move:path:unreachable:${g.x},${g.y},${g.z}`);
+                    }
                     // Rejects the pending goto with GoalChanged, which unwinds
                     // whatever was awaiting it and gives the arbiter its loop back.
                     try { this.bot.pathfinder.setGoal(null); } catch (_) {}

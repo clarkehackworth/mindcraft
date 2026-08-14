@@ -41,3 +41,31 @@ export function notePathFailure(state, x, y, z) {
     else { state.path_stuck_origin = { x, y, z }; state.path_stuck_count = 1; }
     return state.path_stuck_count % PATH_SPIN_LIMIT === 0;
 }
+
+// Aborting the goal does not remove the reason the bot wanted it. Andy's memory
+// named a base 390 blocks west; the self layer's shelter rule kept asking to go
+// there from camp, the pathfinder could not route it, and the spin restarted the
+// moment the backstop cleared it -- 392 partial searches in eight minutes, all
+// at one block, all for the same unreachable place. The backstop caps the cost
+// of each attempt; only remembering the target stops the attempts.
+//
+// Short-lived on purpose. Terrain changes, the bot moves, and a target that was
+// unroutable from a hole is fine from open ground -- so this is a cooldown on a
+// bad idea, not a permanent verdict.
+export const UNREACHABLE_TTL_MS = 5 * 60 * 1000;
+export const UNREACHABLE_RADIUS = 4;
+
+export function noteUnreachable(bot, x, y, z, now = Date.now()) {
+    if (![x, y, z].every(Number.isFinite)) return; // GoalFollow and friends have no fixed target
+    (bot._unreachable_goals ??= []).push({ x, y, z, until: now + UNREACHABLE_TTL_MS });
+}
+
+export function isUnreachable(bot, x, y, z, now = Date.now()) {
+    const list = bot._unreachable_goals;
+    if (!list?.length) return false;
+    bot._unreachable_goals = list.filter(g => g.until > now);
+    return bot._unreachable_goals.some(g =>
+        Math.abs(x - g.x) <= UNREACHABLE_RADIUS &&
+        Math.abs(y - g.y) <= UNREACHABLE_RADIUS &&
+        Math.abs(z - g.z) <= UNREACHABLE_RADIUS);
+}
