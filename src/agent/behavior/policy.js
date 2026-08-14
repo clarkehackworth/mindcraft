@@ -246,27 +246,24 @@ export const CONDITIONS = {
         // be drowning whatever the number says. Names are only used to rule
         // drowning OUT, never in: kelp, seagrass and waterlogged slabs all drown
         // you without being called water, and all of them fail the air test.
-        // Use exactly the test self_preservation uses. That one detects drowning
-        // on this server -- it said "I'm drowning!" in a controlled test where
-        // this condition stayed false and the bot died -- and its shape is paid
-        // for in past bugs: a head in kelp is not "water", the air bar reads 0
-        // for a tick after respawn, and "block above is not air" is also every
-        // ceiling the bot digs. The eye-height variant this replaced failed at
-        // the surface, where a drowning bot's eye block is air.
+        // The air bar, and nothing positional. Instrumented on this server
+        // during a real drowning: isInWater is FALSE the whole time, the block
+        // above is air (the bot floats at the surface), and the eye block is
+        // air too -- every "am I in water" test that looks at the world is
+        // false exactly when the bot is dying of water. Confirmed by log:
+        // oxygen=17,14,1,-1 with inwater=false throughout, then death by
+        // attack.drown. Three fixes failed because each kept one of those
+        // tests. The one signal that is always true is the air bar going down.
+        //
+        // One low reading, not two. A sustained test was the obvious guard
+        // against the post-respawn phantom, and it failed: the measured air bar
+        // on this server bounces -- 17,14,19,15,1,4,19,-1 through a single
+        // drowning -- so consecutive samples are rarely both low. That is what
+        // a server running two seconds behind does to packet timing. A spurious
+        // surface() costs one wasted action; missing a drowning costs a life.
         fn: (agent, a) => {
             const bot = agent.bot;
-            if (bot.oxygenLevel === undefined) return false;
-            if (bot.oxygenLevel > (a.air ?? 12)) return false;
-            // isInWater and nothing else. Requiring a non-air block overhead
-            // looks like the safe extra clause and is the bug: a bot drowning
-            // at the SURFACE has air above it, which is how it died at
-            // (-331,57,236) with both this rule and self_preservation silent,
-            // twice, in a controlled test. The clause was added when "wet head"
-            // was the only signal and a dug ceiling read as water; isInWater
-            // came later and covers that case properly -- you are not in water
-            // under a ceiling you dug, and not in water on the tick after a
-            // respawn, which are the two bugs it was protecting against.
-            return bot.entity.isInWater ?? false;
+            return bot.oxygenLevel !== undefined && bot.oxygenLevel <= (a.air ?? 12);
         }
     },
     is_night: {
