@@ -266,6 +266,15 @@ export const CONDITIONS = {
             return bot.oxygenLevel !== undefined && bot.oxygenLevel <= (a.air ?? 12);
         }
     },
+    near_respawn: {
+        args: { range: 'number of blocks (default 8)' },
+        desc: 'The bot is standing near the place it respawns. Gate digging on NOT this: a hole dug on the respawn tile is a trap, because the bot reappears above its own shaft and falls in with no way back out.',
+        fn: (agent, a) => {
+            const p = agent.bot.respawn_point;
+            if (!p || !agent.bot.entity?.position) return false;
+            return agent.bot.entity.position.distanceTo(p) <= (a.range ?? 8);
+        }
+    },
     is_night: {
         args: { lead: 'number of ticks before nightfall to start saying yes (default 0). ~1500 gives the bot time to walk home before mobs are out.' },
         desc: 'It is night time.',

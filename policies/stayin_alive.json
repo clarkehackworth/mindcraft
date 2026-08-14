@@ -309,7 +309,7 @@
       },
       {
         "name": "dig_in_when_hunted",
-        "description": "Something hostile closing and no roof: put ground between you and it, day or night, armed or not. Was night-or-unarmed only, and the agent kept writing itself a pinned always-shelter rule (46 fires in 20 minutes, no sheltered gate, digging deeper each time) because armed daytime chases had no answer but the cowardice footrace. The stay holds until the area is quiet AND it is not night, so a daytime dig does not pop back out while the mob is still pacing overhead; once capped there is no clear path to the bot, so cowardice and self_defense stand down on their own.",
+        "description": "Something hostile closing and no roof: put ground between you and it, day or night, armed or not. Was night-or-unarmed only, and the agent kept writing itself a pinned always-shelter rule (46 fires in 20 minutes, no sheltered gate, digging deeper each time) because armed daytime chases had no answer but the cowardice footrace. The stay holds until the area is quiet AND it is not night, so a daytime dig does not pop back out while the mob is still pacing overhead; once capped there is no clear path to the bot, so cowardice and self_defense stand down on their own. Not on the respawn tile: a shelter dug where the bot comes back is a trap, because it reappears above its own shaft and falls in. That cost nine fall deaths in one night at (-242,76,252), through ground that had been solid two hours earlier.",
         "interrupts": "all",
         "when": {
           "all": [
@@ -320,6 +320,12 @@
             {
               "not": {
                 "cond": "is_sheltered"
+              }
+            },
+            {
+              "not": {
+                "cond": "near_respawn",
+                "range": 8
               }
             }
           ]
@@ -375,7 +381,7 @@
       },
       {
         "name": "dig_in_out_of_the_cold",
-        "description": "Freezing and no roof: a capped foxhole is out of the snowfall, which is what freezing means here -- and it is free, where the prompt version below costs a turn per firing and was the single biggest prompt bill on stormy nights. Digging down also exits powder snow. The prompt survives it, gated on not-sheltered, for the cold the hole cannot fix.",
+        "description": "Freezing and no roof: a capped foxhole is out of the snowfall, which is what freezing means here -- and it is free, where the prompt version below costs a turn per firing and was the single biggest prompt bill on stormy nights. Digging down also exits powder snow. The prompt survives it, gated on not-sheltered, for the cold the hole cannot fix. Not on the respawn tile: a shelter dug where the bot comes back is a trap, because it reappears above its own shaft and falls in. That cost nine fall deaths in one night at (-242,76,252), through ground that had been solid two hours earlier.",
         "interrupts": "all",
         "when": {
           "all": [
@@ -389,6 +395,12 @@
             },
             {
               "cond": "can_dig_down"
+            },
+            {
+              "not": {
+                "cond": "near_respawn",
+                "range": 8
+              }
             }
           ]
         },
@@ -432,7 +444,7 @@
       },
       {
         "name": "dig_in_at_your_death_spot",
-        "description": "Your respawn point is where you died, so at night the reflex to walk away is a walk through whatever killed you. Measured: 28 deaths in one game-day, every one of them at -53,88,-66, which was both the bed and an exposed cliff -- leave_your_death_spot fired, set out on its 24-block walk unarmed in the dark, and lost the bot again before it arrived, doubling its own backoff each time until it stopped mattering. Ground goes over your head where you stand, in the two seconds you reliably have, and you wait for morning. Daylight is leave_your_death_spot's job.",
+        "description": "Your respawn point is where you died, so at night the reflex to walk away is a walk through whatever killed you. Measured: 28 deaths in one game-day, every one of them at -53,88,-66, which was both the bed and an exposed cliff -- leave_your_death_spot fired, set out on its 24-block walk unarmed in the dark, and lost the bot again before it arrived, doubling its own backoff each time until it stopped mattering. Ground goes over your head where you stand, in the two seconds you reliably have, and you wait for morning. Daylight is leave_your_death_spot's job. Not on the respawn tile: a shelter dug where the bot comes back is a trap, because it reappears above its own shaft and falls in. That cost nine fall deaths in one night at (-242,76,252), through ground that had been solid two hours earlier.",
         "interrupts": "all",
         "when": {
           "all": [
@@ -445,6 +457,12 @@
             },
             {
               "cond": "can_dig_down"
+            },
+            {
+              "not": {
+                "cond": "near_respawn",
+                "range": 8
+              }
             }
           ]
         },
@@ -533,7 +551,7 @@
       },
       {
         "name": "dig_in_for_the_night",
-        "description": "Night with no bed and no roof: foxhole up and wait for dawn, for free -- and do it even mid-task. Interrupts everything on purpose: the agent kept writing itself pinned shelter-beats-the-job rules every rough night until this was promoted to match. The is_sheltered gate keeps it silent while building indoors, so only surface wandering gets interrupted. The prompt version below only exists for the nights the dig fails -- lava underfoot, undiggable ground -- which its no-progress backoff surfaces on its own.",
+        "description": "Night with no bed and no roof: foxhole up and wait for dawn, for free -- and do it even mid-task. Interrupts everything on purpose: the agent kept writing itself pinned shelter-beats-the-job rules every rough night until this was promoted to match. The is_sheltered gate keeps it silent while building indoors, so only surface wandering gets interrupted. The prompt version below only exists for the nights the dig fails -- lava underfoot, undiggable ground -- which its no-progress backoff surfaces on its own. Not on the respawn tile: a shelter dug where the bot comes back is a trap, because it reappears above its own shaft and falls in. That cost nine fall deaths in one night at (-242,76,252), through ground that had been solid two hours earlier.",
         "interrupts": "all",
         "when": {
           "all": [
@@ -562,6 +580,12 @@
             },
             {
               "cond": "can_dig_down"
+            },
+            {
+              "not": {
+                "cond": "near_respawn",
+                "range": 8
+              }
             }
           ]
         },

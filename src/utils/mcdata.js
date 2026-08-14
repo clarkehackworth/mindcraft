@@ -350,9 +350,21 @@ export function initBot(username) {
         // Anchor for exploration_radius: where the bot came into the world, not
         // the world spawn, since that is the ground it is meant to work.
         bot.spawn_point = bot.entity.position.clone();
+        bot.respawn_point = bot.entity.position.clone();
         // loadPlugin defers injection, so bot.pathfinder does not exist until
         // the bot is in the world -- hooking it any earlier throws.
         tameMovements(bot);
+    });
+    // Where the bot comes back to, refreshed every respawn -- distinct from
+    // spawn_point above, which is where it entered the world and anchors the
+    // exploration radius. dig_in fires wherever the bot stands, including here,
+    // and a shelter dug on the respawn tile becomes a trap the moment it dies
+    // in it: it reappears above its own shaft, falls in, and cannot climb out.
+    // Seen at two independent spawn points on one night, the second time
+    // through ground verified solid two hours earlier -- nine fall deaths at
+    // (-242,76,252) after it dug out (-242,118,252) beneath itself.
+    bot.on('spawn', () => {
+        if (bot.entity?.position) bot.respawn_point = bot.entity.position.clone();
     });
     bot.once('resourcePack', () => {
         bot.acceptResourcePack();
