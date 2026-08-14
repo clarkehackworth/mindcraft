@@ -22,9 +22,15 @@ export const PATH_SPIN_LIMIT = 100;
 export const PATH_SPIN_RADIUS = 2;
 
 // Counts consecutive pathfinder failures inside one box on `state`, and returns
-// true on the single tick that crosses the limit -- the caller aborts the goal
-// there, and the count keeps climbing so this fires once per streak, not once
-// per tick after it.
+// true every time the count reaches a multiple of the limit -- not once per
+// tick, but not once per streak either.
+//
+// Strict equality was the bug. Aborting the goal does not stop the goal loop
+// from immediately re-targeting the same unreachable thing, and once the count
+// has passed 100 it never equals 100 again, so the streak got exactly one
+// rescue and then spun unrescued forever. Watched live: 4,558 partial paths in
+// six minutes, all inside one box, with the bot oscillating between two blocks
+// and looking, to anyone in the world, like it was standing still.
 export function notePathFailure(state, x, y, z) {
     const origin = state.path_stuck_origin;
     const inside = origin
@@ -33,5 +39,5 @@ export function notePathFailure(state, x, y, z) {
         && Math.abs(z - origin.z) <= PATH_SPIN_RADIUS;
     if (inside) state.path_stuck_count++;
     else { state.path_stuck_origin = { x, y, z }; state.path_stuck_count = 1; }
-    return state.path_stuck_count === PATH_SPIN_LIMIT;
+    return state.path_stuck_count % PATH_SPIN_LIMIT === 0;
 }

@@ -8,11 +8,19 @@ const fail = (state, [x, y, z], times = 1) => {
     return aborts;
 };
 
-test('a hundred failures in one place aborts the goal, once', () => {
+test('a hundred failures in one place aborts the goal, and keeps aborting', () => {
+    // It used to fire once per streak, on strict equality with the limit. But
+    // aborting the goal does not stop the goal loop from re-targeting the same
+    // unreachable thing a tick later, and past 100 the count never equals 100
+    // again -- so a streak got exactly one rescue and then spun forever.
+    // Watched live: 4,558 partial paths in six minutes inside one box, the bot
+    // oscillating between two blocks, looking like it was standing still.
     const state = {};
     assert.equal(fail(state, [1, 2, 3], PATH_SPIN_LIMIT - 1), 0, 'must not fire early');
     assert.equal(fail(state, [1, 2, 3]), 1, 'fires on the limit');
-    assert.equal(fail(state, [1, 2, 3], 500), 0, 'and not again while the streak runs');
+    assert.equal(fail(state, [1, 2, 3], PATH_SPIN_LIMIT - 1), 0, 'not every tick after');
+    assert.equal(fail(state, [1, 2, 3]), 1, 'but again on the next hundred');
+    assert.equal(fail(state, [1, 2, 3], PATH_SPIN_LIMIT * 5), 5, 'and every hundred after that');
 });
 
 test('jittering between neighbouring blocks still counts', () => {
