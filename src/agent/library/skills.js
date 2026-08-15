@@ -47,10 +47,19 @@ export function reportProgress(bot, done, total) {
  * generated codeblock goes through. A skill that drives bot.pathfinder itself
  * still escapes; move this into the pathfinder goal if that becomes a problem.
  */
+export function explorationAnchor(bot) {
+    // home_point is the remembered "home" place and survives restarts;
+    // spawn_point is wherever this process happened to log in, which after a
+    // restart 300 blocks from base is 300 blocks from base. Prefer the one that
+    // means something.
+    return bot.home_point ?? bot.spawn_point;
+}
+
 export function withinExplorationRadius(bot, x, z) {
     const radius = settings.exploration_radius;
-    if (!radius || radius <= 0 || !bot.spawn_point) return true;
-    return Math.hypot(x - bot.spawn_point.x, z - bot.spawn_point.z) <= radius;
+    const anchor = explorationAnchor(bot);
+    if (!radius || radius <= 0 || !anchor) return true;
+    return Math.hypot(x - anchor.x, z - anchor.z) <= radius;
 }
 
 async function autoLight(bot) {
@@ -1852,7 +1861,7 @@ export async function goToPosition(bot, x, y, z, min_distance=2) {
         return false;
     }
     if (!withinExplorationRadius(bot, x, z)) {
-        log(bot, `${Math.round(Math.hypot(x - bot.spawn_point.x, z - bot.spawn_point.z))} blocks from spawn is outside the ${settings.exploration_radius} block exploration radius. Work closer to home.`);
+        log(bot, `${Math.round(Math.hypot(x - explorationAnchor(bot).x, z - explorationAnchor(bot).z))} blocks from home is outside the ${settings.exploration_radius} block exploration radius. Work closer to home.`);
         return false;
     }
     if (bot.modes.isOn('cheat')) {
@@ -1998,7 +2007,7 @@ export async function goToXZ(bot, x, z, closeness=8) {
     // 64-block hop across open snow. GoalNearXZ asks for the column instead.
     if (!Number.isFinite(x) || !Number.isFinite(z)) return false;
     if (!withinExplorationRadius(bot, x, z)) {
-        log(bot, `${Math.round(Math.hypot(x - bot.spawn_point.x, z - bot.spawn_point.z))} blocks from spawn is outside the ${settings.exploration_radius} block exploration radius. Work closer to home.`);
+        log(bot, `${Math.round(Math.hypot(x - explorationAnchor(bot).x, z - explorationAnchor(bot).z))} blocks from home is outside the ${settings.exploration_radius} block exploration radius. Work closer to home.`);
         return false;
     }
     try {

@@ -246,6 +246,7 @@ export class Agent {
                         }
                     }
                 }
+                this.establishHome();
                 this._connected_once = true;
 
                 await new Promise((resolve) => setTimeout(resolve, 10000));
@@ -256,6 +257,33 @@ export class Agent {
                 process.exit(0);
             }
         });
+    }
+
+    /**
+     * Pin the exploration leash to somewhere durable.
+     *
+     * bot.spawn_point is set on every process start, so it followed the bot
+     * around: restart it 300 blocks out and 300 blocks out becomes the new
+     * centre of its world. Anchoring on a remembered place instead means home
+     * survives restarts, deaths and reconnects, and the agent can walk back to
+     * it by name (goto_place "home") like any other place it knows.
+     *
+     * Recorded once, on the first spawn that has no home yet, and left alone
+     * after that -- an anchor that re-anchors is not an anchor. Moving house is
+     * deliberate: !rememberHere("home").
+     */
+    establishHome() {
+        let p = this.memory_bank.recallPlace('home');
+        if (!p) {
+            const here = this.bot.entity?.position;
+            if (!here) return;
+            this.memory_bank.rememberPlace('home', here.x, here.y, here.z);
+            p = [here.x, here.y, here.z];
+            console.log(`EVT home:set:${Math.round(here.x)},${Math.round(here.y)},${Math.round(here.z)}`);
+        }
+        this.bot.home_point = { x: p[0], y: p[1], z: p[2] };
+        console.log(`EVT home:anchor:${Math.round(p[0])},${Math.round(p[1])},${Math.round(p[2])}` +
+            `:radius=${settings.exploration_radius}`);
     }
 
     async _setupEventHandlers(save_data, init_message) {

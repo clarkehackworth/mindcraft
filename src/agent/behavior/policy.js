@@ -298,6 +298,19 @@ export const CONDITIONS = {
                 && why('window');
         }
     },
+    far_from_home: {
+        args: { range: 'number of blocks (default 96)' },
+        desc: 'The bot has drifted more than range blocks (horizontally) from home. Home is the remembered "home" place and survives restarts. Pair it with goto_place "home" to bring the bot back; the exploration radius stops it walking further out, but only walking back shortens the leash.',
+        fn: (agent, a) => {
+            const home = skills.explorationAnchor(agent.bot);
+            const here = agent.bot.entity?.position;
+            if (!home || !here) return false;
+            // Horizontal only, like the leash itself: y distance would read as
+            // "far from home" every time the bot went down a mineshaft.
+            return Math.hypot(here.x - home.x, here.z - home.z) > (a.range ?? 96);
+        }
+    },
+
     near_respawn: {
         args: { range: 'number of blocks (default 8)' },
         desc: 'The bot is standing near the place it respawns. Gate digging on NOT this: a hole dug on the respawn tile is a trap, because the bot reappears above its own shaft and falls in with no way back out.',
@@ -383,7 +396,7 @@ export const ACTIONS = {
         fn: async (agent, a) => await skills.attackNearest(agent.bot, a.type, true)
     },
     goto: {
-        cost: 'blocking', clears: ['at_position', 'block_nearby', 'at_death_position'],
+        cost: 'blocking', clears: ['at_position', 'block_nearby', 'at_death_position', 'far_from_home'],
         args: { x: 'number', y: 'number', z: 'number', closeness: 'number (default 2)' },
         desc: 'Navigate to a position.',
         fn: async (agent, a) => await skills.goToPosition(agent.bot, a.x, a.y, a.z, a.closeness ?? 2)
@@ -400,7 +413,7 @@ export const ACTIONS = {
         }
     },
     goto_place: {
-        cost: 'blocking', clears: ['at_position', 'block_nearby', 'at_death_position'],
+        cost: 'blocking', clears: ['at_position', 'block_nearby', 'at_death_position', 'far_from_home'],
         args: { name: 'string place name, as given to remember_here', closeness: 'number (default 2)' },
         desc: 'Walk to a remembered place. The free alternative to search_block/search_entity once the spot is known: no scanning, no prompt, just a path to a coordinate that paid off before. Gate on place_known -- with no such place this does nothing but log.',
         fn: async (agent, a) => {

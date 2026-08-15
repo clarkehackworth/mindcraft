@@ -16,7 +16,7 @@
     "A bed is only worth having where it is safe to sleep. Do not place one within reach of something hunting, and do not cross a killing field to reach one -- digging in for the night is better than a bed you die in.",
     "When the pathfinder keeps failing from the same block, stop asking it. The route is not there; go somewhere else and try from a different place. Retrying in position is how whole game-days disappear into a single hole."
   ],
-  "goal": "Stay alive indefinitely and make yourself harder to kill: keep a home base with a bed and stocked chests, and keep food, shelter and a weapon between you and every way this world can end you. If the land within your search radius has no food to gather or hunt, your base is in the wrong place: relocate it to a biome that can feed you, and move your bed and stores there.",
+  "goal": "Stay alive indefinitely and make yourself harder to kill: keep a home base with a bed and stocked chests, and keep food, shelter and a weapon between you and every way this world can end you. Work the land within your exploration radius -- it is the ground you can get home from before dark. Your base stays where it is: if food is scarce nearby, farm, breed animals, or range out and come back, but do not go looking for a better biome to live in. Every death so far has been somewhere you wandered to, not at camp. Be at camp when night falls, and spend the night working the things camp is for -- smelting, crafting, cooking, sorting chests -- rather than waiting in a hole for morning.",
   "policy": {
     "modes": {
       "self_preservation": true,
@@ -507,6 +507,32 @@
         "pinned": true
       },
       {
+        "name": "head_home_before_dark",
+        "description": "Walk back to home base while there is still light. Self-clearing: arriving makes far_from_home false, so it does not re-path all night the way a fixed-coordinate night goto would. Pinned and interrupting: being caught out after dark is what every death so far has had in common, so it outranks whatever the agent is partway through.",
+        "when": {
+          "all": [
+            {
+              "cond": "is_night",
+              "lead": 4000
+            },
+            {
+              "cond": "far_from_home",
+              "range": 48
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "goto_place",
+            "name": "home",
+            "closeness": 8
+          }
+        ],
+        "interrupts": "all",
+        "cooldown": 60,
+        "pinned": true
+      },
+      {
         "name": "sleep_at_night",
         "description": "Head for a bed at dusk and stay put until morning -- but break off if something hostile closes in, instead of standing still while it hits you. Not while something is hunting nearby -- a bed is only worth the walk if the walk is survivable; if it is not, dig_in_for_the_night is the better night.",
         "interrupts": "all",
@@ -601,6 +627,30 @@
         ],
         "cooldown": 120,
         "pinned": true
+      },
+      {
+        "name": "come_home_when_far",
+        "description": "Drifted too far with nothing urgent to do: walk back. The exploration radius refuses to take the bot further out, but only walking back shortens the leash.",
+        "when": {
+          "all": [
+            {
+              "cond": "far_from_home",
+              "range": 96
+            },
+            {
+              "cond": "is_idle"
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "goto_place",
+            "name": "home",
+            "closeness": 8
+          }
+        ],
+        "interrupts": "idle",
+        "cooldown": 120
       },
       {
         "name": "wait_out_the_night_under_cover",

@@ -120,7 +120,15 @@ export class History {
                 taskStart: this.agent.task.taskStartTime,
                 last_sender: this.agent.last_sender,
                 last_death_time: this.agent.last_death_time,
-                alive_ms: this.agent.aliveMs()
+                alive_ms: this.agent.aliveMs(),
+                // MemoryBank has had getJson/loadJson since it was written and
+                // nothing ever called either, so every remembered place died
+                // with the process. That is why remember_the_pantry kept firing
+                // on a chest it had already recorded, and why the agent asked
+                // for goToRememberedPlace("Home") and was told no such place
+                // exists -- it had saved one, ten minutes and one restart ago.
+                // A bot that cannot remember where home is cannot go home.
+                places: this.agent.memory_bank.getJson()
             };
             writeFileSync(this.memory_fp, JSON.stringify(data, null, 2));
             console.log('Saved memory to:', this.memory_fp);
@@ -139,6 +147,7 @@ export class History {
             const data = JSON.parse(readFileSync(this.memory_fp, 'utf8'));
             this.memory = data.memory || '';
             this.turns = data.turns || [];
+            if (data.places) this.agent.memory_bank.loadJson(data.places);
             console.log('Loaded memory:', this.memory);
             return data;
         } catch (error) {

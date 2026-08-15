@@ -77,11 +77,20 @@ const settings = {
     // run-to-run variance on one setting was larger than the gap between settings --
     // so it is a plain knob rather than something clever.
 
-    "exploration_radius": 0,
-    // how far from its spawn point the bot will travel, in blocks. 0 is unlimited.
+    "exploration_radius": 128,
+    // how far from home the bot will travel, in blocks. 0 is unlimited.
     // travelling into never-generated terrain is what costs the server most, so on
     // a modpack that stutters, keeping the bot inside explored ground helps it more
     // than it limits it.
+    //
+    // Anchored on the remembered "home" place, not on where the process started.
+    // Measured with this at 0: every death site in soak 13 was 150-390 blocks from
+    // camp, the bot declared a new base wherever it wandered to, and by the time
+    // night fell it was in a hole in the wilderness with no crafting table, no
+    // furnace and no chest -- so it had nothing to do until morning. 128 is wider
+    // than the 24-32 block scan radius the gathering rules use, so it does not
+    // starve them, and narrow enough that the bot is still within reach of its own
+    // camp when the light goes.
 
     "mod_data": "./mod_data",
     // block/item/entity registries dumped from a modded server, so the bot can see
