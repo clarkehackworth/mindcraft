@@ -85,8 +85,7 @@ const modes_list = [
             // phantom is one stale reading of 0, and one reading no longer fires
             // anything. head_wet stays on the passive jump branch, which is about
             // swim physics rather than detection.
-            this._low_air ??= [];
-            const air_low = skills.lowAirPersists(this._low_air, bot.oxygenLevel);
+            const air_low = skills.lowAirPersists(bot);
             if (air_low) {
                 console.log(`EVT selfpres:drown:oxygen=${bot.oxygenLevel}:above=${blockAbove.name}:inwater=${bot.entity.isInWater}`);
                 // Actually drowning. Interrupt whatever it was doing -- the bot
@@ -573,6 +572,18 @@ class ModeController {
     }
 
     async update() {
+        // One air sample per tick, here, where the cadence is fixed at 300ms.
+        //
+        // The debounce used to sample inside whichever caller asked, which made
+        // "two low readings within four seconds" mean different things depending
+        // on who was asking. A policy condition is only evaluated every
+        // cooldown seconds -- 5 for surface_when_drowning -- so its own samples
+        // arrived 5s apart and two of them could never land inside a 4s window:
+        // the rule could not fire at all. It appeared to work only because other
+        // rules sharing the `drowning` condition happened to push samples into
+        // the same array at their own cadences. Sampling in one place on a fixed
+        // clock makes the window mean one thing for every reader.
+        skills.recordAir(_agent.bot);
         if (_agent.isIdle()) {
             this.unPauseAll();
         }

@@ -12,16 +12,20 @@
 import { strict as assert } from 'node:assert';
 import test from 'node:test';
 import { CONDITIONS } from './policy.js';
+import { recordAir } from '../library/skills.js';
 
 const drowning = CONDITIONS.drowning.fn;
-// Each call is one evaluation tick. The condition dedupes samples closer than
-// 100ms apart, so tests that mean "two ticks" must actually let time pass.
+// Sampling happens once per mode tick, in ModeController.update, NOT inside the
+// condition -- readers run at different cadences and a policy condition is only
+// evaluated every `cooldown` seconds. So a tick here is recordAir + a read.
+// Samples closer than 100ms apart are deduped, so ticks must let time pass.
 const tick = async (agent, oxygenLevel, args = {}) => {
     await new Promise(r => setTimeout(r, 120));
     agent.bot.oxygenLevel = oxygenLevel;
+    recordAir(agent.bot);
     return drowning(agent, args);
 };
-const fresh = () => ({ bot: { oxygenLevel: 20 } });
+const fresh = () => ({ bot: { oxygenLevel: 20, _air_history: [] } });
 
 test('a single stray low packet does not fire', async () => {
     const agent = fresh();
@@ -32,19 +36,27 @@ test('a single stray low packet does not fire', async () => {
 });
 
 test('a real drowning fires, despite the bar bouncing', async () => {
-    // The measured sequence from a drowning that killed him.
+    // Measured through a drowning that killed him: the bar bounces, but the low
+    // readings keep coming and that is what the sample count is counting.
     const agent = fresh();
     let fired = false;
-    for (const oxygen of [17, 14, 19, 15, 1, 4, 19, -1])
+    for (const oxygen of [17, 14, 19, 15, 1, 4, 19, -1, 6, 7, 2, 0])
         fired = fired || await tick(agent, oxygen);
     assert.ok(fired, 'a bouncing bar still reads as drowning');
 });
 
-test('two low readings in the window are enough', async () => {
+test('a couple of low readings are not enough', async () => {
+    // This asked for two, and two was measured in the wild on a bot standing in
+    // a dry cave: 46 fires in 20 minutes, 38 of which found full air by the time
+    // the action ran. Each was an interrupts:all that killed the self-prompt
+    // loop, so the bot spent the period being rescued from nothing.
     const agent = fresh();
     assert.equal(await tick(agent, 10), false);
     assert.equal(await tick(agent, 19), false, 'the bar bounced back up');
-    assert.equal(await tick(agent, 11), true, 'second low inside the window fires');
+    assert.equal(await tick(agent, 11), false, 'two lows is what dry-cave noise looks like');
+    assert.equal(await tick(agent, 11), false, 'three, still noise');
+    assert.equal(await tick(agent, 11), false, 'four');
+    assert.equal(await tick(agent, 11), true, 'five low samples is a drowning');
 });
 
 test('lows further apart than the window do not accumulate', async () => {
@@ -70,10 +82,15 @@ test('a single very low reading is noise, not an emergency', async () => {
     assert.equal(await tick(agent, 4, args), false, 'and one of 4, a window later');
 });
 
-test('a drowning that goes straight to critical still fires, one tick later', async () => {
+test('a drowning that goes straight to critical still fires, promptly', async () => {
+    // Five samples at the 300ms mode tick is 1.5s of a drowning that lasts
+    // about fifteen. There is no separate fast path for very low readings:
+    // that bypass existed, and it was where every false positive came in --
+    // the stray packets read 2 and 4, lower than the real dips.
     const agent = fresh();
-    assert.equal(await tick(agent, 3), false, 'first reading arms it');
-    assert.equal(await tick(agent, 1), true, 'the second fires -- 300ms into a ~15s drowning');
+    for (const [i, oxygen] of [3, 1, 2, 0, 0].entries())
+        assert.equal(await tick(agent, oxygen), i >= 4,
+            `sample ${i + 1} of 5`);
 });
 
 test('missing oxygen data never fires', async () => {

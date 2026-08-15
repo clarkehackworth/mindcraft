@@ -51,11 +51,9 @@ await new Promise(r => setTimeout(r, 120));
 await land.agent.bot.modes.update();
 assert.equal(land.ranAction(), null, 'and once the real value lands there is nothing to do');
 
-// Actually drowning. Two updates, because one low reading is not enough any
-// more: self_preservation interrupts every action and stops the self-prompt
-// loop, and it was doing that 27 times in 14 minutes on air that had already
-// refilled by the time surface() ran. A drowning lasts ~15s at 300ms per tick,
-// so the second reading costs one tick out of fifty.
+// Actually drowning. Several updates, because one low reading is not enough:
+// self_preservation interrupts every action and stops the self-prompt loop, and
+// it was doing that on air that had already refilled by the time surface() ran.
 //
 // The head block is 'air' here on purpose. Penned in water and instrumented,
 // a really drowning bot reports above=air, inwater=false, head_wet=false while
@@ -68,9 +66,14 @@ assert.equal(land.ranAction(), null, 'and once the real value lands there is not
 const kelp = fakeAgent('air', 4, (await import('./modes.js?case=drowning')).initModes);
 await kelp.agent.bot.modes.update();
 assert.equal(kelp.ranAction(), null, 'one low reading does not interrupt anything');
-await new Promise(r => setTimeout(r, 120));
-await kelp.agent.bot.modes.update();
-assert.equal(kelp.ranAction(), 'mode:self_preservation', 'a wet head with no air, twice, is drowning');
+// Five samples at the 300ms mode tick, which is 1.5s of a ~15s drowning. Two
+// was tried and measured: a bot standing in a dry cave produced two lows inside
+// four seconds often enough to fire this 46 times in 20 minutes.
+for (let i = 0; i < 4; i++) {
+    await new Promise(r => setTimeout(r, 120));
+    await kelp.agent.bot.modes.update();
+}
+assert.equal(kelp.ranAction(), 'mode:self_preservation', 'sustained low air is drowning');
 
 // The policy condition took the opposite lesson, on purpose, and the two are
 // not in conflict. self_preservation above runs on every tick and can afford a
@@ -83,15 +86,18 @@ assert.equal(kelp.ranAction(), 'mode:self_preservation', 'a wet head with no air
 // kept one of those world tests.
 //
 // The dry-mineshaft phantom that head-block checks were meant to catch is
-// handled by a debounce instead: two low readings inside a window, since a
-// stray packet produces exactly one. See drowning_debounce.test.js.
+// handled by a debounce instead: five low samples inside a four second window,
+// which a real drowning fills and noise never does. See
+// drowning_debounce.test.js.
 const { evalCondition } = await import('./behavior/policy.js');
 const at = (oxygenLevel) => ({ bot: { oxygenLevel } });
 const drowning = { cond: 'drowning', air: 12 };
 assert.equal(evalCondition(drowning, at(20)), false, 'a full bar is not drowning');
 assert.equal(evalCondition(drowning, at(8)), false, 'one low reading alone is a stray packet');
-// Even zero waits for a second reading: the measured false positives read
-// oxygen=2 and oxygen=4 with nothing around them, lower than the real dips.
+// Even zero waits: the measured false positives read oxygen=2 and oxygen=4 with
+// nothing around them, lower than the real dips, so there is no fast path for a
+// very low reading. Note these go through evalCondition without recordAir, which
+// is the point -- with no sampled history there is nothing to believe.
 assert.equal(evalCondition(drowning, at(0)), false, 'one reading of zero is still one reading');
 
 // A ceiling is not water. Andy dug in for the night, which puts a block over

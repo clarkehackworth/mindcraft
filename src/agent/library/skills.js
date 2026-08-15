@@ -2244,36 +2244,56 @@ export function isBreathing(bot) {
     return bot.oxygenLevel >= 20;
 }
 
+// The air bar is sampled once per mode tick (300ms), so a 4s window holds about
+// thirteen samples. A real drowning fills it; noise on this server manages one
+// or two. Five is the line between them.
+const AIR_WINDOW_MS = 4000;
+const AIR_MIN_SAMPLES = 5;
+
 /**
- * Has the air bar been low for more than one reading?
+ * One air-bar sample, on the caller's clock. Called once per mode tick (300ms).
  *
- * The air bar on this server produces isolated low samples that are gone by the
- * next tick -- measured at oxygen=2 and oxygen=4 with nothing around them, on a
- * bot that was breathing normally. Anything that interrupts work on a low
- * reading has to see two of them before believing it. A real drowning fills any
- * few seconds with low readings, so this costs one tick out of the ~50 a real
- * one lasts; a stray packet never gets its second.
- *
- * @param {number[]} seen, caller-owned array of timestamps. Mutated in place --
- *      each caller keeps its own so their windows do not interfere.
- * @param {number} oxygen, bot.oxygenLevel.
- * @returns {boolean} true if two low readings fall inside the window.
+ * The history lives on the bot, not on whoever asks, because the readers run at
+ * different cadences: the self_preservation mode sees every tick, while a policy
+ * condition is only evaluated every `cooldown` seconds. When each kept its own
+ * samples, "two low readings within four seconds" meant something different to
+ * each of them, and for surface_when_drowning (cooldown 5) it meant something
+ * impossible -- its samples arrived 5s apart and could never both land inside a
+ * 4s window, so the rule could not fire at all.
  */
-export function lowAirPersists(seen, oxygen, air=12, window_ms=4000) {
-    if (oxygen === undefined) return false;
+export function recordAir(bot, window_ms=AIR_WINDOW_MS) {
+    if (!bot) return;
     const now = Date.now();
-    // One sample per tick: several callers can ask inside a single update, and
-    // three reads of one packet is one observation, not three.
-    if (oxygen <= air && (!seen.length || now - seen[seen.length - 1] > 100))
-        seen.push(now);
-    while (seen.length && now - seen[0] > window_ms) seen.shift();
-    // Air has to be low NOW, not just twice recently. Without this the verdict
-    // outlives the emergency by the length of the window, which is how a rescue
-    // got dispatched at oxygen=20 -- measured, repeatedly:
-    //     EVT selfpres:drown:oxygen=20:above=water:inwater=true
-    // and then reported "Surfaced with 20/20 air left", which is what made this
-    // look like a false detection when the detection had been right.
-    return seen.length >= 2 && oxygen <= air;
+    const seen = (bot._air_history ??= []);
+    if (!seen.length || now - seen[seen.length - 1].t > 100)
+        seen.push({ t: now, oxygen: bot.oxygenLevel });
+    while (seen.length && now - seen[0].t > window_ms) seen.shift();
+}
+
+/**
+ * Has the air bar been low for long enough to believe it?
+ *
+ * Not one reading: this server emits isolated low samples on a bot that is
+ * breathing normally -- measured at oxygen=2 and oxygen=4 with nothing around
+ * them. Not two either, which is what this asked for first: standing in a dry
+ * cave with water somewhere nearby, the bar dipped past 12 twice inside four
+ * seconds often enough to fire self_preservation 46 times in 20 minutes, 38 of
+ * them finding full air by the time the action ran. Each was an interrupts:all
+ * that killed the self-prompt loop, so the bot spent the period being rescued
+ * from nothing.
+ *
+ * A real drowning fills the whole window -- measured seen=14 of a possible ~13
+ * samples, oxygen 9,7,7,8,6,6,4 and falling. Noise manages one or two. Five
+ * separates them with room to spare and costs 1.5s of a drowning that lasts
+ * about fifteen.
+ */
+export function lowAirPersists(bot, air=12, min_samples=AIR_MIN_SAMPLES) {
+    if (!bot || bot.oxygenLevel === undefined) return false;
+    // Low NOW, not merely low recently: without this the verdict outlives the
+    // emergency by a whole window, which had surface() dispatched at oxygen=20.
+    if (bot.oxygenLevel > air) return false;
+    const seen = bot._air_history ?? [];
+    return seen.filter(s => s.oxygen !== undefined && s.oxygen <= air).length >= min_samples;
 }
 
 export async function surface(bot, timeout_seconds=20) {

@@ -280,7 +280,7 @@ export const CONDITIONS = {
             // it each time; the reading that decided it is worth one line.
             const why = (via) => {
                 console.log(`EVT drowning:fire:${via}:oxygen=${bot.oxygenLevel}` +
-                    `:recent=${(agent._low_air_seen ?? []).length}`);
+                    `:recent=${(bot._air_history ?? []).filter(h => h.oxygen <= (a.air ?? 12)).length}`);
                 return true;
             };
             // No emergency bypass for very low readings. That was the obvious
@@ -293,9 +293,7 @@ export const CONDITIONS = {
             // 11, it reads 2 -- so the bypass was catching precisely the noise
             // it was meant to outrun. Every reading goes through the window now,
             // which costs one tick (300ms) in a real drowning that lasts ~15s.
-            const seen = (agent._low_air_seen ??= []);
-            return skills.lowAirPersists(seen, bot.oxygenLevel, a.air ?? 12, a.window_ms ?? 4000)
-                && why('window');
+            return skills.lowAirPersists(bot, a.air ?? 12, a.min_samples) && why('window');
         }
     },
     far_from_home: {
