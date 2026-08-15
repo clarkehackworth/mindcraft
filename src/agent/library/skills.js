@@ -2466,7 +2466,12 @@ export async function moveAwayFromEntity(bot, entity, distance=16) {
     return true;
 }
 
-export async function avoidEnemies(bot, distance=16) {
+// Long enough to outrun anything worth outrunning -- twenty seconds of sprinting
+// is the better part of a hundred blocks, and nothing calls this with a distance
+// over about thirty.
+export const FLEE_TIMEOUT_MS = 20000;
+
+export async function avoidEnemies(bot, distance=16, timeout_ms=FLEE_TIMEOUT_MS) {
     /**
      * Move a given distance away from all nearby enemy mobs.
      * @param {MinecraftBot} bot, reference to the minecraft bot.
@@ -2477,7 +2482,26 @@ export async function avoidEnemies(bot, distance=16) {
      **/
     bot.modes.pause('self_preservation'); // prevents damage-on-low-health from interrupting the bot
     let enemy = world.getNearestEntityWhere(bot, entity => mc.isHostile(entity), distance);
+    // A flight that is not working has to end. The exit condition here was "no
+    // hostile within `distance`", which is a condition the bot cannot always
+    // reach: Andy met an enderman underground at y=52 with walls between them,
+    // could not increase the gap, and re-armed a dynamic pathfinder goal every
+    // 500ms forever. The spin backstop cleared that goal 46 times and this loop
+    // put it straight back, so 4,653 pathfinder replans landed on one block in
+    // four minutes and nothing else in the agent ran at all -- including
+    // self_preservation, which this function pauses on the way in.
+    //
+    // Giving up is a real outcome and gets logged as one, so the agent reads
+    // "running did not work" and can pick something else, rather than being told
+    // it fled successfully or being told nothing at all.
+    const deadline = Date.now() + timeout_ms;
+    let gave_up = false;
     while (enemy) {
+        if (Date.now() > deadline) {
+            log(bot, `Could not get away from ${enemy.name ?? 'the mob'} in ${Math.round(timeout_ms/1000)}s -- it is still within ${distance} blocks. Running is not working here; try fighting, digging in, or putting a door between you.`);
+            gave_up = true;
+            break;
+        }
         const follow = new pf.goals.GoalFollow(enemy, distance+1); // move a little further away
         const inverted_goal = new pf.goals.GoalInvert(follow);
         bot.pathfinder.setMovements(new pf.Movements(bot));
@@ -2492,6 +2516,7 @@ export async function avoidEnemies(bot, distance=16) {
         }
     }
     bot.pathfinder.stop();
+    if (gave_up) return false;
     log(bot, `Moved ${distance} away from enemies.`);
     return true;
 }

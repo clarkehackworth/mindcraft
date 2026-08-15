@@ -833,8 +833,20 @@ export class Agent {
                     // for it, and the next tick asks for the same place again.
                     const g = this.bot.pathfinder.goal;
                     if (g) {
-                        noteUnreachable(this.bot, g.x, g.y, g.z);
-                        console.log(`EVT move:path:unreachable:${g.x},${g.y},${g.z}`);
+                        // "unreachable:undefined,undefined,undefined" said only
+                        // that something was stuck, never what wanted it -- and
+                        // most of the goals that spin are the coordinate-less
+                        // kind, so that was the common case, not the rare one.
+                        // Name the goal class and whoever is holding the action.
+                        const kind = g.constructor?.name ?? 'Goal';
+                        // GoalInvert wraps a target the bot is running AWAY
+                        // from, so its coordinates are the bot's own, and
+                        // GoalFollow tracks a moving entity. Remembering either
+                        // as an unreachable *place* would blacklist the ground
+                        // under the bot's feet for every other skill.
+                        if (kind !== 'GoalInvert' && !g.entity)
+                            noteUnreachable(this.bot, g.x, g.y, g.z);
+                        console.log(`EVT move:path:unreachable:${kind}:${g.x},${g.y},${g.z}:by=${this.actions.currentActionLabel ?? 'none'}`);
                     }
                     // Rejects the pending goto with GoalChanged, which unwinds
                     // whatever was awaiting it and gives the arbiter its loop back.
