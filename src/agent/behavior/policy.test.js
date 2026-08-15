@@ -78,17 +78,19 @@ assert.equal(validatePolicy({ rules: [{ ...night_walk.rules[0], when: { not: { c
 // rule uses: air lasts ~15s underwater, so 5s still gives three attempts.
 const drown = { rules: [{ name: 'surface_when_drowning', when: { cond: 'drowning' }, do: [{ act: 'go_to_surface' }], interrupts: 'all', cooldown: 5 }] };
 assert.equal(validatePolicy(drown), null, 'drowning + go_to_surface is a valid rule');
-// ...and on the head being somewhere that can actually drown you: this modpack
-// moves the air bar along with the health bar, so oxygen alone had the rule
-// firing in a dry mineshaft. See drowning_on_land.test.js for the whole story.
-const submerged = (oxygenLevel, head = 'water') => ({ bot: {
-    oxygenLevel,
-    entity: { position: { offset: () => ({}) }, eyeHeight: 1.62 },
-    blockAt: () => ({ name: head }),
-} });
-assert.equal(CONDITIONS.drowning.fn(submerged(5), {}), true, 'low oxygen underwater is drowning');
+// The condition is the air bar and nothing positional. That is not an oversight:
+// instrumented during a real drowning on this server, isInWater is false the
+// whole time, the block above is air and the eye block is air too, so every
+// world test reads "dry" exactly when the bot is dying of water. Head-block
+// checks used to be asserted here and had to go; see drowning_on_land.test.js.
+//
+// What replaced them is a debounce, because a single low reading turned out to
+// be a stray packet often enough to interrupt real work. Only the boundaries are
+// checked here -- drowning_debounce.test.js covers the windowing.
+const submerged = (oxygenLevel) => ({ bot: { oxygenLevel } });
+assert.equal(CONDITIONS.drowning.fn(submerged(3), {}), true, 'critical air fires on one reading');
 assert.equal(CONDITIONS.drowning.fn(submerged(20), {}), false, 'full oxygen is not drowning');
-assert.equal(CONDITIONS.drowning.fn(submerged(5, 'air'), {}), false, 'low oxygen with your head in air is a bad air reading');
+assert.equal(CONDITIONS.drowning.fn(submerged(5), {}), false, 'one moderate low reading alone is a stray packet');
 
 // A rule that fires but accomplishes nothing must back off, or it starves the
 // reasoning loop. Live: Andy with no pickaxe ran collect(stone) -> "Don't have

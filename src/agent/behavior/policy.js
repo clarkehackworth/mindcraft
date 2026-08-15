@@ -236,7 +236,11 @@ export const CONDITIONS = {
         fn: (agent, a) => !!agent.memory_bank?.recallPlace(a.name)
     },
     drowning: {
-        args: { air: 'number (default 12), oxygen out of 20 below which this is true' },
+        args: {
+            air: 'number (default 12), oxygen out of 20 below which this is true',
+            critical: 'number (default 4), oxygen at or below which it fires on a single reading',
+            window_ms: 'number (default 4000), how long two low readings may be apart',
+        },
         desc: 'Bot is underwater and losing air. Use this for "underwater"/"drowning", not block_nearby water, which is also true standing on the shore.',
         // The air number alone is not enough. This modpack reports 52/20 health,
         // and something in it drops oxygenLevel while the bot is standing in a
@@ -255,15 +259,33 @@ export const CONDITIONS = {
         // attack.drown. Three fixes failed because each kept one of those
         // tests. The one signal that is always true is the air bar going down.
         //
-        // One low reading, not two. A sustained test was the obvious guard
-        // against the post-respawn phantom, and it failed: the measured air bar
-        // on this server bounces -- 17,14,19,15,1,4,19,-1 through a single
-        // drowning -- so consecutive samples are rarely both low. That is what
-        // a server running two seconds behind does to packet timing. A spurious
-        // surface() costs one wasted action; missing a drowning costs a life.
+        // Not CONSECUTIVE low readings -- two low readings anywhere in a short
+        // window. A sustained test was tried first and failed, because the
+        // measured air bar on this server bounces (17,14,19,15,1,4,19,-1 through
+        // one real drowning), so consecutive samples are rarely both low. The
+        // replacement, a single low reading, over-fired the other way: soak 14
+        // logged four fires in twelve minutes that all reported "Surfaced with
+        // 20/20 air left", and one of them interrupted a stone_pickaxe craft.
+        // Air was already full when the action started, so those were single
+        // stray packets, not drownings.
+        //
+        // A real drowning puts many low readings in any few seconds; a stray
+        // packet puts exactly one. Two-in-a-window separates them and costs one
+        // tick (300ms) of delay. Below `critical` there is no debounce at all --
+        // that close to death a wasted surface() is cheaper than a wrong guess.
         fn: (agent, a) => {
             const bot = agent.bot;
-            return bot.oxygenLevel !== undefined && bot.oxygenLevel <= (a.air ?? 12);
+            if (bot.oxygenLevel === undefined) return false;
+            if (bot.oxygenLevel <= (a.critical ?? 4)) return true;
+            const now = Date.now();
+            const window_ms = a.window_ms ?? 4000;
+            const seen = (agent._low_air_seen ??= []);
+            // One sample per tick: several rules can share this condition inside
+            // a single update, and three reads of one packet is one observation.
+            if (bot.oxygenLevel <= (a.air ?? 12) && (!seen.length || now - seen[seen.length - 1] > 100))
+                seen.push(now);
+            while (seen.length && now - seen[0] > window_ms) seen.shift();
+            return seen.length >= 2;
         }
     },
     near_respawn: {

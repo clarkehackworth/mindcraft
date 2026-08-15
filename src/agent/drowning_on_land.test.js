@@ -49,24 +49,26 @@ const kelp = fakeAgent('kelp', 4);
 await kelp.agent.bot.modes.update();
 assert.equal(kelp.ranAction(), 'mode:self_preservation', 'a wet head with no air is still drowning');
 
-// The policy condition needs the same guard, and for a while did not have it.
-// A modpack that scales health (52/20 here) also moved the air bar, so the
-// number alone had Andy re-firing the drowning rule every 5 seconds in a dry
-// mineshaft at y=71 -- and once the reflex was pointed at skills.surface, which
-// succeeds instantly when you are already breathing, it reported progress every
-// time and never backed off.
+// The policy condition took the opposite lesson, on purpose, and the two are
+// not in conflict. self_preservation above runs on every tick and can afford a
+// head-block check as a cheap veto. The policy condition cannot: instrumented
+// through a real drowning on this server, isInWater is false the whole time,
+// the block above the bot is air (it floats at the surface) and the eye block
+// is air too, while oxygen goes 17,14,1,-1 and the bot dies of attack.drown.
+// Every positional test reads "dry" exactly when it is drowning, so the
+// condition reads the air bar and nothing else. Three fixes failed because each
+// kept one of those world tests.
+//
+// The dry-mineshaft phantom that head-block checks were meant to catch is
+// handled by a debounce instead: two low readings inside a window, since a
+// stray packet produces exactly one. See drowning_debounce.test.js.
 const { evalCondition } = await import('./behavior/policy.js');
-const at = (head, oxygenLevel) => ({ bot: {
-    oxygenLevel,
-    entity: { position: { offset: () => ({}) }, eyeHeight: 1.62 },
-    blockAt: () => ({ name: head }),
-} });
+const at = (oxygenLevel) => ({ bot: { oxygenLevel } });
 const drowning = { cond: 'drowning', air: 12 };
-assert.equal(evalCondition(drowning, at('air', 0)), false, 'head in air is never drowning');
-assert.equal(evalCondition(drowning, at('cave_air', 3)), false, 'cave air is air');
-assert.equal(evalCondition(drowning, at('water', 20)), false, 'a full bar is not drowning');
-assert.equal(evalCondition(drowning, at('water', 8)), true);
-assert.equal(evalCondition(drowning, at('kelp', 4)), true, 'kelp drowns you without being called water');
+assert.equal(evalCondition(drowning, at(20)), false, 'a full bar is not drowning');
+assert.equal(evalCondition(drowning, at(8)), false, 'one low reading alone is a stray packet');
+assert.equal(evalCondition(drowning, at(0)), true,
+    'critical air fires on a single reading, head block be damned -- that is the reading a real drowning gives');
 
 // A ceiling is not water. Andy dug in for the night, which puts a block over
 // his head, and with the air bar under full the swim-up branch re-asserted jump
