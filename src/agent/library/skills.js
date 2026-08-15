@@ -217,11 +217,13 @@ function reachableCounts(bot) {
     return {...counts, ...world.getInventoryCounts(bot)};
 }
 
-export async function craftRecipe(bot, itemName, num=1) {
+export async function craftRecipe(bot, itemName, num=1, expanding=new Set()) {
     /**
      * Attempt to craft the given item name from a recipe. May craft many items.
      * @param {MinecraftBot} bot, reference to the minecraft bot.
      * @param {string} itemName, the item name to craft.
+     * @param {Set<string>} expanding, items already being crafted as intermediates
+     *   further up this recursion -- cycle guard, callers leave it alone.
      * @returns {Promise<boolean>} true if the recipe was crafted, false otherwise.
      * @example
      * await skills.craftRecipe(bot, "stick");
@@ -281,13 +283,24 @@ export async function craftRecipe(bot, itemName, num=1) {
         // roundtrip per intermediate craft.
         const plan = mc.getCraftingPlan(itemName, num, world.getInventoryCounts(bot));
         const intermediates = plan ? plan.steps.filter(s => s.item !== itemName) : [];
-        if (plan && Object.keys(plan.required).length === 0 && intermediates.length > 0) {
+        // Each plan is depth-capped, but plans across recursive calls are not:
+        // the mod pack crafts stick from pine_branch and pine_branch from stick,
+        // so plan(stick) says "make pine_branch" and plan(pine_branch) says
+        // "make stick" forever. Live, craft_torches rode that pair down to
+        // "Maximum call stack size exceeded" after 102KB of log, blocking the
+        // event loop past the 60s keepalive -- the bot timed out of the server
+        // every 58s for 40 minutes. Expand each item at most once per chain.
+        if (plan && Object.keys(plan.required).length === 0 && intermediates.length > 0
+            && !expanding.has(itemName)) {
+            const chain = new Set(expanding).add(itemName);
             log(bot, `Crafting intermediate items for ${itemName}: ${intermediates.map(s => `${s.count} ${s.item}`).join(', ')}.`);
             for (const step of intermediates) {
                 if (bot.interrupt_code) return false;
-                if (!await craftRecipe(bot, step.item, step.count)) return false;
+                if (!await craftRecipe(bot, step.item, step.count, chain)) return false;
             }
-            return await craftRecipe(bot, itemName, num);
+            // itemName is in `chain`, so this retry skips straight past planning
+            // to the actual craft instead of re-deriving the same intermediates.
+            return await craftRecipe(bot, itemName, num, chain);
         }
         // bot.recipesFor only knows vanilla ids: a craft from larch or pine
         // resolves to no recipe even with every ingredient in hand, which left
