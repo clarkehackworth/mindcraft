@@ -11,15 +11,14 @@ import { readFileSync } from 'fs';
 
 const src = readFileSync(new URL('./agent.js', import.meta.url), 'utf8');
 
-// The classifier is a one-line predicate inside Agent.start; lift it out rather
-// than standing up a whole Agent (which needs a profile, a model and a server).
-const match = src.match(/const isTransientAuthError = \(err\) => (.+);/);
-assert.ok(match, 'agent.js still classifies transient auth errors');
-const isTransientAuthError = new Function('err', `return ${match[1]};`);
+// The classifier used to be a one-line predicate inside Agent.start, lifted out
+// of the source with a regex. It is a named export now (it grew a second case:
+// see transient_connect.test.js), so import it and drop the regex.
+const { isTransientConnectError } = await import('./agent.js');
 
 const mojang_blip = 'Error: Failed to obtain profile data for Andy, does the account own minecraft?';
-assert.ok(isTransientAuthError(mojang_blip), 'the observed Mojang failure is recognised');
-assert.ok(isTransientAuthError(new Error('Failed to obtain profile data for Andy')), 'as an Error object too');
+assert.ok(isTransientConnectError(mojang_blip), 'the observed Mojang failure is recognised');
+assert.ok(isTransientConnectError(new Error('Failed to obtain profile data for Andy')), 'as an Error object too');
 
 // Things that are NOT this, and must keep their existing handling.
 for (const other of [
@@ -28,14 +27,14 @@ for (const other of [
     'TypeError: stateGoal.isValid is not a function',
     'Error: read ECONNRESET',
 ]) {
-    assert.ok(!isTransientAuthError(other), `${other} must not be misread as an auth blip`);
+    assert.ok(!isTransientConnectError(other), `${other} must not be misread as an auth blip`);
 }
 
 // And it has to actually be wired into the branch that disconnects, not just
 // defined -- that was the whole bug.
 assert.match(
     src,
-    /if \(isTransientAuthError\(err\)\) \{[\s\S]{0,600}?onDisconnect\('Error', err, TEMPFAIL_EXIT\)/,
+    /if \(isTransientConnectError\(err\)\) \{[\s\S]{0,600}?onDisconnect\('Error', err, TEMPFAIL_EXIT\)/,
     'the predicate gates the onDisconnect branch, not the log-only branch');
 
 // And it exits EX_TEMPFAIL, which agent_process retries promptly without

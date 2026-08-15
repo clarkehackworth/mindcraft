@@ -26,6 +26,26 @@ import { notePathFailure, noteUnreachable } from './path_spin.js';
 // the mindserver into every agent to share it.
 const TEMPFAIL_EXIT = 75;
 
+/**
+ * Is this connection error upstream weather rather than a broken agent?
+ *
+ * Mojang's auth API fails transiently, and it accounted for 45 of 194 agent
+ * crashes in one log. So does the Minecraft server simply being down: while
+ * minecraft-prominence2 restarted during soak 14, every connect attempt came
+ * back ECONNREFUSED, and the supervisor filed all eight as crashes. Nothing was
+ * wrong with the agent -- there was no server to connect to -- but the counter
+ * does not decay, so a deliberate restart twenty minutes later landed on a
+ * poisoned counter, got "Andy is crash-looping", and sat out a 300s backoff.
+ *
+ * Transient exits are still counted, just on their own gentler budget, so a
+ * link flapping without end is still throttled.
+ */
+export function isTransientConnectError(err) {
+    const text = String(err);
+    return /Failed to obtain profile data|does the account own minecraft/i.test(text)
+        || text.includes('ECONNREFUSED');
+}
+
 // In-process reconnects before giving up and letting the supervisor start a
 // fresh process. Bounded because a reconnect only rebuilds what we know about:
 // if something subtler is wrong -- a leaked handler, a wedged pathfinder, a
@@ -132,16 +152,14 @@ export class Agent {
         // spawn_timeout (30s) before exiting anyway, so treat it as the
         // disconnect it is: exit now and let agent_process retry on its
         // existing exponential backoff instead of burning half a minute first.
-        const isTransientAuthError = (err) => /Failed to obtain profile data|does the account own minecraft/i.test(String(err));
         this.bot.on('error', (err) => {
-            if (isTransientAuthError(err)) {
-                // 45 of 194 crashes in one log. It is Mojang's API having a
-                // moment, not a broken agent, so exit EX_TEMPFAIL: the parent
-                // retries promptly and does not count it toward the crash
-                // backoff, which would otherwise stretch a 5-second outage into
-                // 5-minute waits.
+            if (isTransientConnectError(err)) {
+                // Mojang having a moment, or the server being down. Neither is a
+                // broken agent, so exit EX_TEMPFAIL: the parent retries promptly
+                // and keeps it off the crash backoff, which would otherwise
+                // stretch a short outage into 5-minute waits.
                 onDisconnect('Error', err, TEMPFAIL_EXIT);
-            } else if (String(err).includes('Duplicate') || String(err).includes('ECONNREFUSED')) {
+            } else if (String(err).includes('Duplicate')) {
                  onDisconnect('Error', err);
             } else {
                  log(this.name, `[LoginGuard] Connection Error: ${String(err)}`);
