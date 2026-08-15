@@ -238,7 +238,6 @@ export const CONDITIONS = {
     drowning: {
         args: {
             air: 'number (default 12), oxygen out of 20 below which this is true',
-            critical: 'number (default 4), oxygen at or below which it fires on a single reading',
             window_ms: 'number (default 4000), how long two low readings may be apart',
         },
         desc: 'Bot is underwater and losing air. Use this for "underwater"/"drowning", not block_nearby water, which is also true standing on the shore.',
@@ -276,7 +275,24 @@ export const CONDITIONS = {
         fn: (agent, a) => {
             const bot = agent.bot;
             if (bot.oxygenLevel === undefined) return false;
-            if (bot.oxygenLevel <= (a.critical ?? 4)) return true;
+            // Why it fired, in the log next to the fire. Four inference-driven
+            // fixes to this condition failed in a row and one log line settled
+            // it each time; the reading that decided it is worth one line.
+            const why = (via) => {
+                console.log(`EVT drowning:fire:${via}:oxygen=${bot.oxygenLevel}` +
+                    `:recent=${(agent._low_air_seen ?? []).length}`);
+                return true;
+            };
+            // No emergency bypass for very low readings. That was the obvious
+            // shape -- near death, do not wait -- and it was where every
+            // remaining false positive came in. Measured:
+            //     EVT drowning:fire:critical:oxygen=2:recent=0
+            //     EVT drowning:fire:critical:oxygen=4:recent=0
+            // recent=0 means neither had any other low reading within four
+            // seconds, and both surfaced at 20/20. A stray packet does not read
+            // 11, it reads 2 -- so the bypass was catching precisely the noise
+            // it was meant to outrun. Every reading goes through the window now,
+            // which costs one tick (300ms) in a real drowning that lasts ~15s.
             const now = Date.now();
             const window_ms = a.window_ms ?? 4000;
             const seen = (agent._low_air_seen ??= []);
@@ -285,7 +301,7 @@ export const CONDITIONS = {
             if (bot.oxygenLevel <= (a.air ?? 12) && (!seen.length || now - seen[seen.length - 1] > 100))
                 seen.push(now);
             while (seen.length && now - seen[0] > window_ms) seen.shift();
-            return seen.length >= 2;
+            return seen.length >= 2 && why('window');
         }
     },
     near_respawn: {

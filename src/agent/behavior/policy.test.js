@@ -88,9 +88,9 @@ assert.equal(validatePolicy(drown), null, 'drowning + go_to_surface is a valid r
 // be a stray packet often enough to interrupt real work. Only the boundaries are
 // checked here -- drowning_debounce.test.js covers the windowing.
 const submerged = (oxygenLevel) => ({ bot: { oxygenLevel } });
-assert.equal(CONDITIONS.drowning.fn(submerged(3), {}), true, 'critical air fires on one reading');
+assert.equal(CONDITIONS.drowning.fn(submerged(3), {}), false, 'even critical air waits for a second reading');
 assert.equal(CONDITIONS.drowning.fn(submerged(20), {}), false, 'full oxygen is not drowning');
-assert.equal(CONDITIONS.drowning.fn(submerged(5), {}), false, 'one moderate low reading alone is a stray packet');
+assert.equal(CONDITIONS.drowning.fn(submerged(5), {}), false, 'one low reading alone is a stray packet');
 
 // A rule that fires but accomplishes nothing must back off, or it starves the
 // reasoning loop. Live: Andy with no pickaxe ran collect(stone) -> "Don't have

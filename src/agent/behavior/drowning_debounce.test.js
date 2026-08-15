@@ -55,9 +55,25 @@ test('lows further apart than the window do not accumulate', async () => {
         'the first low aged out; this is again a single stray');
 });
 
-test('critical air fires immediately, with no debounce', async () => {
+test('a single very low reading is noise, not an emergency', async () => {
+    // Measured on the live bot: oxygen=2 and oxygen=4, each with no other low
+    // reading inside the window, each surfacing at 20/20. There is no emergency
+    // bypass for these -- the stray packets read lower than the real dips.
+    // Short window so the test does not have to wait out the real four seconds;
+    // what matters is that the two strays fall in different windows, which is
+    // what recent=0 in the live log means.
+    const args = { window_ms: 200 };
     const agent = fresh();
-    assert.equal(await tick(agent, 3), true, 'near death, one reading is enough');
+    assert.equal(await tick(agent, 2, args), false, 'one reading of 2 with nothing around it');
+    assert.equal(await tick(agent, 20, args), false);
+    await new Promise(r => setTimeout(r, 260));
+    assert.equal(await tick(agent, 4, args), false, 'and one of 4, a window later');
+});
+
+test('a drowning that goes straight to critical still fires, one tick later', async () => {
+    const agent = fresh();
+    assert.equal(await tick(agent, 3), false, 'first reading arms it');
+    assert.equal(await tick(agent, 1), true, 'the second fires -- 300ms into a ~15s drowning');
 });
 
 test('missing oxygen data never fires', async () => {

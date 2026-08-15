@@ -67,8 +67,9 @@ const at = (oxygenLevel) => ({ bot: { oxygenLevel } });
 const drowning = { cond: 'drowning', air: 12 };
 assert.equal(evalCondition(drowning, at(20)), false, 'a full bar is not drowning');
 assert.equal(evalCondition(drowning, at(8)), false, 'one low reading alone is a stray packet');
-assert.equal(evalCondition(drowning, at(0)), true,
-    'critical air fires on a single reading, head block be damned -- that is the reading a real drowning gives');
+// Even zero waits for a second reading: the measured false positives read
+// oxygen=2 and oxygen=4 with nothing around them, lower than the real dips.
+assert.equal(evalCondition(drowning, at(0)), false, 'one reading of zero is still one reading');
 
 // A ceiling is not water. Andy dug in for the night, which puts a block over
 // his head, and with the air bar under full the swim-up branch re-asserted jump
