@@ -39,18 +39,33 @@ function fakeAgent(head_block_name, oxygenLevel, init = initModes) {
     return { agent, ranAction: () => ran };
 }
 
-// Just respawned: air bar still stale at 0, but the head is in air.
+// Just respawned: the air bar reads a stale 0 for one tick, then the real value
+// lands. This used to be caught by requiring a wet head, which turned out to
+// veto real drownings too (see below), so the debounce catches it instead --
+// the phantom is exactly one reading, and one reading fires nothing.
 const land = fakeAgent('air', 0);
 await land.agent.bot.modes.update();
-assert.equal(land.ranAction(), null, 'you cannot drown with your head in air');
+assert.equal(land.ranAction(), null, 'the stale reading alone does nothing');
+land.agent.bot.oxygenLevel = 20;
+await new Promise(r => setTimeout(r, 120));
+await land.agent.bot.modes.update();
+assert.equal(land.ranAction(), null, 'and once the real value lands there is nothing to do');
 
-// Actually drowning, and not in a block named 'water' -- kelp drowns you too.
-// Two updates, because one low reading is not enough any more: self_preservation
-// interrupts every action and stops the self-prompt loop, and it was doing that
-// 27 times in 14 minutes on air that had already refilled by the time surface()
-// ran. Same debounce the policy condition uses. A drowning lasts ~15s at 300ms
-// per tick, so the second reading costs one tick out of fifty.
-const kelp = fakeAgent('kelp', 4);
+// Actually drowning. Two updates, because one low reading is not enough any
+// more: self_preservation interrupts every action and stops the self-prompt
+// loop, and it was doing that 27 times in 14 minutes on air that had already
+// refilled by the time surface() ran. A drowning lasts ~15s at 300ms per tick,
+// so the second reading costs one tick out of fifty.
+//
+// The head block is 'air' here on purpose. Penned in water and instrumented,
+// a really drowning bot reports above=air, inwater=false, head_wet=false while
+// oxygen falls to 4 -- it floats at the surface and every positional test reads
+// dry. Requiring a wet head made this mode fire in the shallows at oxygen=20
+// and stay silent through two actual drowning deaths in one run.
+// Fresh copy of the module: modes_list is module state, so the debounce window
+// from the respawn case above carries into this one and its first reading would
+// count as the second. (The jump cases below do the same thing for `active`.)
+const kelp = fakeAgent('air', 4, (await import('./modes.js?case=drowning')).initModes);
 await kelp.agent.bot.modes.update();
 assert.equal(kelp.ranAction(), null, 'one low reading does not interrupt anything');
 await new Promise(r => setTimeout(r, 120));

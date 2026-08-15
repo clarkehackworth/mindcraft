@@ -69,11 +69,25 @@ const modes_list = [
             }
             if (bot.oxygenLevel === undefined || bot.oxygenLevel > 15)
                 this._said_drowning = false; // air recovered: next episode announces again
-            // Sampled every tick, not only while head_wet, so the window does
-            // not reset each time the head bobs above the surface.
+            // No head_wet on this branch. It was added to stop the post-respawn
+            // phantom and it did, but penning the bot in water and reading both
+            // sides showed it also inverts the mode. During a real drowning,
+            // measured on this server:
+            //     EVT air:low:oxygen=4:seen=14:above=air:inwater=false:head_wet=false
+            // -- the bot floats at the surface, so the block above is air and the
+            // physics engine says it is not in water, while oxygen falls to 4 and
+            // keeps going. Meanwhile the fires head_wet DID allow were at
+            // oxygen=19 and oxygen=20, bobbing in the shallows with full air. It
+            // fired when nothing was wrong and stayed silent while the bot
+            // drowned; the same run killed it twice with this mode enabled.
+            //
+            // The debounce below covers what head_wet was for: the respawn
+            // phantom is one stale reading of 0, and one reading no longer fires
+            // anything. head_wet stays on the passive jump branch, which is about
+            // swim physics rather than detection.
             this._low_air ??= [];
             const air_low = skills.lowAirPersists(this._low_air, bot.oxygenLevel);
-            if (head_wet && air_low) {
+            if (air_low) {
                 console.log(`EVT selfpres:drown:oxygen=${bot.oxygenLevel}:above=${blockAbove.name}:inwater=${bot.entity.isInWater}`);
                 // Actually drowning. Interrupt whatever it was doing -- the bot
                 // drowned pathfinding to a block it had found underwater, and

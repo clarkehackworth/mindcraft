@@ -2258,7 +2258,13 @@ export function lowAirPersists(seen, oxygen, air=12, window_ms=4000) {
     if (oxygen <= air && (!seen.length || now - seen[seen.length - 1] > 100))
         seen.push(now);
     while (seen.length && now - seen[0] > window_ms) seen.shift();
-    return seen.length >= 2;
+    // Air has to be low NOW, not just twice recently. Without this the verdict
+    // outlives the emergency by the length of the window, which is how a rescue
+    // got dispatched at oxygen=20 -- measured, repeatedly:
+    //     EVT selfpres:drown:oxygen=20:above=water:inwater=true
+    // and then reported "Surfaced with 20/20 air left", which is what made this
+    // look like a false detection when the detection had been right.
+    return seen.length >= 2 && oxygen <= air;
 }
 
 export async function surface(bot, timeout_seconds=20) {

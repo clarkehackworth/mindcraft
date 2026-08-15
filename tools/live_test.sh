@@ -378,16 +378,32 @@ night)
 water)
     read -r X Y Z <<<"$(require_pos)" || exit 1
     SECS=${2:-90}
+    # How deep to sink it. Five was not enough: the bot swam out before the air
+    # bar moved, so a clean run proved only that mineflayer can swim. The climb
+    # has to be long enough for air to actually drain on the way up, or the
+    # rescue never gets exercised.
+    DEPTH=${3:-12}
+    # Five deep, not three. A three-block column let the bot float to the top
+    # with its head in air, so a whole run finished with Air pinned at ~290 and
+    # proved nothing. It still has to be open at the top: the rescue being
+    # tested is surface(), which swims straight up, and a sealed lid tests
+    # drowning to death instead.
     echo "penning the bot in water at $X $Y $Z for ${SECS}s"
-    for dy in 0 1 2; do for dx in -1 0 1; do for dz in -1 0 1; do
+    for dy in $(seq 0 $((DEPTH-1))); do for dx in -1 0 1; do for dz in -1 0 1; do
         rcon "setblock $((X+dx)) $((Y+dy)) $((Z+dz)) water replace" >/dev/null
     done; done; done
     # Poll the server only -- one ssh per sample. Reading the agent log inside
     # the loop cost 80s an iteration, which is slower than the 15s of air being
     # measured. The agent side is read once at the end instead.
     echo "  t  server_Air (300 = full, 0 = drowning)"
+    # Drop it in once, then leave it alone. The freeze scenario re-teleports
+    # every sample to hold the bot in the hazard, and copying that here made the
+    # test unpassable: surface() would swim the bot out and five seconds later
+    # this loop yanked it back to the bottom, so it drowned no matter how well
+    # the rescue worked. What is being measured is escape, so it has to be
+    # allowed to escape.
+    rcon "tp $PLAYER $X $((Y+1)) $Z" >/dev/null
     for i in $(seq 1 $((SECS/5))); do
-        rcon "tp $PLAYER $X $((Y+1)) $Z" >/dev/null
         # set -e is on and a grep with no match exits 1, which silently killed
         # this whole loop the first time. Every probe here has to swallow it.
         air=$(rcon "data get entity $PLAYER Air" | grep -oE '\-?[0-9]+s?$' | tr -d s || true)
@@ -395,7 +411,7 @@ water)
         sleep 5
     done
     echo "-- draining the pen"
-    for dy in 0 1 2; do for dx in -1 0 1; do for dz in -1 0 1; do
+    for dy in $(seq 0 $((DEPTH-1))); do for dx in -1 0 1; do for dz in -1 0 1; do
         rcon "setblock $((X+dx)) $((Y+dy)) $((Z+dz)) air replace" >/dev/null
     done; done; done
     echo "-- surfaces during the run (want: air actually low each time):"
