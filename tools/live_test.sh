@@ -368,6 +368,40 @@ night)
     echo "-- dawn: pos $P1 -> $P2 ($([ "$P1" != "$P2" ] && echo mobile || echo 'NOT MOVING')), health $(rcon "data get entity $PLAYER Health" | grep -oE '[0-9.]+f' | tail -1)"
     ;;
 
+# self_preservation surfaced 27 times in 14 minutes and every one logged
+# "Surfaced with 20/20 air left". By the time I looked the bot had wandered off
+# and it stopped happening, so this pens it in water on purpose.
+#
+# The point is reading the server's own Air value beside mineflayer's
+# oxygenLevel. The agent log alone cannot tell a server that reports nonsense
+# from a client that mis-parses it, and that is the whole question here.
+water)
+    read -r X Y Z <<<"$(require_pos)" || exit 1
+    SECS=${2:-90}
+    echo "penning the bot in water at $X $Y $Z for ${SECS}s"
+    for dy in 0 1 2; do for dx in -1 0 1; do for dz in -1 0 1; do
+        rcon "setblock $((X+dx)) $((Y+dy)) $((Z+dz)) water replace" >/dev/null
+    done; done; done
+    # Poll the server only -- one ssh per sample. Reading the agent log inside
+    # the loop cost 80s an iteration, which is slower than the 15s of air being
+    # measured. The agent side is read once at the end instead.
+    echo "  t  server_Air (300 = full, 0 = drowning)"
+    for i in $(seq 1 $((SECS/5))); do
+        rcon "tp $PLAYER $X $((Y+1)) $Z" >/dev/null
+        # set -e is on and a grep with no match exits 1, which silently killed
+        # this whole loop the first time. Every probe here has to swallow it.
+        air=$(rcon "data get entity $PLAYER Air" | grep -oE '\-?[0-9]+s?$' | tr -d s || true)
+        printf "  %3ds  %6s\n" $((i*5)) "${air:-?}"
+        sleep 5
+    done
+    echo "-- draining the pen"
+    for dy in 0 1 2; do for dx in -1 0 1; do for dz in -1 0 1; do
+        rcon "setblock $((X+dx)) $((Y+dy)) $((Z+dz)) air replace" >/dev/null
+    done; done; done
+    echo "-- surfaces during the run (want: air actually low each time):"
+    botlog "Surfaced with|EVT selfpres:drown" "$((SECS/60+2))m" || echo "   none"
+    ;;
+
 watch) shift; botlog "$1" "${2:-5m}" ;;
 *) sed -n '2,36p' "$0" ;;
 esac

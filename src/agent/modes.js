@@ -69,7 +69,12 @@ const modes_list = [
             }
             if (bot.oxygenLevel === undefined || bot.oxygenLevel > 15)
                 this._said_drowning = false; // air recovered: next episode announces again
-            if (head_wet && bot.oxygenLevel !== undefined && bot.oxygenLevel <= 12) {
+            // Sampled every tick, not only while head_wet, so the window does
+            // not reset each time the head bobs above the surface.
+            this._low_air ??= [];
+            const air_low = skills.lowAirPersists(this._low_air, bot.oxygenLevel);
+            if (head_wet && air_low) {
+                console.log(`EVT selfpres:drown:oxygen=${bot.oxygenLevel}:above=${blockAbove.name}:inwater=${bot.entity.isInWater}`);
                 // Actually drowning. Interrupt whatever it was doing -- the bot
                 // drowned pathfinding to a block it had found underwater, and
                 // the passive branch below never fired because a goal was set.

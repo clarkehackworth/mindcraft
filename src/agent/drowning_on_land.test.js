@@ -45,9 +45,17 @@ await land.agent.bot.modes.update();
 assert.equal(land.ranAction(), null, 'you cannot drown with your head in air');
 
 // Actually drowning, and not in a block named 'water' -- kelp drowns you too.
+// Two updates, because one low reading is not enough any more: self_preservation
+// interrupts every action and stops the self-prompt loop, and it was doing that
+// 27 times in 14 minutes on air that had already refilled by the time surface()
+// ran. Same debounce the policy condition uses. A drowning lasts ~15s at 300ms
+// per tick, so the second reading costs one tick out of fifty.
 const kelp = fakeAgent('kelp', 4);
 await kelp.agent.bot.modes.update();
-assert.equal(kelp.ranAction(), 'mode:self_preservation', 'a wet head with no air is still drowning');
+assert.equal(kelp.ranAction(), null, 'one low reading does not interrupt anything');
+await new Promise(r => setTimeout(r, 120));
+await kelp.agent.bot.modes.update();
+assert.equal(kelp.ranAction(), 'mode:self_preservation', 'a wet head with no air, twice, is drowning');
 
 // The policy condition took the opposite lesson, on purpose, and the two are
 // not in conflict. self_preservation above runs on every tick and can afford a

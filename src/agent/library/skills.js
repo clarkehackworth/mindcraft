@@ -2235,6 +2235,32 @@ export function isBreathing(bot) {
     return bot.oxygenLevel >= 20;
 }
 
+/**
+ * Has the air bar been low for more than one reading?
+ *
+ * The air bar on this server produces isolated low samples that are gone by the
+ * next tick -- measured at oxygen=2 and oxygen=4 with nothing around them, on a
+ * bot that was breathing normally. Anything that interrupts work on a low
+ * reading has to see two of them before believing it. A real drowning fills any
+ * few seconds with low readings, so this costs one tick out of the ~50 a real
+ * one lasts; a stray packet never gets its second.
+ *
+ * @param {number[]} seen, caller-owned array of timestamps. Mutated in place --
+ *      each caller keeps its own so their windows do not interfere.
+ * @param {number} oxygen, bot.oxygenLevel.
+ * @returns {boolean} true if two low readings fall inside the window.
+ */
+export function lowAirPersists(seen, oxygen, air=12, window_ms=4000) {
+    if (oxygen === undefined) return false;
+    const now = Date.now();
+    // One sample per tick: several callers can ask inside a single update, and
+    // three reads of one packet is one observation, not three.
+    if (oxygen <= air && (!seen.length || now - seen[seen.length - 1] > 100))
+        seen.push(now);
+    while (seen.length && now - seen[0] > window_ms) seen.shift();
+    return seen.length >= 2;
+}
+
 export async function surface(bot, timeout_seconds=20) {
     /**
      * Swim straight up until the bot's head is out of water. Abandons any
@@ -2251,6 +2277,14 @@ export async function surface(bot, timeout_seconds=20) {
     // oxygen does not have. Straight up handles open water, which is where
     // bots actually drown; a ceiling overhead (ice over a lake, most often --
     // Andy drowned pinned under one) gets punched through rather than waited out.
+    // Say so when there was nothing to do. "Surfaced with 20/20 air left" on a
+    // bot that was already breathing reads as a phantom detection, and it sent
+    // me chasing one twice: the readings that triggered this were real, the bot
+    // just bobbed up on its own before the action got its turn to run.
+    if (isBreathing(bot)) {
+        log(bot, 'Already breathing by the time I got here; nothing to surface from.');
+        return true;
+    }
     bot.pathfinder.stop();
     bot.clearControlStates();
     bot.setControlState('jump', true);

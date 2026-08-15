@@ -293,15 +293,9 @@ export const CONDITIONS = {
             // 11, it reads 2 -- so the bypass was catching precisely the noise
             // it was meant to outrun. Every reading goes through the window now,
             // which costs one tick (300ms) in a real drowning that lasts ~15s.
-            const now = Date.now();
-            const window_ms = a.window_ms ?? 4000;
             const seen = (agent._low_air_seen ??= []);
-            // One sample per tick: several rules can share this condition inside
-            // a single update, and three reads of one packet is one observation.
-            if (bot.oxygenLevel <= (a.air ?? 12) && (!seen.length || now - seen[seen.length - 1] > 100))
-                seen.push(now);
-            while (seen.length && now - seen[0] > window_ms) seen.shift();
-            return seen.length >= 2 && why('window');
+            return skills.lowAirPersists(seen, bot.oxygenLevel, a.air ?? 12, a.window_ms ?? 4000)
+                && why('window');
         }
     },
     near_respawn: {
