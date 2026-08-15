@@ -30,8 +30,15 @@ test('the ingredient counts survive being read over and over', () => {
     // Nothing in the planner writes to them, and this fails the moment
     // something starts to -- the second plan would see doubled counts or a
     // half-emptied recipe and quietly ask for the wrong materials.
+    //
+    // The snapshot has to copy the WHOLE entry. It used to destructure two
+    // elements and rebuild a two-element array, which was faithful until
+    // d34169a appended the raw minecraft-data recipe as a third; after that the
+    // snapshot was short by one every time and the assert could never pass. It
+    // failed for a year on the shape of its own copy, not on any mutation --
+    // and a red test nobody can act on is a test nobody reads.
     const before = getItemCraftingRecipes('crafting_table', { oak_planks: 8 });
-    const snapshot = before.map(([ing, res]) => [{ ...ing }, { ...res }]);
+    const snapshot = before.map(entry => entry.map(part => ({ ...part })));
     for (let i = 0; i < 5; i++) getCraftingPlan('wooden_pickaxe', 1, { oak_log: 3 });
     const after = getItemCraftingRecipes('crafting_table', { oak_planks: 8 });
     assert.deepEqual(after, snapshot, 'planning mutated the shared recipe entries');

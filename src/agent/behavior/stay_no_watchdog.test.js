@@ -30,7 +30,18 @@ const sleep = new Rule({
     cooldown: 0,
 });
 await sleep.update(fakeAgent(), execute);
-assert.equal(seen, 0, 'a stay carries its own exit condition and must not be cut off by the watchdog');
+// This asked for 0 -- no watchdog at all -- and that went too far the other way:
+// flee_ranged_raiders then spun for 85 minutes at the bottom of a shaft, because
+// avoidEnemies looped as long as any hostile was in range and only a LoginGuard
+// kick broke it. f28f404 put a 20-minute leash on the exemption. Night is about
+// 11 real minutes, so 20 covers every legitimate stay-until-dawn with room to
+// spare, and the watchdog's interrupt_code is honoured inside the skill loops so
+// it cancels cleanly and the rule re-fires after its cooldown.
+//
+// That 85-minute spin has since been fixed at the source -- avoidEnemies carries
+// its own deadline now -- but the leash stays. It is the backstop for every
+// blocking step a stay-rule might contain, not just that one.
+assert.equal(seen, 20, 'a stay gets a long leash, not no leash');
 
 // Everything else still gets the watchdog: a stuck pathfinder has no exit.
 seen = 'unset';
