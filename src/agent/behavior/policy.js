@@ -350,14 +350,7 @@ export const CONDITIONS = {
     is_sheltered: {
         args: {},
         desc: 'A solid block sits two or three above the bot\'s feet -- it is under a roof (a capped dig_in foxhole, a house, a cave). Gate night-shelter and flee rules on "not is_sheltered" so a bot already under cover does not dig deeper, prompt for shelter it already has, or climb out of a safe hole to flee something that cannot reach it.',
-        fn: (agent) => {
-            const p = agent.bot.entity.position.floored();
-            for (const dy of [2, 3]) {
-                const b = agent.bot.blockAt(p.offset(0, dy, 0));
-                if (b && b.boundingBox === 'block') return true;
-            }
-            return false;
-        }
+        fn: (agent) => skills.isSheltered(agent.bot)
     },
     is_idle: {
         args: {},
@@ -577,6 +570,24 @@ export const ACTIONS = {
         desc: 'Dig a three-deep foxhole where standing, cap the opening with a carried cover block and place a torch if one is carried. The named-action form of "improvise a shelter for the night" -- pair it with a stay until dawn. It never seals the sides, so breaking the cap overhead is always enough to get out. Reports failure (for the prompt fallback) only when it could not get all the way down.',
         fn: async (agent) => {
             const bot = agent.bot;
+            // Already under a roof, so there is nothing to dig. Every rule in
+            // stayin_alive.json gates on "not is_sheltered", but rules are
+            // written by a model and this one was not: the agent wrote itself
+            // night_no_weapon_shelter -- hostile within 16 and no weapon ->
+            // dig_in -- with a six second cooldown and no shelter check. With a
+            // hostile parked nearby it re-dug three blocks every six seconds,
+            // from inside the hole it had just capped. Measured over one
+            // session: y=33 -> 28 -> 14 -> 5, heading for bedrock, while
+            // climb_out_of_the_deep fired eight times in nine minutes trying to
+            // undo it and lost.
+            //
+            // Reports success, because the caller wanted to be sheltered and it
+            // is. Failure here would double the rule's backoff for doing the
+            // right thing.
+            if (skills.isSheltered(bot)) {
+                skills.log(bot, 'Already under cover; staying in this hole rather than digging a deeper one.');
+                return true;
+            }
             // Three down, not two: after digging two the bot's head is at the
             // old surface level, so the cap spot is surrounded by open air and
             // there is nothing to place it against. At three deep the cap sits

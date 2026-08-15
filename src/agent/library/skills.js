@@ -3065,6 +3065,18 @@ const LIQUIDS = ['water', 'lava', 'flowing_water', 'flowing_lava'];
 const ESCAPE_RADIUS = 8;
 const ESCAPE_TIMEOUT_MS = 10000;
 
+// A solid block two or three above the feet: a capped dig_in foxhole, a house,
+// a cave roof. Shared with the is_sheltered policy condition so the rules and
+// the action they call cannot disagree about what shelter means.
+export function isSheltered(bot) {
+    const p = bot.entity.position.floored();
+    for (const dy of [2, 3]) {
+        const b = bot.blockAt(p.offset(0, dy, 0));
+        if (b && b.boundingBox === 'block') return true;
+    }
+    return false;
+}
+
 export function isInLiquid(bot) {
     const feet = bot.blockAt(bot.entity.position.floored());
     return !!feet && LIQUIDS.includes(feet.name);

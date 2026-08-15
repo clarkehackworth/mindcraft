@@ -456,6 +456,11 @@
               "cond": "is_night"
             },
             {
+              "not": {
+                "cond": "is_sheltered"
+              }
+            },
+            {
               "cond": "can_dig_down"
             },
             {
