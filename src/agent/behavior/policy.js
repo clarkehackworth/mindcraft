@@ -1484,16 +1484,49 @@ export function composePolicy(state) {
 // source. Rules that share a trigger but act differently are left alone -- they
 // still preempt each other, but that is the arbiter's problem, and deleting a
 // person's pinned rule on a guess is worse than the thrash.
+// Every condition name a `when` clause mentions, flattened out of all/any/not.
+// Args are deliberately dropped: "drowning air 12" and "drowning air 10" are the
+// same trigger stated twice, and the tuning difference is not what makes them
+// two rules.
+function condNames(when, out=new Set()) {
+    if (!when || typeof when !== 'object') return out;
+    if (when.cond) out.add(when.cond);
+    for (const branch of [...(when.all ?? []), ...(when.any ?? []), when.not])
+        if (branch) condNames(branch, out);
+    return out;
+}
+
+// Same trigger, same opening move, both able to preempt: that is one rule
+// written twice. Measured live: active:surface_when_drowning ({drowning} ->
+// go_to_surface, cooldown 5) alongside self:avoid_deep_water (same trigger, same
+// first action, cooldown 5), which fired six times in half an hour. The exact
+// match above could not see it because the self version appended a move_away, so
+// the `do` arrays differed by one element.
+//
+// Only the first action counts, and only for interrupts:'all' rules. Two cold
+// rules that both trigger on {is_freezing, is_sheltered} but open with dig_in
+// and move_away are a remedy and its fallback, not a duplicate -- collapsing
+// those loses real behaviour. And an interrupts:'idle' rule preempts nothing, so
+// a duplicate costs a wasted turn rather than a killed action; not worth the
+// risk of dropping one on a looser guess.
+function triggerSignature(rule) {
+    if (rule.interrupts !== 'all') return null;
+    return JSON.stringify([[...condNames(rule.when)].sort(), rule.do?.[0]?.act ?? null]);
+}
+
 function dedupeRules(rules) {
     const seen = new Map(); // signature -> the rule that claimed it
     return rules.filter(rule => {
-        const signature = JSON.stringify([rule.when ?? null, rule.do ?? []]);
-        const winner = seen.get(signature);
+        const signatures = [
+            JSON.stringify([rule.when ?? null, rule.do ?? []]),
+            triggerSignature(rule),
+        ].filter(s => s !== null);
+        const winner = signatures.map(s => seen.get(s)).find(Boolean);
         if (winner) {
-            console.log(`policy: dropped rule "${rule.name}" -- identical to "${winner.name}"`);
+            console.log(`policy: dropped rule "${rule.name}" -- same trigger and opening action as "${winner.name}"`);
             return false;
         }
-        seen.set(signature, rule);
+        for (const s of signatures) seen.set(s, rule);
         return true;
     });
 }
