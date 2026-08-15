@@ -2352,6 +2352,45 @@ export async function surface(bot, timeout_seconds=20) {
     return false;
 }
 
+// A bot at the bottom of a shaft it dug itself has nowhere to path *to*. Every
+// route out needs a climb the pathfinder will not plan from inside a one-wide
+// hole, so it returns partial paths forever. Measured live: 1,607 pathfinder
+// replans in four minutes, all from -24,65,-6, after a shelter rule dug down
+// three blocks and then found no torch to place. give_up_on_a_stuck_path fired
+// three times and every time called move_away, which is pathfinder-based and
+// failed exactly the same way -- every escape route the agent has runs through
+// the thing that is broken.
+//
+// A one-block-up goal is a search the pathfinder always solves. goToSurface
+// already leans on that to get out from under a deep roof; this is the same
+// trick scoped to climbing out of a pit rather than going all the way up, so a
+// bot that dug in for the night does not get dragged into the open to fix it.
+export async function climbOut(bot, blocks=3) {
+    /**
+     * Climb straight up out of a hole, one block at a time.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @param {number} blocks, how many blocks to climb at most.
+     * @returns {Promise<boolean>} true if the bot gained any height.
+     **/
+    const start_y = bot.entity.position.y;
+    for (let i = 0; i < blocks; i++) {
+        if (bot.interrupt_code) break;
+        const from = bot.entity.position.floored();
+        try {
+            await goToGoal(bot, new pf.goals.GoalBlock(from.x, from.y + 1, from.z));
+        } catch (err) {
+            break;
+        }
+        // No height gained means the next try will not fare better either: out
+        // of blocks to pillar with, or out of pickaxe.
+        if (bot.entity.position.y <= from.y) break;
+    }
+    const climbed = bot.entity.position.y - start_y;
+    if (climbed < 1) return false;
+    log(bot, `Climbed ${Math.round(climbed)} blocks up out of the hole.`);
+    return true;
+}
+
 export async function moveAway(bot, distance) {
     /**
      * Move away from current position in any direction.
@@ -2391,6 +2430,16 @@ export async function moveAway(bot, distance) {
         await bot.pathfinder.goto(inverted_goal);
     } catch (err) { /* handled by the distance check below */ }
     let new_pos = bot.entity.position;
+    // Stranded almost always means down a hole, and telling the agent to "try
+    // digging out" only helps if it is getting turns -- which it is not, because
+    // the pathfinder spin is what is eating them. Climb out here and retry: from
+    // open ground the same inverted goal routes fine.
+    if (new_pos.distanceTo(pos) < 1 && await climbOut(bot)) {
+        try {
+            await bot.pathfinder.goto(inverted_goal);
+        } catch (err) { /* handled by the distance check below */ }
+        new_pos = bot.entity.position;
+    }
     // goToGoal can also resolve without the bot getting anywhere, so a stranded
     // bot (pillar with no reachable neighbour, empty inventory) used to be told
     // it had moved and would try the same escape forever. Say it failed instead.
