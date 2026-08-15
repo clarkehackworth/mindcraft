@@ -418,6 +418,47 @@ water)
     botlog "Surfaced with|EVT selfpres:drown" "$((SECS/60+2))m" || echo "   none"
     ;;
 
+# The bot's own shelter rule dug down three, found no torch, and left it at the
+# bottom of a one-wide shaft. The pathfinder cannot plan a route out of one of
+# those, so it replanned 1,607 times in four minutes from a single block and did
+# nothing else at all. Every escape the agent has -- including the backstop rule
+# that exists for exactly this -- goes through move_away, which is pathfinder
+# based and failed the same way.
+#
+# This digs the same shaft on purpose. Watch the position, not the log: a bot
+# that is out is a bot whose reported block changes.
+pit)
+    read -r X Y Z <<<"$(require_pos)" || exit 1
+    SECS=${2:-120}
+    DEPTH=${3:-3}
+    echo "digging a ${DEPTH}-deep shaft at $X $Y $Z and dropping the bot in for ${SECS}s"
+    # Walls first, then hollow the column, so the bot cannot walk out sideways
+    # at any level. Open at the top: what is being tested is the climb, and a
+    # lid tests suffocation instead.
+    for dy in $(seq 0 $((DEPTH-1))); do for dx in -1 0 1; do for dz in -1 0 1; do
+        rcon "setblock $((X+dx)) $((Y+dy)) $((Z+dz)) stone replace" >/dev/null
+    done; done; done
+    for dy in $(seq 0 $((DEPTH-1))); do
+        rcon "setblock $X $((Y+dy)) $Z air replace" >/dev/null
+    done
+    rcon "setblock $X $((Y-1)) $Z stone replace" >/dev/null
+    # Dropped in once and then left alone, same as the water pen: re-teleporting
+    # to hold it in the hazard makes the escape being measured unpassable.
+    rcon "tp $PLAYER $X $Y $Z" >/dev/null
+    echo "  t  position (want: leaves $X,$Z)"
+    for i in $(seq 1 $((SECS/10))); do
+        at=$(rcon "data get entity $PLAYER Pos" | grep -oE '\-?[0-9]+\.[0-9]+d' | tr -d d | paste -sd, - || true)
+        printf "  %3ds  %s\n" $((i*10)) "${at:-?}"
+        sleep 10
+    done
+    echo "-- filling the shaft back in"
+    for dy in $(seq 0 $((DEPTH-1))); do for dx in -1 0 1; do for dz in -1 0 1; do
+        rcon "setblock $((X+dx)) $((Y+dy)) $((Z+dz)) air replace" >/dev/null
+    done; done; done
+    echo "-- escape attempts during the run:"
+    botlog "Climbed [0-9]+ blocks|nowhere to go|Moved away from|spin_abort" "$((SECS/60+2))m" || echo "   none"
+    ;;
+
 watch) shift; botlog "$1" "${2:-5m}" ;;
 *) sed -n '2,36p' "$0" ;;
 esac
