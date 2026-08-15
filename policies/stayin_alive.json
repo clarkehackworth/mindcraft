@@ -419,8 +419,7 @@
         "when": {
           "all": [
             {
-              "cond": "is_freezing",
-              "ticks": 90
+              "cond": "is_freezing"
             },
             {
               "not": {

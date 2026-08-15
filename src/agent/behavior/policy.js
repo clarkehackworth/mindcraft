@@ -1075,8 +1075,29 @@ export function repairPolicy(policy) {
 // None of them is a reasoning error -- the intent is unambiguous in every case
 // -- but each cost a full retry, and three of them cost the whole !policy call.
 // Rewriting them here is cheaper than asking the model again.
+// Keys that belong to the rule and never to a condition. The compiler emitted
+// night_no_weapon_shelter with a second copy of the rule's own control keys
+// nested inside its "when":
+//
+//   "when": {"any": [...], "do": [...], "interrupts": "all", "cooldown": 6}
+//
+// The top-level copies were present and correct, so the rule ran and nothing
+// complained -- extra keys were simply ignored, by both the normalizer and the
+// validator. One rule in sixty-one, which is exactly often enough to never get
+// noticed. "name" is deliberately not on this list: entity_nearby and
+// block_nearby both take one.
+const MISNESTED_RULE_KEYS = ['do', 'interrupts', 'cooldown', 'pinned', 'description'];
+
 export function normalizeCondition(spec) {
     if (!spec || typeof spec !== 'object') return spec;
+    // Strip before anything else, so the single-key leaf recovery below sees the
+    // clause the model meant to write rather than a five-key object.
+    if (MISNESTED_RULE_KEYS.some(k => k in spec)) {
+        const stripped = { ...spec };
+        for (const k of MISNESTED_RULE_KEYS) delete stripped[k];
+        console.log(`policy: dropped misnested rule keys from a "when" clause: ${MISNESTED_RULE_KEYS.filter(k => k in spec).join(', ')}`);
+        return normalizeCondition(stripped);
+    }
     for (const key of ['all', 'any']) {
         if (spec[key] === undefined) continue;
         const branches = Array.isArray(spec[key]) ? spec[key] : [spec[key]];
@@ -1101,13 +1122,34 @@ export function normalizeCondition(spec) {
     return spec;
 }
 
+// A key nobody reads is a key that silently means nothing. "hostile_nearby"
+// with "rnge": 24 is not a typo the engine can catch later -- the condition runs
+// at its default range and the rule looks like it works. The misnesting the
+// normalizer repairs above went unseen for the same reason: extra keys were
+// nobody's business, so nothing objected.
+function strayKeys(spec, allowed) {
+    return Object.keys(spec).filter(k => !allowed.includes(k));
+}
+
 export function validateCondition(spec) {
     if (!spec || typeof spec !== 'object') return 'missing "when" condition.';
-    if (spec.all) return Array.isArray(spec.all) ? spec.all.map(validateCondition).find(e => e) ?? null : '"all" must be an array.';
-    if (spec.any) return Array.isArray(spec.any) ? spec.any.map(validateCondition).find(e => e) ?? null : '"any" must be an array.';
-    if (spec.not) return validateCondition(spec.not);
+    if (spec.all || spec.any) {
+        const key = spec.all ? 'all' : 'any';
+        const stray = strayKeys(spec, [key]);
+        if (stray.length) return `"${key}" takes only a list of conditions; remove ${stray.map(k => `"${k}"`).join(', ')}.`;
+        return Array.isArray(spec[key]) ? spec[key].map(validateCondition).find(e => e) ?? null : `"${key}" must be an array.`;
+    }
+    if (spec.not) {
+        const stray = strayKeys(spec, ['not']);
+        if (stray.length) return `"not" takes only a single condition; remove ${stray.map(k => `"${k}"`).join(', ')}.`;
+        return validateCondition(spec.not);
+    }
     if (!spec.cond || !CONDITIONS[spec.cond])
         return `unknown condition "${spec?.cond}". Valid: ${Object.keys(CONDITIONS).join(', ')}`;
+    const args = Object.keys(CONDITIONS[spec.cond].args ?? {});
+    const stray = strayKeys(spec, ['cond', ...args]);
+    if (stray.length)
+        return `"${spec.cond}" has no argument ${stray.map(k => `"${k}"`).join(', ')}. Valid: ${args.join(', ') || 'none'}`;
     return null;
 }
 
