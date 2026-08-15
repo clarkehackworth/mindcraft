@@ -2429,12 +2429,21 @@ export async function moveAway(bot, distance) {
     try {
         await bot.pathfinder.goto(inverted_goal);
     } catch (err) { /* handled by the distance check below */ }
+    // Horizontal only. Getting away from something is a thing you do on the map,
+    // and once climbOut was in the picture the bot could satisfy a 3-D distance
+    // check by going straight up: it climbed two blocks, reported "Moved away
+    // from (-30,14,-5) to (-30,16,-5)", fell back down, and reported that as a
+    // move too. Measured at y=14 for ten minutes -- 14,15,16,17,16,15,14 over the
+    // same column -- with every bounce logged as an escape, which cleared
+    // path_stuck and kept anything else from escalating.
+    const awayFrom = (p) => Math.hypot(p.x - pos.x, p.z - pos.z);
     let new_pos = bot.entity.position;
     // Stranded almost always means down a hole, and telling the agent to "try
     // digging out" only helps if it is getting turns -- which it is not, because
     // the pathfinder spin is what is eating them. Climb out here and retry: from
-    // open ground the same inverted goal routes fine.
-    if (new_pos.distanceTo(pos) < 1 && await climbOut(bot)) {
+    // open ground the same inverted goal routes fine. The climb is setup, not
+    // progress, which is exactly why it must not count toward the distance.
+    if (awayFrom(new_pos) < 1 && await climbOut(bot)) {
         try {
             await bot.pathfinder.goto(inverted_goal);
         } catch (err) { /* handled by the distance check below */ }
@@ -2443,7 +2452,7 @@ export async function moveAway(bot, distance) {
     // goToGoal can also resolve without the bot getting anywhere, so a stranded
     // bot (pillar with no reachable neighbour, empty inventory) used to be told
     // it had moved and would try the same escape forever. Say it failed instead.
-    if (new_pos.distanceTo(pos) < 1) {
+    if (awayFrom(new_pos) < 1) {
         log(bot, `Could not move away from ${pos.floored()}: nowhere to go. You may be stranded; try placing a block to walk on or digging out.`);
         return false;
     }

@@ -80,6 +80,27 @@ test('move_away climbs out of the pit and then actually moves away', async () =>
     assert.ok(bot.entity.position.distanceTo(start) >= 1, 'and it ends up somewhere else');
 });
 
+test('climbing straight up is not moving away', async () => {
+    // Once climbOut was in the picture the bot could satisfy a 3-D distance
+    // check by going nowhere: it climbed two blocks out of a pit, reported
+    // "Moved away from (-30,14,-5) to (-30,16,-5)", fell back in, and reported
+    // that as a move too. It bounced 14,15,16,17,16,15,14 over one column for
+    // ten minutes, and every bounce cleared path_stuck so nothing escalated.
+    const bot = pitBot();
+    // Out of the hole the retry still routes nowhere horizontally -- all the
+    // displacement on offer is the climb itself.
+    bot.pathfinder.goto = async (goal) => {
+        const y = goal?.y;
+        if (y !== undefined && y === Math.floor(bot.entity.position.y) + 1) {
+            bot.entity.position = bot.entity.position.offset(0, 1, 0);
+            return;
+        }
+        throw new Error('NoPath');
+    };
+    assert.equal(await moveAway(bot, 24), false, 'straight up is not away');
+    assert.match(bot.output, /nowhere to go/);
+});
+
 test('move_away still reports failure when the climb cannot help', async () => {
     const bot = pitBot({ can_climb: false });
     assert.equal(await moveAway(bot, 24), false);
