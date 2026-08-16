@@ -41,7 +41,7 @@ function makeAgent() {
         isIdle() { return !this.actions.executing; },
         self_prompter: { isActive: () => false, stopLoop() {}, },
         handleMessage() {},
-        bot: { interrupt_code: false, emit() {} },
+        bot: { interrupt_code: false, emit() {}, on() {} },
     };
     initModes(agent);
     // Built-ins would compete for the same tick; this test is about the arbiter.

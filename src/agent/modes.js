@@ -583,7 +583,11 @@ class ModeController {
         // rules sharing the `drowning` condition happened to push samples into
         // the same array at their own cadences. Sampling in one place on a fixed
         // clock makes the window mean one thing for every reader.
-        skills.recordAir(_agent.bot);
+        //
+        // That clock is physicsTick, wired in initModes. It was here, which is
+        // not a fixed clock at all: this whole function is awaited by the agent
+        // loop and awaits the running action in turn, so it stops for as long as
+        // any blocking action runs. See the note in initModes.
         if (_agent.isIdle()) {
             this.unPauseAll();
         }
@@ -636,6 +640,21 @@ class ModeController {
 
 export function initModes(agent) {
     _agent = agent;
+    // Air is sampled on the game's own tick, not the agent loop, because the
+    // agent loop stops. Every link from the 300ms timer down to the action is
+    // awaited -- update -> modes.update -> entry.update -> execute -> runAction
+    // -- so a blocking action holds the whole chain for its full duration, and
+    // wait_out_the_night_under_cover runs a `stay` that lasts until dawn.
+    // Sampling from inside that loop meant minutes at a time with no samples at
+    // all, and lowAirPersists needs five inside four seconds, so the drowning
+    // reflex could not fire however hard the bot was drowning. Andy died at
+    // -57,58,81 twenty-five seconds into one of those stays, and at 2,54,-4
+    // sinking through a two-minute silence, both without one fire.
+    //
+    // physicsTick belongs to mineflayer, runs at 20Hz, and is not reachable from
+    // anything an action can block. recordAir keeps its own 100ms spacing, so
+    // the extra ticks cost nothing and the window keeps meaning one thing.
+    agent.bot.on('physicsTick', () => skills.recordAir(agent.bot));
     // the mode controller is added to the bot object so it is accessible from anywhere the bot is used
     agent.bot.modes = new ModeController();
     if (agent.task) {

@@ -12,6 +12,11 @@ function fakeAgent(head_block_name, oxygenLevel, init = initModes) {
     const agent = {
         name: 'test',
         bot: {
+            // initModes wires the air sampler to physicsTick, mineflayer's own
+            // clock, because the mode loop stops for the whole of any blocking
+            // action. Capturing the handler here proves the wiring happened;
+            // calling it is how this test advances the air history.
+            on(evt, fn) { if (evt === 'physicsTick') agent.bot._tick = fn; },
             entity: { position: { offset: () => ({}) }, eyeHeight: 1.62 },
             oxygenLevel,
             health: 20,
@@ -34,9 +39,10 @@ function fakeAgent(head_block_name, oxygenLevel, init = initModes) {
         openChat: () => {},
     };
     init(agent);
+    assert.equal(typeof agent.bot._tick, 'function', 'initModes wires the air sampler');
     for (const name of Object.keys(agent.bot.modes.getJson()))
         agent.bot.modes.setOn(name, name === 'self_preservation');
-    return { agent, ranAction: () => ran };
+    return { agent, ranAction: () => ran, tick: () => agent.bot._tick() };
 }
 
 // Just respawned: the air bar reads a stale 0 for one tick, then the real value
@@ -64,6 +70,7 @@ assert.equal(land.ranAction(), null, 'and once the real value lands there is not
 // from the respawn case above carries into this one and its first reading would
 // count as the second. (The jump cases below do the same thing for `active`.)
 const kelp = fakeAgent('air', 4, (await import('./modes.js?case=drowning')).initModes);
+kelp.tick();
 await kelp.agent.bot.modes.update();
 assert.equal(kelp.ranAction(), null, 'one low reading does not interrupt anything');
 // Five samples at the 300ms mode tick, which is 1.5s of a ~15s drowning. Two
@@ -71,6 +78,7 @@ assert.equal(kelp.ranAction(), null, 'one low reading does not interrupt anythin
 // four seconds often enough to fire this 46 times in 20 minutes.
 for (let i = 0; i < 4; i++) {
     await new Promise(r => setTimeout(r, 120));
+    kelp.tick();
     await kelp.agent.bot.modes.update();
 }
 assert.equal(kelp.ranAction(), 'mode:self_preservation', 'sustained low air is drowning');
