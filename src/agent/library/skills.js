@@ -2237,11 +2237,18 @@ export function isBreathing(bot) {
     // ponytail: falls back to the old name check only if the server never sends
     // oxygen. Refill is ~5 ticks from empty, so waiting for a full bar costs a
     // quarter second and removes every false "surfaced".
-    if (bot.oxygenLevel === undefined) {
+    // A negative reading carries no information, so it is treated the same as no
+    // reading at all: fall back to the block at the head. Answering "not
+    // breathing" to it is what kept surface() jumping for the full 20 seconds
+    // on dry land, since the early return never fired.
+    // Read once: oxygenLevel is a live property, and sampling it twice in one
+    // decision can straddle a change and answer about two different moments.
+    const oxygen = bot.oxygenLevel;
+    if (oxygen === undefined || oxygen < 0) {
         const head = bot.blockAt(bot.entity.position.offset(0, bot.entity.eyeHeight ?? 1.62, 0));
         return !head || head.name === 'air';
     }
-    return bot.oxygenLevel >= 20;
+    return oxygen >= 20;
 }
 
 // The air bar is sampled once per mode tick (300ms), so a 4s window holds about
@@ -2265,6 +2272,9 @@ export function recordAir(bot, window_ms=AIR_WINDOW_MS) {
     if (!bot) return;
     const now = Date.now();
     const seen = (bot._air_history ??= []);
+    // Out-of-range readings are dropped rather than stored, so a burst of them
+    // cannot fill the window and satisfy the debounce on its own.
+    if (bot.oxygenLevel < 0) return;
     if (!seen.length || now - seen[seen.length - 1].t > 100)
         seen.push({ t: now, oxygen: bot.oxygenLevel });
     while (seen.length && now - seen[0].t > window_ms) seen.shift();
@@ -2288,10 +2298,22 @@ export function recordAir(bot, window_ms=AIR_WINDOW_MS) {
  * about fifteen.
  */
 export function lowAirPersists(bot, air=12, min_samples=AIR_MIN_SAMPLES) {
-    if (!bot || bot.oxygenLevel === undefined) return false;
+    if (!bot) return false;
+    const oxygen = bot.oxygenLevel;
+    if (oxygen === undefined) return false;
+    // The bar is 0..20. A negative reading is not a very empty bar, it is the
+    // server telling us nothing -- and "nothing" tested as <= 12, so the reflex
+    // fired on dry land. Andy stood at -8,77,3 with air above his head and
+    // isInWater false, jumping straight up for 20 seconds at a time on a loop,
+    // every cycle preempting the self-prompt loop with an interrupts:all mode.
+    // He did that instead of anything else for minutes at a stretch.
+    //
+    // A real drowning on this server reports exactly 0 -- measured 26 times
+    // against 2 of these. Empty is 0; below empty is a broken packet.
+    if (oxygen < 0) return false;
     // Low NOW, not merely low recently: without this the verdict outlives the
     // emergency by a whole window, which had surface() dispatched at oxygen=20.
-    if (bot.oxygenLevel > air) return false;
+    if (oxygen > air) return false;
     const seen = bot._air_history ?? [];
     return seen.filter(s => s.oxygen !== undefined && s.oxygen <= air).length >= min_samples;
 }
