@@ -41,3 +41,17 @@ test('a goal with no fixed target is not recorded', () => {
     assert.equal(bot._unreachable_goals, undefined);
     assert.ok(!isUnreachable(bot, 0, 0, 0, 1001));
 });
+
+// The EVT line read g.x straight off the goal, which is fine for a GoalNear and
+// undefined for a GoalInvert -- the wrapper every escape uses. So every failed
+// flee, move_away and swim-clear logged "undefined,undefined,undefined", and
+// Andy drowned twice within two blocks of the same water without the log ever
+// naming it. Uses the real class so a rename in the library fails here.
+test('an inverted goal still reports where it was', async () => {
+    const pf = (await import('mineflayer-pathfinder')).default;
+    const inner = new pf.goals.GoalNear(4, 56, -6, 8);
+    const inverted = new pf.goals.GoalInvert(inner);
+    const kind = inverted.constructor.name;
+    const at = (kind === 'GoalInvert' ? inverted.goal : inverted) ?? {};
+    assert.equal(`${at.x},${at.y},${at.z}`, '4,56,-6');
+});

@@ -846,7 +846,15 @@ export class Agent {
                         // under the bot's feet for every other skill.
                         if (kind !== 'GoalInvert' && !g.entity)
                             noteUnreachable(this.bot, g.x, g.y, g.z);
-                        console.log(`EVT move:path:unreachable:${kind}:${g.x},${g.y},${g.z}:by=${this.actions.currentActionLabel ?? 'none'}`);
+                        // ...but it still has to say WHERE. GoalInvert keeps its
+                        // target in .goal, so reading g.x off the wrapper logged
+                        // "undefined,undefined,undefined" for every failed escape
+                        // -- drowning, fleeing, moving away -- which is the one
+                        // class of failure where the coordinate is the whole
+                        // point. Andy drowned twice within two blocks of the same
+                        // water and the log could not say so.
+                        const at = (kind === 'GoalInvert' ? g.goal : g) ?? {};
+                        console.log(`EVT move:path:unreachable:${kind}:${at.x},${at.y},${at.z}:by=${this.actions.currentActionLabel ?? 'none'}`);
                     }
                     // Rejects the pending goto with GoalChanged, which unwinds
                     // whatever was awaiting it and gives the arbiter its loop back.
