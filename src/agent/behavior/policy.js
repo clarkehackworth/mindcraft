@@ -1409,6 +1409,8 @@ export class Rule {
             // Skills return false when they accomplish nothing, so double the
             // rule's cooldown each time that happens and reset on any success.
             let progress = false;
+            // Separate from `progress`: see the note at the counter below.
+            let real_work = false;
             // A "stay until dawn" that the 2-minute watchdog kills at 120s is
             // not a night's shelter -- it is a nap. sleep_at_night timed out 431
             // times in one log, re-firing every 60s cooldown, so the bot bounced
@@ -1426,7 +1428,18 @@ export class Rule {
                     // since nothing reported progress the rule's backoff doubled
                     // until it was only trying twice an hour.
                     try {
-                        if (await ACTIONS[step.act].fn(agent, step) !== false) progress = true;
+                        const worked = await ACTIONS[step.act].fn(agent, step) !== false;
+                        if (worked) progress = true;
+                        // The stuck counter asks a narrower question than the
+                        // backoff does: did this rule change anything? A cheap
+                        // step answering "sure" is not evidence of that.
+                        // night_no_weapon_shelter fired 57 times in one window
+                        // achieving nothing, and never tripped the counter,
+                        // because its first step is equip_weapon -- cheap, and
+                        // it returns non-false even with no weapon to equip. The
+                        // blocking steps after it are the ones that shelter the
+                        // bot, and those were the ones failing.
+                        if (worked && ACTIONS[step.act].cost === 'blocking') real_work = true;
                     } catch (err) {
                         skills.log(agent.bot, `Rule '${this.spec.name}' step ${step.act} failed: ${err.message}`);
                     }
@@ -1455,7 +1468,12 @@ export class Rule {
             // This counter resets only on real progress, never on a flapping
             // trigger, so "the action has not worked once in N tries" survives
             // exactly the pattern that defeats the backoff.
-            if (progress) this.failures = 0;
+            // `progress` drives the backoff and stays generous -- a cheap step
+            // working is a fine reason not to slow the rule down. The counter
+            // uses real_work, which only a blocking step can set, because "this
+            // rule keeps firing and nothing changes" is the thing worth saying
+            // out loud and a cheap step cannot answer it.
+            if (real_work) this.failures = 0;
             else if (++this.failures % STUCK_FIRES === 0)
                 console.log(`EVT rule:stuck:${this.spec.name}:${this.failures}`);
         } else {

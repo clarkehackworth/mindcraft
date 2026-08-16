@@ -203,9 +203,27 @@ export class Agent {
         let last_time_update = Date.now();
         this.bot.on('time', () => { last_time_update = Date.now(); });
         this._liveness = setInterval(() => {
-            if (Date.now() - last_time_update > 180000) {
-                clearInterval(this._liveness);
-                this._handleDisconnect('No server time updates for 3 minutes: connection is dead but no end event fired.');
+            const silent_ms = Date.now() - last_time_update;
+            if (silent_ms <= 180000) return;
+            // The watchdog used to clearInterval itself here, before calling the
+            // thing it guards. _handleDisconnect early-returns once
+            // _disconnectHandled is set, and only _connect() clears that flag --
+            // so a reconnect that stalls anywhere before it left no watchdog and
+            // no way back. Andy sat exactly there for five hours after a
+            // "lost connection: Timed out": process alive, never reconnecting,
+            // firing one rule every two hours into a dead socket. The only
+            // symptom was an absence of logs, which reads like a quiet bot.
+            //
+            // So it stays armed. _handleDisconnect is idempotent and does the
+            // reconnect; this just keeps asking.
+            this._handleDisconnect('No server time updates for 3 minutes: connection is dead but no end event fired.');
+            // And if the connection is still dead well past the point any
+            // reconnect should have finished, stop guessing which step wedged
+            // and hand the whole process back. EX_TEMPFAIL, because a dead link
+            // is not a crashing agent and must not spend the crash budget.
+            if (silent_ms > 600000) {
+                log(this.name, `No server time updates for ${Math.round(silent_ms / 60000)} minutes and still not reconnected. Exiting for the supervisor.`);
+                process.exit(TEMPFAIL_EXIT);
             }
         }, 60000);
 
