@@ -24,6 +24,12 @@ import { writeFileSync, readFileSync, readdirSync, mkdirSync, existsSync, unlink
 // constructing Blocks -- worth doing if world scanning stays this hot.
 const MAX_COND_SCAN = 16;
 
+// How many consecutive fires with no progress before a rule is called stuck.
+// Low enough to catch a 44-minute entrapment in its first few minutes, high
+// enough that a rule failing twice while conditions change is not news.
+// ponytail: one threshold for every rule; per-rule tuning if one ever earns it.
+const STUCK_FIRES = 5;
+
 // Defined in mcdata so skills.js can share it; re-exported because this module
 // is where every existing caller looks for it.
 export const isWeaponName = mc.isWeaponName;
@@ -1321,6 +1327,7 @@ export class Rule {
         this.last_fire = 0;
         this.last_eval = 0;
         this.backoff = 1;
+        this.failures = 0;
     }
 
     eligible(agent) {
@@ -1416,6 +1423,21 @@ export class Rule {
             // not dead forever. Per-step backoff if one bad step ever masks a
             // good one in the same rule.
             this.backoff = progress ? 1 : Math.min(this.backoff * 2, 200);
+
+            // Backoff slows a failing rule down but never says it is failing,
+            // and it forgets: eligible() halves it whenever the trigger blinks
+            // off. climb_out_of_the_deep fired 22 times over 44 minutes while
+            // Andy starved at the bottom of a shaft -- each climb of 2 blocks
+            // cleared the trigger just long enough to reset the cadence to 60s,
+            // so the backoff never grew and the log never said a word. Finding
+            // it meant diffing 22 fire timestamps against a death event.
+            //
+            // This counter resets only on real progress, never on a flapping
+            // trigger, so "the action has not worked once in N tries" survives
+            // exactly the pattern that defeats the backoff.
+            if (progress) this.failures = 0;
+            else if (++this.failures % STUCK_FIRES === 0)
+                console.log(`EVT rule:stuck:${this.spec.name}:${this.failures}`);
         } else {
             // Nothing here reports progress, so the step backoff above never
             // applies and a prompt-only rule repeats at its cooldown forever --

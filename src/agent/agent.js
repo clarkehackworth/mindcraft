@@ -906,12 +906,21 @@ export class Agent {
                 // Structured so deaths can be counted instead of read. Every
                 // fold this loop has made came from noticing a death pattern by
                 // eye in the log, which only works while there are few of them.
-                // The four fields are the ones that have actually decided a
-                // rule: what killed it, where, whether it was night, and
-                // whether it was carrying a weapon at the time.
-                const armed = this.bot.inventory.items().some(i => /sword|axe/.test(i.name));
+                // The five fields are the ones that have actually decided a
+                // rule: what killed it, where, whether it was night, whether it
+                // was carrying a weapon at the time, and how much it owned.
+                //
+                // The last one was added after a starvation at the bottom of a
+                // shaft: "unarmed" said there was no sword, but the fact that
+                // decided everything was that the whole inventory was one plank
+                // -- nothing to pillar out with, nothing to eat. That took an
+                // rcon query to learn, and rcon only knows the living present,
+                // so by then the inventory at time of death was gone.
+                const items = this.bot.inventory.items();
+                const armed = items.some(i => /sword|axe/.test(i.name));
                 const evt = `EVT death:${jsonMsg.translate}:${Math.floor(death_pos.x)},${Math.floor(death_pos.y)},${Math.floor(death_pos.z)}`
-                    + `:${this.bot.time.timeOfDay >= 13000 ? 'night' : 'day'}:${armed ? 'armed' : 'unarmed'}`;
+                    + `:${this.bot.time.timeOfDay >= 13000 ? 'night' : 'day'}:${armed ? 'armed' : 'unarmed'}`
+                    + `:items${items.length}`;
                 console.log(evt);
                 try { sendOutputToServer(this.name, evt); } catch (_) {}
                 this.memory_bank.rememberPlace('last_death_position', death_pos.x, death_pos.y, death_pos.z);

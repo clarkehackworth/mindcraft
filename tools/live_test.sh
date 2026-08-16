@@ -172,7 +172,18 @@ clearlayer) shift; drive clearlayer "${1:?layer}" ;;
 
 # Which rules fired, how often -- the cheap way to see where AI turns go.
 # Prompt rules show up by name; everything else firing is free.
-rules)   botlog "EVT rule:fire" "${2:-30m}" | grep -oE 'rule:fire:[a-z_:0-9]+' | sort | uniq -c | sort -rn ;;
+rules)
+    botlog "EVT rule:fire" "${2:-30m}" | grep -oE 'rule:fire:[a-z_:0-9]+' | sort | uniq -c | sort -rn
+    # A rule can fire all day and accomplish nothing -- climb_out_of_the_deep
+    # fired 22 times while Andy starved in the shaft it was failing to climb.
+    # A fire count alone cannot tell those apart, so it is printed next to the
+    # count rather than left for someone to think to ask about.
+    stuck=$(botlog "EVT rule:stuck" "${2:-30m}" | grep -oE 'rule:stuck:[a-z_0-9]+:[0-9]+' || true)
+    if [ -n "$stuck" ]; then
+        echo "-- firing and getting nowhere --"
+        echo "$stuck" | awk -F: '{print $3, $4}' | sort -k1,1 -k2,2nr | awk '!seen[$1]++ {printf "%6s consecutive failures  %s\n", $2, $1}'
+    fi
+    ;;
 
 # Deaths, by cause and by circumstance. `deaths` tallies what is killing it;
 # `deaths <since> raw` lists them with coordinates, which is what shows a single
@@ -184,7 +195,9 @@ deaths)
     else
         botlog "EVT death:" "${2:-6h}" | grep -oE 'death:[a-zA-Z.]+' | sort | uniq -c | sort -rn
         echo "-- circumstances --"
-        botlog "EVT death:" "${2:-6h}" | grep -oE ':(night|day):(armed|unarmed)$' | sort | uniq -c | sort -rn
+        botlog "EVT death:" "${2:-6h}" | grep -oE ':(night|day):(armed|unarmed)' | sort | uniq -c | sort -rn
+        echo "-- what it owned at the time --"
+        botlog "EVT death:" "${2:-6h}" | grep -oE ':items[0-9]+$' | sort | uniq -c | sort -rn
     fi
     ;;
 

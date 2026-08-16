@@ -3199,7 +3199,14 @@ export async function goToSurface(bot) {
         ground = block.position;
         break;
     }
-    if (!ground) return false;
+    // The only silent exit left in the escape chain. A column with no solid
+    // block in 424 blocks of scan is strange enough to name -- unloaded chunk,
+    // a void, or a column of nothing but the NOT_GROUND set -- and the rule
+    // that calls this is the one meant to get the bot out from underground.
+    if (!ground) {
+        log(bot, `Could not find the surface above x=${Math.floor(pos.x)}, z=${Math.floor(pos.z)}: no solid ground in the whole column.`);
+        return false;
+    }
     const surface_y = ground.y + 1;
     if (Math.floor(pos.y) >= surface_y) {
         log(bot, `Already at the surface at y=${Math.floor(pos.y)}.`);
