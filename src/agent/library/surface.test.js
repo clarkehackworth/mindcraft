@@ -92,3 +92,22 @@ assert.equal(isBreathing({ entity: fakeEntity, blockAt: () => ({ name: 'kelp' })
     'and the fallback still rejects kelp');
 
 console.log('ok: drowning abandons the path, swims up, and always releases the jump');
+
+// surface() failed 25 times for every 15 it succeeded, always at oxygen=0, and
+// said only "Could not reach the surface within 20 seconds". Four attempts at
+// the drowning bug went into the detection condition, because the escape's own
+// failure carried no evidence at all. The two failures need opposite fixes:
+// pinned under something unbreakable is a tool problem, open water that never
+// ends is a direction problem.
+const sealed = fakeBot({ head: 'water', ceiling: 'blue_ice' });
+sealed.canDigBlock = () => false;
+await skills.surface(sealed, 0.3);
+assert.match(sealed.output, /pinned under blue_ice/, 'names what is overhead');
+assert.match(sealed.output, /nothing in hand can break it/, 'and that no tool helps');
+assert.match(sealed.output, /5\/20 air/, 'with the air reading that decided it');
+
+const open = fakeBot({ head: 'water', ceiling: 'water' });
+await skills.surface(open, 0.3);
+assert.match(open.output, /nothing overhead to break/, 'open water is the other failure');
+
+console.log('ok: a failed surface says which failure it was');

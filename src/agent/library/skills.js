@@ -2320,6 +2320,7 @@ export async function surface(bot, timeout_seconds=20) {
         log(bot, 'Already breathing by the time I got here; nothing to surface from.');
         return true;
     }
+    let blocked_by = null, could_dig = false, dig_error = null;
     bot.pathfinder.stop();
     bot.clearControlStates();
     bot.setControlState('jump', true);
@@ -2340,15 +2341,37 @@ export async function surface(bot, timeout_seconds=20) {
             }
             // Pinned under a solid ceiling: swimming up does nothing, dig it out.
             const ceiling = bot.blockAt(bot.entity.position.offset(0, eye + 1, 0));
-            if (ceiling && ceiling.name !== 'water' && ceiling.name !== 'air' && bot.canDigBlock(ceiling)) {
-                try { await bot.dig(ceiling); } catch {}
+            if (ceiling && ceiling.name !== 'water' && ceiling.name !== 'air') {
+                // What was overhead, and whether we were allowed to remove it.
+                // Remembered rather than logged per tick: this loop runs ten
+                // times a second and the interesting value is the last one.
+                blocked_by = ceiling.name;
+                could_dig = bot.canDigBlock(ceiling);
+                if (could_dig) { try { await bot.dig(ceiling); } catch (err) { dig_error = String(err).slice(0, 60); } }
             }
             await new Promise(resolve => setTimeout(resolve, 100));
         }
     } finally {
         bot.setControlState('jump', false);
     }
-    log(bot, `Could not reach the surface within ${timeout_seconds} seconds.`);
+    // "Could not reach the surface" on its own is the reason this bug outlived
+    // four attempts at it: surface() fails 25 times for every 15 it succeeds,
+    // always at oxygen=0, and the line said nothing about which of the two
+    // failures it was -- pinned under something undiggable, or swimming up
+    // through open water that never ends. Those need opposite fixes.
+    let why;
+    if (!blocked_by) {
+        why = 'nothing overhead to break; swimming up did not reach air';
+    } else if (!could_dig) {
+        why = `pinned under ${blocked_by}, and nothing in hand can break it`;
+    } else if (dig_error) {
+        why = `pinned under ${blocked_by}, digging it failed: ${dig_error}`;
+    } else {
+        why = `pinned under ${blocked_by}, dug at it and still stuck`;
+    }
+    const p = bot.entity.position;
+    log(bot, `Could not reach the surface within ${timeout_seconds} seconds at ` +
+        `${Math.floor(p.x)},${Math.floor(p.y)},${Math.floor(p.z)} with ${bot.oxygenLevel}/20 air: ${why}.`);
     return false;
 }
 
