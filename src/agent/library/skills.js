@@ -2386,7 +2386,14 @@ export async function climbOut(bot, blocks=3) {
         if (bot.entity.position.y <= from.y) break;
     }
     const climbed = bot.entity.position.y - start_y;
-    if (climbed < 1) return false;
+    // A silent false here reads as "nothing happened" in the log, which is how a
+    // bot starved at the bottom of a shaft through 20 fires of this rule without
+    // leaving a trace. Failing to climb has one cause worth naming: nothing to
+    // pillar with and nothing to dig with.
+    if (climbed < 1) {
+        log(bot, `Could not climb out: gained no height, nothing to pillar with and nothing to dig.`);
+        return false;
+    }
     log(bot, `Climbed ${Math.round(climbed)} blocks up out of the hole.`);
     return true;
 }

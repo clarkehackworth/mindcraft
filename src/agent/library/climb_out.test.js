@@ -71,6 +71,10 @@ test('a bot with nothing to climb with says so instead of looping', async () => 
     const bot = pitBot({ can_climb: false });
     assert.equal(await climbOut(bot), false);
     assert.equal(bot.entity.position.y, 65);
+    // "Says so" was in this test's name before it was in the log. Andy starved at
+    // the bottom of a shaft while this rule fired 20 times and returned a silent
+    // false every time -- 44 minutes that left nothing to grep for.
+    assert.match(bot.output, /Could not climb out/);
 });
 
 test('move_away climbs out of the pit and then actually moves away', async () => {
