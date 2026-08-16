@@ -2459,8 +2459,24 @@ export async function moveAway(bot, distance) {
     // goToGoal can also resolve without the bot getting anywhere, so a stranded
     // bot (pillar with no reachable neighbour, empty inventory) used to be told
     // it had moved and would try the same escape forever. Say it failed instead.
-    if (awayFrom(new_pos) < 1) {
+    const moved = awayFrom(new_pos);
+    if (moved < 1) {
         log(bot, `Could not move away from ${pos.floored()}: nowhere to go. You may be stranded; try placing a block to walk on or digging out.`);
+        return false;
+    }
+    // The caller asks for a distance and used to get "true" for one block of it.
+    // give_up_on_a_stuck_path asks for 24 -- far enough to leave the region the
+    // pathfinder is failing in -- and a one-block shuffle satisfied it, cleared
+    // path_stuck, and left the bot wedged: 3,243 of 3,810 failed pathfinds in a
+    // single 16-block box while every escape in it reported success.
+    //
+    // ponytail: half the ask, not all of it. goto walks the best partial path it
+    // can find for an inverted goal, so demanding the full distance would fail
+    // constantly in tight terrain where a partial escape is genuinely enough.
+    // Half clears a 16-block box for any caller asking 32+, and is honest for
+    // the rest. Raise it if a wedge ever survives inside half the radius.
+    if (moved < distance / 2) {
+        log(bot, `Only got ${Math.round(moved)} blocks away from ${pos.floored()}, not the ${distance} asked for -- still in the same spot for pathfinding purposes. Try a different direction, digging through, or a goal somewhere else entirely.`);
         return false;
     }
     log(bot, `Moved away from ${pos.floored()} to ${new_pos.floored()}.`);

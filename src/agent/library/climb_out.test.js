@@ -110,3 +110,28 @@ test('move_away still reports failure when the climb cannot help', async () => {
     assert.equal(await moveAway(bot, 24), false);
     assert.match(bot.output, /nowhere to go/);
 });
+
+test('a shuffle is not an escape, however far it was asked to go', async () => {
+    // give_up_on_a_stuck_path asks for 24 blocks precisely so the bot leaves the
+    // region the pathfinder keeps failing in. The distance built the goal and
+    // then went unused: any move over one block reported success. Andy did
+    // 3,243 of his 3,810 failed pathfinds inside one 16-block box while every
+    // escape fired from inside it came back true.
+    const bot = pitBot({ floor_y: 68, out_y: 68 });
+    bot.pathfinder.goto = async () => {
+        bot.entity.position = bot.entity.position.offset(3, 0, 0);
+    };
+    assert.equal(await moveAway(bot, 24), false, '3 of 24 blocks is still the same spot');
+    assert.match(bot.output, /Only got 3 blocks away/);
+    assert.match(bot.output, /different direction/, 'and it says what to try instead');
+});
+
+test('a partial escape that clears the region still counts', async () => {
+    // The other half of the same judgement: demanding all 24 would fail in tight
+    // terrain where getting most of the way out is genuinely enough.
+    const bot = pitBot({ floor_y: 68, out_y: 68 });
+    bot.pathfinder.goto = async () => {
+        bot.entity.position = bot.entity.position.offset(14, 0, 0);
+    };
+    assert.equal(await moveAway(bot, 24), true, '14 of 24 clears a 16-block box');
+});
