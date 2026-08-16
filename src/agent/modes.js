@@ -412,6 +412,13 @@ const modes_list = [
 // up, placing torches, elbow room, staring at the sky -- can wait the moment
 // out. A policy rule answers this with its own `urgent` (set from `pinned`).
 const URGENT_MODES = ['self_preservation', 'unstuck', 'cowardice', 'self_defense'];
+// How long a preemption may keep a losing mode switched off. Urgent modes get
+// far less: drowning runs its whole course in about fifteen seconds, so a
+// safety reflex parked for thirty is simply absent for the emergency. Not zero
+// for either -- the pause exists because self_preservation and self_defense
+// preempted each other 157 times in a row next to one zombie.
+const PAUSE_MAX_MS = 30000;
+const PAUSE_MAX_URGENT_MS = 5000;
 const isUrgentMode = (mode) => mode.urgent ?? URGENT_MODES.includes(mode.name);
 
 // One grep-stable line per behavior fire, to the log and to the mindserver
@@ -591,6 +598,24 @@ class ModeController {
         if (_agent.isIdle()) {
             this.unPauseAll();
         }
+        // A pause is a cooldown, not a life sentence. unPauseAll above only runs
+        // when the agent is idle, and a bot inside a long blocking action never
+        // is -- so a mode that lost one preemption stayed paused for as long as
+        // the bot stayed busy. self_preservation is in that set, which means the
+        // drowning and low-health reflexes could be switched off for minutes at
+        // a time by a rule that outranked them once. Andy drowned at -27,47,27
+        // fourteen seconds after the self-prompt loop overran its stop deadline,
+        // with no reflex fire before it.
+        //
+        // Same shape as self_prompter's bounded stop wait, and the same answer:
+        // give up on the pause after a while and let the loop sort it out again.
+        for (const entry of this._entries()) {
+            const cap = isUrgentMode(entry) ? PAUSE_MAX_URGENT_MS : PAUSE_MAX_MS;
+            if (entry.paused && Date.now() - (entry.paused_at ?? 0) > cap) {
+                console.log(`EVT mode:unpause_timeout:${entry.name}`);
+                this.unpause(entry.name);
+            }
+        }
         // Behavior-tree arbiter: walk entries in priority order. Entries
         // before a running one may still fire (preemption); entries after
         // it are skipped, same as the old mode loop.
@@ -608,7 +633,7 @@ class ModeController {
                 // said which one gets it, so the loser sits out until the
                 // situation is over. unPauseAll on idle above is the reset.
                 const losing = this._entries().find(e => e.active && e !== entry);
-                if (losing) losing.paused = true;
+                if (losing) { losing.paused = true; losing.paused_at = Date.now(); }
                 await entry.update(_agent, execute);
             }
             if (entry.active) break;

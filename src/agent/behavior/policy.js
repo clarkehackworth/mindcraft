@@ -486,6 +486,19 @@ export const ACTIONS = {
         desc: 'Collect blocks of a type within 64 blocks. Family names ("log", "<x>_ore") collect any variant. If none are that close, the rule simply collects nothing -- gate it on block_nearby so it does not retry forever.',
         fn: async (agent, a) => await skills.collectBlock(agent.bot, a.type, a.num ?? 1)
     },
+    pick_up_drops: {
+        cost: 'blocking', clears: ['has_item'],
+        args: { range: 'number (default 8), how far to walk for a drop' },
+        // pickupNearbyItems has existed all along and no rule could ask for it,
+        // so nothing ever recovered what a death dropped. Andy would spend three
+        // windows building a sword, a pickaxe and a hundred blocks, die once,
+        // and start from nothing -- and leave_your_death_spot then walked him 24
+        // blocks away, which is the surest way to let the pile despawn. Most of
+        // the deaths in a nine-hour soak were the second, third and fourth in a
+        // chain that began with one.
+        desc: 'Pick up loose items on the ground nearby, including everything dropped where you died. Returns false if there is nothing to pick up, so a rule gated only on being at the death spot simply does nothing when the ground is bare.',
+        fn: async (agent, a) => await skills.pickupNearbyItems(agent.bot, a.range ?? 8)
+    },
     deposit: {
         cost: 'blocking', clears: ['has_item'],
         args: { item: 'string item name', num: 'number (default all)' },

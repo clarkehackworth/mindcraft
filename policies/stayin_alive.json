@@ -485,7 +485,7 @@
       },
       {
         "name": "leave_your_death_spot",
-        "description": "Whatever killed you is probably still standing there and your gear is on the ground next to it, so walking back in unarmed is how you die twice. This was previously inexpressible: the compiler wanted it, had no condition for \"where I died\", and wrote at_position 0,0,0 -- a placeholder matching only the world origin, so the rule never fired once. Gated on not holding a weapon, because armed and in daylight is exactly when going back to collect your things is the right call. Night was folded in here once and it made things worse -- the walk is what killed the bot, 28 times in one game-day -- so dig_in_at_your_death_spot owns the dark now and this rule owns the daylight.",
+        "description": "Whatever killed you is probably still standing there and your gear is on the ground next to it, so walking back in unarmed is how you die twice. This was previously inexpressible: the compiler wanted it, had no condition for \"where I died\", and wrote at_position 0,0,0 -- a placeholder matching only the world origin, so the rule never fired once. Gated on not holding a weapon, because armed and in daylight is exactly when going back to collect your things is the right call. Night was folded in here once and it made things worse -- the walk is what killed the bot, 28 times in one game-day -- so dig_in_at_your_death_spot owns the dark now and this rule owns the daylight. It now picks the pile up before it walks off. Leaving first meant the gear despawned, and a bot with nothing cannot pillar out of a hole, fight anything, or eat: across a nine-hour soak most deaths were the second, third and fourth in a chain that started with one. pick_up_drops returns false on bare ground, so this costs nothing when there is nothing to take.",
         "interrupts": "all",
         "when": {
           "all": [
@@ -502,6 +502,13 @@
           ]
         },
         "do": [
+          {
+            "act": "pick_up_drops",
+            "range": 10
+          },
+          {
+            "act": "equip_weapon"
+          },
           {
             "act": "move_away",
             "distance": 24
