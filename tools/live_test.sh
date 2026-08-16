@@ -234,6 +234,20 @@ path)
 # Where the pathfinder gives up, binned to 16-block boxes. A count of failures
 # says the pathfinder is busy; a count per box says which terrain is eating the
 # actions, which is the only version of the number worth acting on.
+# What the bot is physically walking into, by block. `stuckspots` says where it
+# happens; this says what it is. 123 of these in 25 minutes against 24 goals
+# reached -- five collisions per goal -- while every agent-level check read
+# healthy, because path_stuck needs 40 consecutive failures WITHOUT moving and a
+# bot that bumps, re-plans and shuffles on never gets there.
+stuckblocks)
+    echo "-- standing on --"
+    botlog "path_reset:stuck:at=" "${2:-1h}" | grep -oE ':on=[a-z_:]+' | sort | uniq -c | sort -rn | head -10
+    echo "-- walked into (feet/head at the four neighbours) --"
+    botlog "path_reset:stuck:at=" "${2:-1h}" | grep -oE 'ring=.*' | tr ' ' '\n' \
+        | sed 's/ring=//' | grep -vE '^(air|cave_air|water)/(air|cave_air|water)$' \
+        | sort | uniq -c | sort -rn | head -12
+    ;;
+
 stuckspots)
     botlog "EVT move:path" "${2:-2h}" \
         | grep -oE 'at=-?[0-9]+,-?[0-9]+,-?[0-9]+' \

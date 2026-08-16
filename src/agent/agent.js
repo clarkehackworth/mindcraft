@@ -884,7 +884,35 @@ export class Agent {
             console.log('EVT move:goal_reached');
             this.path_stuck_count = 0;
         });
-        this.bot.on('path_reset', (reason) => console.log(`EVT move:path_reset:${reason}`));
+        this.bot.on('path_reset', (reason) => {
+            // "stuck" means the pathfinder gave up on a path the bot was not
+            // advancing along -- it is walking into something. That fired 123
+            // times in 25 minutes against 24 goals reached, five collisions per
+            // goal, and Jeff could see it happening before any counter said so:
+            // the agent's own path_stuck rule needs 40 consecutive failures
+            // WITHOUT moving, and a bot that bumps, re-plans and shuffles on
+            // never reaches 40. So it looked healthy and moved like it was
+            // drunk.
+            //
+            // Which block it is matters more than the count. This server has
+            // 17,437 modded blocks and mineflayer only knows the collision
+            // shapes of the vanilla ones, so the planner routing through
+            // something it thinks is walkable is the obvious suspect -- but
+            // "obvious" has been wrong four times tonight, so name the block
+            // and let the next window say.
+            if (reason !== 'stuck') return console.log(`EVT move:path_reset:${reason}`);
+            const p = this.bot.entity?.position;
+            const at = p ? `${Math.floor(p.x)},${Math.floor(p.y)},${Math.floor(p.z)}` : '?';
+            const nameAt = (dx, dy, dz) => {
+                try { return this.bot.blockAt(p.offset(dx, dy, dz))?.name ?? '?'; } catch { return '?'; }
+            };
+            // Feet and head at the four neighbours: whatever it is walking into
+            // is one of these, and the pair tells a step-up from a wall.
+            const ring = p
+                ? [[1,0],[-1,0],[0,1],[0,-1]].map(([dx, dz]) => `${nameAt(dx,0,dz)}/${nameAt(dx,1,dz)}`).join(' ')
+                : '?';
+            console.log(`EVT move:path_reset:stuck:at=${at}:on=${nameAt(0,0,0)}:ring=${ring}`);
+        });
         // Logging callbacks
         this.bot.on('error' , (err) => {
             console.error('Error event!', err);
