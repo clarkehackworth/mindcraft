@@ -975,7 +975,61 @@ function findDuplicateRule(rules) {
 // makes the malformed token unreachable instead of merely unwelcome. This
 // covers shape only; which conditions and actions exist is validatePolicy's
 // job, and keeping that out of here keeps the grammar small.
+// "when" was {type: 'object'} and "do" was an array of bare objects, so the
+// schema said nothing at all about the two places the model actually writes. It
+// is where night_no_weapon_shelter got a second copy of the rule's own control
+// keys nested inside its condition -- the decoder had no reason to stop it.
+//
+// Measured against this server's backend before relying on it: asked outright to
+// put "do", "interrupts" and "cooldown" inside a "when" constrained by
+// additionalProperties:false, it could not -- the grammar refuses at decode
+// time. Recursive $ref resolves too, so the whole condition tree can be
+// constrained rather than just its first level.
+//
+// Args are a flat union across every condition. WHICH args a given condition
+// takes is per-condition and validateCondition checks exactly that already; the
+// schema's job here is structural. A too-clever schema that makes a legitimate
+// rule unwritable breaks compilation outright rather than costing one retry, so
+// this deliberately does not try to type each arg individually -- "pct" and
+// "value" are numbers whose descriptions do not start with the word "number",
+// and getting one wrong is worse than being loose.
+//
+// Scalar-only is the part that matters, and it is not cosmetic. Left untyped,
+// {"item": <anything>} accepted an object, and the model promptly used it as a
+// fake nested condition: {"all": [{"item": {"is_night": true}}]}. Every arg in
+// both registries is a string, a number or a boolean, so ruling out objects and
+// arrays closes that door without needing to know which is which.
+const ARG_VALUE = { type: ['string', 'number', 'boolean'] };
+
+const conditionArgNames = () =>
+    [...new Set(Object.values(CONDITIONS).flatMap(d => Object.keys(d.args ?? {})))];
+const actionArgNames = () =>
+    [...new Set(Object.values(ACTIONS).flatMap(d => Object.keys(d.args ?? {})))];
+
+const CONDITION_SCHEMA = {
+    type: 'object',
+    properties: {
+        cond: { type: 'string', enum: Object.keys(CONDITIONS) },
+        all: { type: 'array', items: { $ref: '#/$defs/condition' } },
+        any: { type: 'array', items: { $ref: '#/$defs/condition' } },
+        not: { $ref: '#/$defs/condition' },
+        ...Object.fromEntries(conditionArgNames().map(a => [a, ARG_VALUE])),
+    },
+    additionalProperties: false,
+};
+
+const ACTION_SCHEMA = {
+    type: 'object',
+    properties: {
+        act: { type: 'string', enum: Object.keys(ACTIONS) },
+        ...Object.fromEntries(actionArgNames().map(a => [a, ARG_VALUE])),
+    },
+    required: ['act'],
+    additionalProperties: false,
+};
+
 export const POLICY_SCHEMA = {
+    $defs: { condition: CONDITION_SCHEMA },
     type: 'object',
     properties: {
         modes: { type: 'object' },
@@ -987,13 +1041,14 @@ export const POLICY_SCHEMA = {
                 properties: {
                     name: { type: 'string' },
                     description: { type: 'string' },
-                    when: { type: 'object' },
-                    do: { type: 'array', items: { type: 'object' } },
+                    when: { $ref: '#/$defs/condition' },
+                    do: { type: 'array', items: ACTION_SCHEMA },
                     interrupts: { type: 'string', enum: ['all', 'idle'] },
                     cooldown: { type: 'number' },
                     pinned: { type: 'boolean' }
                 },
-                required: ['name', 'description', 'when', 'do']
+                required: ['name', 'description', 'when', 'do'],
+                additionalProperties: false
             }
         }
     },
