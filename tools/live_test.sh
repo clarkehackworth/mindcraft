@@ -49,7 +49,12 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SNAPDIR=${SNAPDIR:-/tmp/live_test_snapshots}
 
 rcon() { ssh "$HOST" "docker exec $MC rcon-cli \"$*\"" 2>&1; }
-botlog() { ssh "$HOST" "docker logs --since ${2:-2m} $BOT_CONTAINER 2>&1" | grep -E "$1" || true; }
+# tr -d '\r': the container's log lines end CRLF, so every pattern anchored with
+# $ silently matches nothing. The "what it owned at the time" tally was added
+# with a ':items[0-9]+$' anchor and printed an empty section from the day it
+# landed -- an empty section reads as "no deaths had items", which is the
+# opposite of what it meant. Strip it once here so no caller has to know.
+botlog() { ssh "$HOST" "docker logs --since ${2:-2m} $BOT_CONTAINER 2>&1" | tr -d '\r' | grep -E "$1" || true; }
 
 # Mindserver auth token: env wins, else pull it from the container (SETTINGS_JSON
 # env overrides /app/settings.js, so check both, env first).
@@ -198,6 +203,17 @@ deaths)
         botlog "EVT death:" "${2:-6h}" | grep -oE ':(night|day):(armed|unarmed)' | sort | uniq -c | sort -rn
         echo "-- what it owned at the time --"
         botlog "EVT death:" "${2:-6h}" | grep -oE ':items[0-9]+$' | sort | uniq -c | sort -rn
+        # Falls get their own line with coordinates. The first one in twelve
+        # hours of soaking landed in the same window pick_up_drops went live,
+        # and that action walks the bot to each dropped item one at a time --
+        # toward whatever is lying around it, where it previously walked away.
+        # One is noise. Falls clustering near a death site would not be, and a
+        # count buried in the cause tally is not something anyone would notice.
+        falls=$(botlog "EVT death:death.fell" "${2:-6h}" | grep -oE 'death:death.fell[^ ]*' || true)
+        if [ -n "$falls" ]; then
+            echo "-- falls (new since pick_up_drops; watch for clustering) --"
+            echo "$falls"
+        fi
     fi
     ;;
 
