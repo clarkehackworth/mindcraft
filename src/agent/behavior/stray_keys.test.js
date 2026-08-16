@@ -32,9 +32,40 @@ test('the rule keys the compiler misnested are stripped, not rejected', () => {
     };
     const fixed = normalizeCondition(when);
     assert.deepEqual(Object.keys(fixed), ['any'], 'only the condition survives');
-    assert.equal(validateCondition(fixed), null);
     // The repair must not touch the conditions themselves.
     assert.deepEqual(fixed.any[0].all[0], { cond: 'hostile_nearby', range: 16 });
+
+    // This fixture is the whole rule, and it carried a second defect the
+    // stripping was never going to reach: the "any" has one arm. It was written
+    // from "if is_night or hostile_nearby 16 and not holding weapon" and the
+    // night half never made it into the JSON, so a rule named
+    // night_no_weapon_shelter waited for a mob instead of sheltering at dusk.
+    // Stray keys are still repaired rather than rejected -- that part is
+    // unchanged -- but the missing branch is now reported.
+    assert.match(validateCondition(fixed), /one branch/);
+});
+
+test('stripping leaves a sound condition sound', () => {
+    // The same misnesting, over a trigger that did not lose anything: both
+    // branches present, so the repair is all that is needed and it validates.
+    const when = {
+        any: [
+            { all: [{ cond: 'is_night', lead: 1500 }, { not: { cond: 'holding', item: 'weapon' } }] },
+            { all: [{ cond: 'hostile_nearby', range: 16 }, { not: { cond: 'holding', item: 'weapon' } }] },
+        ],
+        do: [{ act: 'dig_in' }],
+        interrupts: 'all',
+        cooldown: 6,
+    };
+    const fixed = normalizeCondition(when);
+    assert.deepEqual(Object.keys(fixed), ['any']);
+    assert.equal(validateCondition(fixed), null);
+});
+
+test('a vacuous branch list is refused', () => {
+    // "all" of nothing is true forever, "any" of nothing never fires.
+    assert.match(check({ all: [] }), /always fires/);
+    assert.match(check({ any: [] }), /never fire/);
 });
 
 test('a misspelled argument is an error, not a silent default', () => {

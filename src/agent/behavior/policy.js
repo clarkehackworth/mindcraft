@@ -1198,7 +1198,27 @@ export function validateCondition(spec) {
         const key = spec.all ? 'all' : 'any';
         const stray = strayKeys(spec, [key]);
         if (stray.length) return `"${key}" takes only a list of conditions; remove ${stray.map(k => `"${k}"`).join(', ')}.`;
-        return Array.isArray(spec[key]) ? spec[key].map(validateCondition).find(e => e) ?? null : `"${key}" must be an array.`;
+        if (!Array.isArray(spec[key])) return `"${key}" must be an array.`;
+        // An empty branch list is vacuous: "all" of nothing is always true and
+        // fires the rule forever, "any" of nothing never fires it at all.
+        if (spec[key].length === 0)
+            return `"${key}" is empty, so the rule ${key === 'all' ? 'always fires' : 'can never fire'}. List the conditions, or remove the "when".`;
+        // A one-armed "any" is what a dropped branch looks like. The rule named
+        // night_no_weapon_shelter was written from "if is_night or
+        // hostile_nearby 16 and not holding weapon", and compiled to
+        // {"any":[{"all":[hostile_nearby, not holding weapon]}]} -- the "or" built
+        // the wrapper and then only one side of it survived. So a rule about
+        // night had no night in it: it waited for a mob to arrive instead of
+        // sheltering before dusk, and Andy died five times in one half hour, at
+        // night, unarmed, four of them owning nothing at all.
+        //
+        // "any" of one thing is just that thing, so this is never what someone
+        // meant to write -- either a branch is missing or the wrapper is noise.
+        // Both readings are cheap to fix and neither is safe to guess at.
+        if (key === 'any' && spec[key].length === 1)
+            return `"any" has only one branch, which means either a branch was lost or the "any" is unnecessary. ` +
+                `If the rule really has two triggers ("night OR a mob"), write both. If it has one, drop the "any" and use the condition directly.`;
+        return spec[key].map(validateCondition).find(e => e) ?? null;
     }
     if (spec.not) {
         const stray = strayKeys(spec, ['not']);
