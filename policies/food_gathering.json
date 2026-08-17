@@ -451,7 +451,7 @@
       },
       {
         "name": "hunt_for_the_larder",
-        "description": "Meat stock low and game in sight: walk to it while things are calm, and the hunting mode does the killing once in range. Stock-gated, not hunger-gated -- hunting only when starving means hunting at night, hurt, and unarmed.",
+        "description": "Meat stock low and game in sight: walk to it while things are calm, and the hunting mode does the killing once in range. Stock-gated, not hunger-gated -- hunting only when starving means hunting at night, hurt, and unarmed. Named rabbit and sheep until a Frozen Pine Taiga proved it: neither lives there, the nearest plains is 704 blocks against a 200 block exploration radius, and this fired every few minutes for \"Could not find any rabbit in 128 blocks\" while the bot starved. hunt takes whatever the registry calls an animal that drops food, mod livestock included.",
         "interrupts": "idle",
         "when": {
           "all": [
@@ -497,13 +497,7 @@
         },
         "do": [
           {
-            "act": "search_entity",
-            "type": "rabbit",
-            "range": 48
-          },
-          {
-            "act": "search_entity",
-            "type": "sheep",
+            "act": "hunt",
             "range": 48
           }
         ],
@@ -552,7 +546,7 @@
       },
       {
         "name": "search_out_game",
-        "description": "Hungrier still, no berries found: walk to the nearest animal instead of prompting. The hunting mode does the killing once one is in range. Two searches, cheapest first -- a step that finds nothing returns false and the next one runs.",
+        "description": "Hungrier still, no berries found: walk to the nearest animal instead of prompting. The hunting mode does the killing once one is in range. Two searches, cheapest first -- a step that finds nothing returns false and the next one runs. Named rabbit and sheep until a Frozen Pine Taiga proved it: neither lives there, the nearest plains is 704 blocks against a 200 block exploration radius, and this fired every few minutes for \"Could not find any rabbit in 128 blocks\" while the bot starved. hunt takes whatever the registry calls an animal that drops food, mod livestock included.",
         "interrupts": "idle",
         "when": {
           "all": [
@@ -578,13 +572,7 @@
         },
         "do": [
           {
-            "act": "search_entity",
-            "type": "rabbit",
-            "range": 128
-          },
-          {
-            "act": "search_entity",
-            "type": "sheep",
+            "act": "hunt",
             "range": 128
           }
         ],
