@@ -15,6 +15,9 @@ const SWEEP_STRIDE = 4;
 // lost-drop diagnostic reports distances against it, and a bare 8 in two places
 // that must agree is how those two drift apart.
 const PICKUP_RADIUS = 8;
+// Minecraft lets a player break a block about 4.5 blocks away. Under that, walk
+// nowhere: the walking is what got the bot stuck on the grave it came for.
+const GRAVE_REACH = 4;
 
 // The last-resort sweep reaches further than the in-loop one. Felling a tree
 // leaves the bot up the trunk while the logs land at the bottom, and the
@@ -1104,7 +1107,19 @@ export async function recoverGrave(bot, range = 16) {
         return false;
     }
     const pos = graves[0].position;
-    await goToPosition(bot, pos.x, pos.y, pos.z, 1);
+    // Only walk if it is out of arm's reach. Asking the pathfinder for
+    // closeness 1 on a solid block is asking to stand inside it: the goal is
+    // unreachable, A* grinds, and that grind IS the wedge -- 163 stuck resets
+    // on -26,67,8 in one window, 19 of them detected as "stuck on a grave" and
+    // answered by calling this function, which pathfound at the block again.
+    // The bot was two blocks away the whole time and could have hit it.
+    if (bot.entity.position.distanceTo(pos) > GRAVE_REACH) {
+        const walked = await goToPosition(bot, pos.x, pos.y, pos.z, 2);
+        if (!walked) {
+            log(bot, `Could not reach the grave at ${pos.x}, ${pos.y}, ${pos.z}.`);
+            return false;
+        }
+    }
     // Re-read after walking: the trip takes seconds and this is the one block
     // whose disappearance would mean somebody else already claimed it.
     const block = bot.blockAt(pos);
