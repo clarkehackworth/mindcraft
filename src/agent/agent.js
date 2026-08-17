@@ -926,7 +926,13 @@ export class Agent {
             if (!p || this.bot.targetDigBlock) return;
             for (const [dx, dz] of [[1,0],[-1,0],[0,1],[0,-1],[0,0]]) {
                 const b = (() => { try { return this.bot.blockAt(p.offset(dx, 0, dz)); } catch { return null; } })();
-                if (!b || b.name !== 'snow') continue;
+                // Aimed at the snow LAYER first, on the strength of one window's
+                // tally. The next window was 22 of 22 snow_block -- a different
+                // block, boundingBox 'block', which the planner does see -- and
+                // snow_cleared had fired exactly zero times. Both are soft and
+                // both stop the bot, so take the family rather than re-guess
+                // which member is fashionable in the current biome.
+                if (!b || !/^(snow|snow_block|powder_snow)$/.test(b.name)) continue;
                 // Fire and forget: this runs on a pathfinder event, and awaiting
                 // a dig here would hold the event loop the same way the air
                 // sampler used to be held.
