@@ -924,8 +924,18 @@ export class Agent {
             // of the stuff. So clear it at execution instead, which is what a
             // player does without thinking. Snow is about a second by hand.
             if (!p || this.bot.targetDigBlock) return;
-            for (const [dx, dz] of [[1,0],[-1,0],[0,1],[0,-1],[0,0]]) {
-                const b = (() => { try { return this.bot.blockAt(p.offset(dx, 0, dz)); } catch { return null; } })();
+            // Feet AND head. The first version swept feet level only and cleared
+            // 7 blocks while 44 of the obstructions in the same window were at
+            // head height -- "dirt/snow_block" and "air/snow_block" both name
+            // the head as the snow one. A bot ducking into a gap with snow at
+            // eye level is stopped exactly as hard as one walking into a wall,
+            // and it was never even looking there.
+            const spots = [];
+            for (const dy of [0, 1])
+                for (const [dx, dz] of [[1,0],[-1,0],[0,1],[0,-1],[0,0]])
+                    spots.push([dx, dy, dz]);
+            for (const [dx, dy, dz] of spots) {
+                const b = (() => { try { return this.bot.blockAt(p.offset(dx, dy, dz)); } catch { return null; } })();
                 // Aimed at the snow LAYER first, on the strength of one window's
                 // tally. The next window was 22 of 22 snow_block -- a different
                 // block, boundingBox 'block', which the planner does see -- and
