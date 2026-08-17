@@ -6,7 +6,7 @@
 // blocks", with 126 entities inside that radius. Regeneration needs 18 food and
 // he had 9, so the injury was permanent and nothing on the menu existed.
 import assert from 'assert';
-import { isHuntable } from './mcdata.js';
+import { isHuntable, dropsFood } from './mcdata.js';
 
 const mob = (name, type = 'animal', extra = {}) => ({ name, type, metadata: [], ...extra });
 
@@ -14,10 +14,29 @@ const mob = (name, type = 'animal', extra = {}) => ({ name, type, metadata: [], 
 for (const n of ['chicken', 'cow', 'llama', 'mooshroom', 'pig', 'rabbit', 'sheep'])
     assert.equal(isHuntable(mob(n)), true, `${n} is still food`);
 
-// And so does anything else the registry calls an animal, which is how a mod
-// pack's own livestock becomes visible without naming any of it here.
-for (const n of ['fox', 'goat', 'ru_deer', 'some_modded_boar'])
-    assert.equal(isHuntable(mob(n)), true, `${n} is an animal and therefore food`);
+// A mod pack's own livestock has no loot entry at all, and stays huntable --
+// guessing "yes" for an unknown animal is the whole point of the change, and
+// guessing "no" puts the bot back to starving in a biome full of animals it
+// refuses to look at.
+for (const n of ['ru_deer', 'some_modded_boar'])
+    assert.equal(isHuntable(mob(n)), true, `${n} is unknown to the registry, so worth a try`);
+
+// But "is an animal" is not "is dinner". Dropping the vanilla seven lost that:
+// a starving bot at food 6 and falling spent a window hunting cats, which drop
+// string. entityLoot knows exactly, so it gets asked.
+// The judgement itself, against the real drop tables. isHuntable reads a
+// registry these tests do not have -- which is also why the vanilla-seven
+// assertions above pass on structure rather than on loot -- so the decision is
+// split out and checked directly.
+const FOODS = { beef: 1, chicken: 1, rabbit: 1, mutton: 1, porkchop: 1 };
+const loot = (...items) => ({ drops: items.map(item => ({ item })) });
+
+assert.equal(dropsFood(loot('leather', 'beef'), FOODS), true, 'a cow is dinner');
+assert.equal(dropsFood(loot('feather', 'chicken'), FOODS), true, 'so is a chicken');
+assert.equal(dropsFood(loot('string'), FOODS), false, 'a cat drops string');
+assert.equal(dropsFood(loot(), FOODS), false, 'a fox drops nothing at all');
+assert.equal(dropsFood(loot('leather'), FOODS), false, 'a horse is not lunch');
+assert.equal(dropsFood(undefined, FOODS), true, 'an animal the registry never heard of is worth a try');
 
 // Not everything passive is dinner.
 assert.equal(isHuntable(mob('bat', 'ambient')), false, 'bats are ambient, not animals');

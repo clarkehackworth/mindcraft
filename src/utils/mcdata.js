@@ -726,6 +726,19 @@ export function patchUnknownBlocks(registry) {
 // findable.
 const FIGHTS_BACK = new Set(['wolf', 'polar_bear']);
 
+/**
+ * Does this animal drop anything edible?
+ *
+ * Split out because it is the whole judgement and it needs testing against a
+ * registry the unit tests do not have. Callers pass the loot entry and the food
+ * table; no entry means an animal the mod pack added, and those get the benefit
+ * of the doubt.
+ */
+export function dropsFood(loot, foods) {
+    if (!loot) return true;
+    return (loot.drops ?? []).some(d => !!foods?.[d.item]);
+}
+
 export function isHuntable(mob) {
     if (!mob || !mob.name) return false;
     if (mob.metadata?.[16]) return false; // metadata 16 is baby
@@ -744,7 +757,19 @@ export function isHuntable(mob) {
     // ambient (bats) and water_creature (cod) separate, so the registry already
     // knows this -- including for the mod pack's own animals, which is the half
     // a hardcoded vanilla list can never cover.
-    return mob.type === 'animal';
+    if (mob.type !== 'animal') return false;
+    // ...but "is an animal" is not "is dinner", and dropping the vanilla list
+    // lost that distinction: a starving Andy, at food 6 and falling, spent the
+    // window hunting cats. Cats drop string. The seven names in the old list
+    // were not arbitrary, they were the ones that drop meat.
+    //
+    // entityLoot knows exactly, so ask it rather than write a second list to
+    // get wrong: cow [leather, beef], chicken [feather, chicken], cat [string],
+    // fox [], horse [leather]. An animal the mod pack added has no entry at
+    // all, and those stay huntable -- guessing "yes" for an unknown animal is
+    // the behaviour that made this worth fixing, and guessing "no" would put
+    // the bot back to starving in a biome full of livestock it refuses to see.
+    return dropsFood(mcdata?.entityLoot?.[name], mcdata?.foodsByName);
 }
 
 export function isHostile(mob) {
