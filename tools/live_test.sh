@@ -209,7 +209,11 @@ deaths)
         # toward whatever is lying around it, where it previously walked away.
         # One is noise. Falls clustering near a death site would not be, and a
         # count buried in the cause tally is not something anyone would notice.
-        falls=$(botlog "EVT death:death.fell" "${2:-6h}" | grep -oE 'death:death.fell[^ ]*' || true)
+        # Two keys, not one: death.fell.accident.generic is falling off
+        # something, death.attack.fall.player is hitting the ground hard after
+        # being knocked into the air. Matching only the first reported "falls: 0"
+        # in a window that contained a fall death at -26,66,9.
+        falls=$(botlog "EVT death:death\.(fell|attack\.fall)" "${2:-6h}" | grep -oE 'death:death\.(fell|attack\.fall)[^ ]*' || true)
         if [ -n "$falls" ]; then
             echo "-- falls (new since pick_up_drops; watch for clustering) --"
             echo "$falls"
