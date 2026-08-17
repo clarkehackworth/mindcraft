@@ -721,10 +721,30 @@ export function patchUnknownBlocks(registry) {
     });
 }
 
+// Animals that hunt back. Wolves come in packs and polar bears are worth about
+// half the bot's health, so neither is dinner at the moment either one is
+// findable.
+const FIGHTS_BACK = new Set(['wolf', 'polar_bear']);
+
 export function isHuntable(mob) {
     if (!mob || !mob.name) return false;
-    const animals = ['chicken', 'cow', 'llama', 'mooshroom', 'pig', 'rabbit', 'sheep'];
-    return animals.includes(mob.name.toLowerCase()) && !mob.metadata[16]; // metadata 16 is not baby
+    if (mob.metadata?.[16]) return false; // metadata 16 is baby
+    const name = mob.name.toLowerCase();
+    if (FIGHTS_BACK.has(name)) return false;
+    // This was a hardcoded list of seven vanilla animals -- chicken, cow, llama,
+    // mooshroom, pig, rabbit, sheep -- and none of them live in a Frozen Pine
+    // Taiga. Andy sat there at 13/60 health with one crafting table to his name,
+    // firing search_out_game every few minutes and getting "Could not find any
+    // sheep in 128 blocks" and "Could not find any rabbit in 128 blocks" while
+    // 126 entities stood within that radius. He could not starve to death fast
+    // enough to matter, but he could not heal either: regeneration needs 18
+    // food and he was at 9, so every injury was permanent.
+    //
+    // minecraft-data types animals as 'animal' and hostiles as 'hostile', with
+    // ambient (bats) and water_creature (cod) separate, so the registry already
+    // knows this -- including for the mod pack's own animals, which is the half
+    // a hardcoded vanilla list can never cover.
+    return mob.type === 'animal';
 }
 
 export function isHostile(mob) {
