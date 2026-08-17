@@ -108,3 +108,48 @@ console.log('ok: a rule that resolves nothing says so, and yields');
 }
 
 console.log('ok: "always" is exempt, because it names no situation');
+
+// The throttle has to survive the flap, or it is not a throttle. eligible()
+// halves the backoff on every tick the trigger is false -- right for a rule that
+// finished its job, useless for one that keeps firing and settling nothing.
+// night_no_weapon_shelter sat at ~37s between fires (20s cooldown, backoff 2)
+// while its unresolved count climbed past 200, because its trigger blinks off
+// between mobs and every blink halved the brake.
+//
+// This is the same trap the failure counter was hardened against. I hardened
+// that counter and left the backoff this branch sets wide open.
+{
+    ACTIONS.move_away.fn = async () => true;
+    const rule = new Rule({
+        name: 'flaps_between_fires',
+        when: { cond: 'is_night' },
+        do: [{ act: 'move_away', distance: 40 }],
+        cooldown: 0,
+    });
+    const agent = fakeAgent();
+    let night = true;
+    agent.bot.time = { get timeOfDay() { return night ? 18000 : 1000; } };
+
+    await captureLog(async () => {
+        for (let i = 0; i < 5; i++) await rule.update(agent, execute);
+    });
+    const earned = rule.backoff;
+    assert.ok(earned > 1, 'five unresolved fires earn a throttle');
+
+    // Now the trigger blinks off, the way a mob wandering away does.
+    night = false;
+    for (let i = 0; i < 6; i++) rule.eligible(agent);
+    assert.ok(rule.backoff >= earned,
+        `the flap must not erode the throttle: had ${earned}, now ${rule.backoff}`);
+
+    // And a rule that genuinely resolves gets its freedom back.
+    night = true;
+    ACTIONS.move_away.fn = async () => { night = false; return true; };
+    await captureLog(async () => { await rule.update(agent, execute); });
+    assert.equal(rule.backoff_floor, 1, 'resolving clears the floor');
+    night = false;
+    for (let i = 0; i < 8; i++) rule.eligible(agent);
+    assert.equal(rule.backoff, 1, 'and the backoff decays away as before');
+}
+
+console.log('ok: a throttle earned by spinning survives a flapping trigger');

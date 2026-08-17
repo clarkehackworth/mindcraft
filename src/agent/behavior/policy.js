@@ -1460,6 +1460,8 @@ export class Rule {
         this.failures = 0;
         // Consecutive fires that left the trigger still true. See update().
         this.unresolved = 0;
+        // A floor the flap cannot erode. See eligible() and the unresolved branch.
+        this.backoff_floor = 1;
     }
 
     eligible(agent) {
@@ -1483,7 +1485,15 @@ export class Rule {
         // penalty, and it went on firing every few seconds at an inventory with
         // no weapon in it. Halving recovers a genuinely resolved situation in a
         // few evaluations while a flapping one keeps most of what it earned.
-        if (!fires) this.backoff = Math.max(1, this.backoff / 2);
+        // ...but never below the floor an unresolved rule has earned. Halving
+        // on a false trigger is right for a rule that got its job done; for one
+        // that keeps firing and settling nothing it just undoes the throttle.
+        // night_no_weapon_shelter sat at ~37s between fires -- 20s cooldown at
+        // backoff 2 -- while its counter climbed past 200, because its trigger
+        // blinks off between mobs and every blink halved the brake. Exactly the
+        // flap the failure counter was hardened against; I hardened the counter
+        // and left the backoff it sets exposed.
+        if (!fires) this.backoff = Math.max(this.backoff_floor, this.backoff / 2);
         return fires;
     }
 
@@ -1619,12 +1629,14 @@ export class Rule {
             }
             if (resolved) {
                 this.unresolved = 0;
+                this.backoff_floor = 1;
             } else if (++this.unresolved % STUCK_FIRES === 0) {
                 console.log(`EVT rule:unresolved:${this.spec.name}:${this.unresolved}`);
                 // Grow the backoff even though the steps "worked". Capped the
                 // same as the failure backoff, so a rule that starts resolving
                 // again recovers rather than staying muted forever.
-                this.backoff = Math.min(Math.max(this.backoff, 1) * 2, 200);
+                this.backoff_floor = Math.min(Math.max(this.backoff_floor, 1) * 2, 200);
+                this.backoff = Math.max(this.backoff, this.backoff_floor);
             }
         } else {
             // Nothing here reports progress, so the step backoff above never
