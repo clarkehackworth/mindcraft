@@ -3,6 +3,7 @@ import { Coder } from './coder.js';
 import { VisionInterpreter } from './vision/vision_interpreter.js';
 import { Prompter } from '../models/prompter.js';
 import { initModes } from './modes.js';
+import * as skills from './library/skills.js';
 import { applyPolicyGoal, loadPolicyState, policyGoal } from './behavior/policy.js';
 import { initBot } from '../utils/mcdata.js';
 import { containsCommand, commandExists, executeCommand, truncCommandMessage, isAction, blacklistCommands } from './commands/index.js';
@@ -25,6 +26,11 @@ import { notePathFailure, noteUnreachable } from './path_spin.js';
 // with the copy there -- one small number, versus importing child_process and
 // the mindserver into every agent to share it.
 const TEMPFAIL_EXIT = 75;
+// How many stuck resets on the SAME block before the bot stops trying and walks
+// away. Low enough that a wedge costs seconds rather than half an hour -- 269 of
+// 318 resets in one window were a single grave block -- and high enough that
+// ordinary terrain the bot clears on the second attempt never trips it.
+const STUCK_SAME_SPOT = 8;
 
 /**
  * Is this connection error upstream weather rather than a broken agent?
@@ -923,7 +929,31 @@ export class Agent {
             // out, and Andy sat in one spot and died 7 times", in a biome made
             // of the stuff. So clear it at execution instead, which is what a
             // player does without thinking. Snow is about a second by hand.
-            if (!p || this.bot.targetDigBlock) return;
+            if (!p) return;
+            // Grinding on one block is its own failure, whatever the block is.
+            // 269 of 318 stuck resets in one window landed on -26,67,8, which
+            // turned out to be a YIGD grave -- the mod drops one at every death
+            // site, the items live server-side against a graveId, and claiming
+            // it is a right-click the bot has no action for. So it is an
+            // obstacle the bot cannot resolve and cannot stop walking into, and
+            // it will be there again at the next death.
+            //
+            // Not broken: `claimed` and `previousState` say the recovery
+            // semantics belong to the mod, and guessing wrong there costs the
+            // player the inventory it is holding. Walking away is always safe.
+            // give_up_on_a_stuck_path does not cover this -- path_stuck counts
+            // 40 CONSECUTIVE failures without moving, and a bot bouncing off one
+            // block moves a little every time, so it fired 4 times against 318.
+            if (at === this._stuck_at) {
+                if (++this._stuck_count === STUCK_SAME_SPOT) {
+                    console.log(`EVT move:stuck_giving_up:${at}:after=${STUCK_SAME_SPOT}`);
+                    skills.moveAway(this.bot, 16).catch(() => {});
+                }
+            } else {
+                this._stuck_at = at;
+                this._stuck_count = 1;
+            }
+            if (this.bot.targetDigBlock) return;
             // Feet AND head. The first version swept feet level only and cleared
             // 7 blocks while 44 of the obstructions in the same window were at
             // head height -- "dirt/snow_block" and "air/snow_block" both name
