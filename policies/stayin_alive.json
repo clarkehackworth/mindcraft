@@ -30,7 +30,7 @@
     "rules": [
       {
         "name": "surface_when_drowning",
-        "description": "Out of air is the one emergency that beats everything else.",
+        "description": "Out of air is the one emergency that beats everything else. The move_away comes from the self layer, which wrote avoid_water_deeply with the same trigger and cooldown and this one extra step. Surfacing leaves the bot floating in the water it just escaped, free to sink again on the next tick; stepping away is what ends the episode. Merged rather than added, because two rules on an identical trigger is the duplicate the dedupe pass exists to stop.",
         "interrupts": "all",
         "when": {
           "cond": "drowning",
@@ -39,6 +39,10 @@
         "do": [
           {
             "act": "go_to_surface"
+          },
+          {
+            "act": "move_away",
+            "distance": 16
           }
         ],
         "cooldown": 5,
@@ -532,6 +536,72 @@
           }
         ],
         "cooldown": 60
+      },
+      {
+        "name": "night_no_weapon_shelter",
+        "description": "Written by the bot itself after dying unarmed at night over and over, and kept because the three night rules already here gate on beds and digging, never on having nothing to fight with. Both branches carry \"not sheltered\": without it on the second, a sheltered unarmed bot with a mob outside re-dug every six seconds -- 126 fires in one half-hour window while every other rule fired twice and the bot moved nowhere. The stay is bounded: \"not is_night\" is already true in daylight and the mob branch fires at any hour, so an unbounded wait was a no-op that let the rule re-arm instantly. That same no-op turned up in three separate rules before it was understood.",
+        "interrupts": "all",
+        "when": {
+          "any": [
+            {
+              "all": [
+                {
+                  "cond": "is_night",
+                  "lead": 1500
+                },
+                {
+                  "not": {
+                    "cond": "holding",
+                    "item": "weapon"
+                  }
+                },
+                {
+                  "not": {
+                    "cond": "is_sheltered"
+                  }
+                }
+              ]
+            },
+            {
+              "all": [
+                {
+                  "cond": "hostile_nearby",
+                  "range": 16
+                },
+                {
+                  "not": {
+                    "cond": "holding",
+                    "item": "weapon"
+                  }
+                },
+                {
+                  "not": {
+                    "cond": "is_sheltered"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "equip_weapon"
+          },
+          {
+            "act": "dig_in"
+          },
+          {
+            "act": "place",
+            "block": "torch"
+          },
+          {
+            "act": "stay",
+            "until": "not is_night 1500",
+            "seconds": 60
+          }
+        ],
+        "cooldown": 20,
+        "pinned": true
       },
       {
         "name": "dig_in_for_the_night",
