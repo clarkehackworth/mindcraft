@@ -118,7 +118,7 @@
       },
       {
         "name": "climb_out_of_the_deep",
-        "description": "Interrupts on purpose, and pinned: depth is not something to fix when convenient, and the first merge of this rule quietly rewrote it to idle. Nothing in this policy could see how deep the bot was. The goal loop writes its own mining code, and in the first forty minutes of soak 12 that code took it to y=20, y=19 and y=-7 -- three lives, each one a creeper or a fall, each followed by a respawn at camp and a hundred-and-fifty-block walk straight back down to the corpse. The death-spot rules cannot help: they only trigger once it has already arrived, and two of those deaths were armed, which is the one case leave_your_death_spot ignores. A bot whose best weapon is a wooden sword has no business below the ore line, so the depth itself is the trigger.",
+        "description": "Interrupts on purpose, and pinned: depth is not something to fix when convenient, and the first merge of this rule quietly rewrote it to idle. Nothing in this policy could see how deep the bot was. The goal loop writes its own mining code, and in the first forty minutes of soak 12 that code took it to y=20, y=19 and y=-7 -- three lives, each one a creeper or a fall, each followed by a respawn at camp and a hundred-and-fifty-block walk straight back down to the corpse. The death-spot rules cannot help: they only trigger once it has already arrived, and two of those deaths were armed, which is the one case leave_your_death_spot ignores. A bot whose best weapon is a wooden sword has no business below the ore line, so the depth itself is the trigger. Called go_to_surface until it was measured: that is skills.surface, the DROWNING escape, whose first line returns true when the bot is already breathing. Forty-seven blocks underground in open air it reported \"Already breathing by the time I got here; nothing to surface from\" and returned success, seventeen times in one window, while Andy sank from y=68 to y=12 over eight hours. Every fire looked healthy; only the unresolved counter, at 25 consecutive, said otherwise. climb_out is the one that pillars and digs upward -- it had no action at all and was reachable only from inside moveAway.",
         "interrupts": "all",
         "pinned": true,
         "when": {
@@ -127,7 +127,8 @@
         },
         "do": [
           {
-            "act": "go_to_surface"
+            "act": "climb_out",
+            "blocks": 8
           }
         ],
         "cooldown": 60

@@ -473,6 +473,21 @@ export const ACTIONS = {
         // and digs the ceiling, which is what getting out of water actually is.
         fn: async (agent) => await skills.surface(agent.bot)
     },
+    climb_out: {
+        cost: 'blocking', clears: ['y_below', 'can_dig_down'],
+        args: { blocks: 'number (default 8), how many blocks to gain at most in one go' },
+        // go_to_surface is skills.surface, which is the DROWNING escape: it holds
+        // jump and digs the ceiling, and its first line returns true if the bot
+        // is already breathing. climb_out_of_the_deep triggers on y_below 45 and
+        // called it, so 47 blocks underground in open air it reported "Already
+        // breathing by the time I got here; nothing to surface from" and returned
+        // SUCCESS -- 17 times in one window, 25 consecutive fires deep on the
+        // unresolved counter, while Andy sank from y=68 to y=12 over eight hours.
+        // climbOut, which is the function that actually pillars and digs upward,
+        // had no action at all and was reachable only from inside moveAway.
+        desc: 'Climb up out of a hole or cave by pillaring and digging upward. This is the one for being stuck underground; go_to_surface is for drowning and does nothing when the bot has air.',
+        fn: async (agent, a) => await skills.climbOut(agent.bot, a.blocks ?? 8)
+    },
     search_block: {
         cost: 'blocking', clears: ['block_nearby', 'at_position', 'at_death_position'],
         args: { type: 'string block name', range: 'number (default 64, max 512)' },
