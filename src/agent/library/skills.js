@@ -1127,6 +1127,19 @@ export async function recoverGrave(bot, range = 16) {
         log(bot, `The grave at ${pos.x}, ${pos.y}, ${pos.z} is gone; nothing to take back.`);
         return false;
     }
+    // Best tool in hand before timing it: collectBlock does this and the same
+    // grave that is hopeless bare-handed may be seconds with a shovel.
+    try { await bot.tool.equipForBlock(block); } catch { /* nothing suitable */ }
+    // Ask how long first. bot.dig on a block the bot cannot finish neither
+    // resolves nor throws -- it simply digs forever -- so recoverGrave was
+    // called 25 times in one window, bare-handed against a grave, and left not
+    // one line in the log either way. A hang is the worst kind of silence:
+    // every outcome-shaped explanation was wrong because there was no outcome.
+    const ms = bot.digTime?.(block) ?? 0;
+    if (ms > mc.MAX_HAND_DIG_MS) {
+        log(bot, `The grave at ${pos.x}, ${pos.y}, ${pos.z} would take ${Math.round(ms / 1000)}s to break with ${bot.heldItem?.name ?? 'bare hands'}. Get a pickaxe or shovel first.`);
+        return false;
+    }
     try {
         await bot.dig(block);
     } catch (err) {
