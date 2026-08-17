@@ -944,14 +944,35 @@ export class Agent {
             // give_up_on_a_stuck_path does not cover this -- path_stuck counts
             // 40 CONSECUTIVE failures without moving, and a bot bouncing off one
             // block moves a little every time, so it fired 4 times against 318.
-            if (at === this._stuck_at) {
-                if (++this._stuck_count === STUCK_SAME_SPOT) {
+            if (at === this._stuck_at) this._stuck_count++;
+            else { this._stuck_at = at; this._stuck_count = 1; }
+            if (this._stuck_count >= STUCK_SAME_SPOT) {
+                // Reset, not "fire once at exactly N". The first version tested
+                // `=== STUCK_SAME_SPOT` and then kept counting -- 9, 10, ... 109
+                // -- so it escaped once and went straight back to grinding the
+                // same block for the rest of the window. 109 stucks, one escape.
+                this._stuck_count = 0;
+                // A grave is the one obstruction worth removing rather than
+                // walking around: it holds the bot's own inventory, breaking it
+                // gives that back (confirmed), and the mod leaves another at
+                // every death, so walking away just defers it.
+                const grave = (() => {
+                    for (const dy of [0, 1, -1])
+                        for (const [dx, dz] of [[0,0],[1,0],[-1,0],[0,1],[0,-1]]) {
+                            try {
+                                const b = this.bot.blockAt(p.offset(dx, dy, dz));
+                                if (b?.name === 'grave') return b;
+                            } catch { /* unloaded */ }
+                        }
+                    return null;
+                })();
+                if (grave) {
+                    console.log(`EVT move:stuck_grave:${at}`);
+                    skills.recoverGrave(this.bot, 4).catch(() => {});
+                } else {
                     console.log(`EVT move:stuck_giving_up:${at}:after=${STUCK_SAME_SPOT}`);
                     skills.moveAway(this.bot, 16).catch(() => {});
                 }
-            } else {
-                this._stuck_at = at;
-                this._stuck_count = 1;
             }
             if (this.bot.targetDigBlock) return;
             // Feet AND head. The first version swept feet level only and cleared
