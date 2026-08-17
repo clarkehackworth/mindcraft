@@ -5,7 +5,8 @@ import { Prompter } from '../models/prompter.js';
 import { initModes } from './modes.js';
 import * as skills from './library/skills.js';
 import { applyPolicyGoal, loadPolicyState, policyGoal } from './behavior/policy.js';
-import { initBot } from '../utils/mcdata.js';
+import { initBot, isHostile } from '../utils/mcdata.js';
+import { getNearestEntityWhere } from './library/world.js';
 import { containsCommand, commandExists, executeCommand, truncCommandMessage, isAction, blacklistCommands } from './commands/index.js';
 import { ActionManager } from './action_manager.js';
 import { NPCContoller } from './npc/controller.js';
@@ -31,6 +32,11 @@ const TEMPFAIL_EXIT = 75;
 // 318 resets in one window were a single grave block -- and high enough that
 // ordinary terrain the bot clears on the second attempt never trips it.
 const STUCK_SAME_SPOT = 8;
+// How close something hostile has to be for a pathfinder search to be worth
+// abandoning when the bot takes a hit. Melee reach plus a step: far enough to
+// catch the zombie already swinging, near enough that an archer across a valley
+// does not cancel every path the bot plans.
+const HOSTILE_PANIC_RANGE = 6;
 
 /**
  * Is this connection error upstream weather rather than a broken agent?
@@ -780,6 +786,27 @@ export class Agent {
             if (this.bot.health < prev_health) {
                 this.bot.lastDamageTime = Date.now();
                 this.bot.lastDamageTaken = prev_health - this.bot.health;
+                // Being hit while a path is being searched roots the bot in
+                // place: A* runs, the bot stands still, and the search restarts
+                // every partial. Andy spent his last second at 23,72,-3 doing
+                // eleven partial searches from one block -- visited 25, 55, 82,
+                // ... 235 -- and was killed by a zombie in the middle of them,
+                // unarmed with items0. Two of the five deaths that window were
+                // that exact shape.
+                //
+                // A search that has not produced a route by the time something
+                // is biting is not going to save the bot. Dropping it hands the
+                // next tick to self_preservation, self_defense and the shelter
+                // rules, all of which can act -- where a bot inside a pathfinder
+                // search can only wait for it to finish.
+                if (this.bot.pathfinder?.goal && this.bot.entity) {
+                    const hostile = getNearestEntityWhere(
+                        this.bot, e => isHostile(e), HOSTILE_PANIC_RANGE);
+                    if (hostile) {
+                        console.log(`EVT move:path_dropped_under_attack:${hostile.name}`);
+                        this.bot.pathfinder.stop();
+                    }
+                }
             }
             prev_health = this.bot.health;
         });
