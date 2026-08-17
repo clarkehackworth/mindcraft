@@ -153,8 +153,23 @@ export class SelfPrompter {
     // Andy emitted !searchForBlock("pumpkin", 128) for hours and never once ran it.
     async stopLoop(discard_pending=true) {
         // you can call this without await if you don't need to wait for it to finish
-        if (this.interrupt)
+        if (this.interrupt) {
+            // A stop is already in flight. Returning here told the caller the
+            // loop was stopped when it was still running, and an emergency that
+            // believes that goes on to have its action dropped -- the action
+            // manager still belongs to the loop. Andy drowned twice on exactly
+            // this, at 17:56 six seconds after "did not stop in time" and again
+            // at 02:13 nine seconds after it, both times with no surface attempt
+            // at all, in windows where the reflex fired fourteen times and
+            // surfaced fourteen times for everyone else.
+            //
+            // So wait for the stop that is already happening, on the same
+            // bounded terms, and only then answer.
+            const shared = Date.now() + STOP_WAIT_MS;
+            while (this.loop_active && Date.now() < shared)
+                await new Promise(r => setTimeout(r, 100));
             return;
+        }
         console.log('stopping self-prompt loop')
         this.discard_pending = discard_pending;
         this.interrupt = true;
