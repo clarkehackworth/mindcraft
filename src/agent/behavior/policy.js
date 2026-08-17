@@ -626,7 +626,7 @@ export const ACTIONS = {
     dig_in: {
         // is_freezing: a capped hole is out of the snowfall, and digging down
         // exits powder snow -- both halves of what freezing means here.
-        cost: 'blocking', clears: ['hostile_nearby', 'entity_nearby', 'at_position', 'is_freezing'],
+        cost: 'blocking', clears: ['hostile_nearby', 'entity_nearby', 'at_position', 'is_freezing', 'is_sheltered'],
         args: {},
         desc: 'Dig a three-deep foxhole where standing, cap the opening with a carried cover block and place a torch if one is carried. The named-action form of "improvise a shelter for the night" -- pair it with a stay until dawn. It never seals the sides, so breaking the cap overhead is always enough to get out. Reports failure (for the prompt fallback) only when it could not get all the way down.',
         fn: async (agent) => {
@@ -907,6 +907,8 @@ export function validatePolicy(policy) {
                 `a cooldown of at least ${MIN_INTERRUPT_COOLDOWN} seconds; use "idle" if it is not urgent enough for that.`;
     }
     for (const rule of policy.rules) {
+        const lopsided = asymmetricGuard(rule);
+        if (lopsided) return lopsided;
         const loop = livelockRisk(rule);
         if (loop) return loop;
 
@@ -944,6 +946,59 @@ export function validatePolicy(policy) {
 // nothing, so firing it every 6 seconds costs nothing and interrupts nothing
 // real. go_to_bed is a journey: cancelled halfway it has achieved nothing, and a
 // journey that restarts every cooldown never arrives.
+/**
+ * Does one branch of an "any" carry a guard its siblings lack?
+ *
+ * night_no_weapon_shelter was written as
+ *
+ *   any[ all[is_night, not holding weapon, NOT is_sheltered],
+ *        all[hostile_nearby 16, not holding weapon] ]          <- no guard
+ *
+ * so once the bot dug in, branch one went false and branch two stayed true, and
+ * a sheltered unarmed bot with a mob outside re-dug every 6 seconds. It fired
+ * 126 times in one half-hour window -- every other rule in the policy fired
+ * twice, the bot reached zero goals and did not move a millimetre -- and the
+ * unresolved counter watched it climb past 115 before something briefly cleared
+ * the trigger and it started over.
+ *
+ * Only flagged when the rule's OWN action resolves the condition. That is what
+ * makes it a defect rather than two honestly different situations: the rule can
+ * satisfy the guarded branch and never the unguarded one, so it can never
+ * settle. Measured against the shipped policy first -- zero hits, and it catches
+ * the live bug.
+ */
+function asymmetricGuard(rule) {
+    const when = rule.when;
+    if (!when || !Array.isArray(when.any) || when.any.length < 2) return null;
+    const clears = new Set();
+    for (const step of rule.do ?? [])
+        for (const c of ACTIONS[step.act]?.clears ?? []) clears.add(c);
+    if (!clears.size) return null;
+
+    // Only NEGATED conditions count. A guard is "not X" -- the thing the action
+    // makes true and the rule then stops needing. A positive condition in one
+    // branch is just a different situation: night in one, a mob in the other,
+    // which is the whole point of an "any". Flagging those made the first
+    // version of this refuse the very rule it was written to repair.
+    const guardsIn = (node, out = new Set()) => {
+        if (!node || typeof node !== 'object') return out;
+        if (node.not?.cond) out.add(node.not.cond);
+        for (const key of ['all', 'any'])
+            for (const b of node[key] ?? []) guardsIn(b, out);
+        return out;
+    };
+    const branches = when.any.map(b => guardsIn(b));
+    for (const c of clears) {
+        const has = branches.map(b => b.has(c));
+        if (has.some(Boolean) && !has.every(Boolean))
+            return `Rule "${rule.name}" guards one branch of its "any" on "${c}" and leaves another without it, ` +
+                `and its own actions resolve "${c}". So the rule can satisfy the guarded branch and still be ` +
+                `triggered by the unguarded one, forever -- put the same guard on every branch, or split the ` +
+                `unguarded case into its own rule with an action that can end it.`;
+    }
+    return null;
+}
+
 function livelockRisk(rule) {
     if (rule.interrupts !== 'all') return null;          // idle rules wait their turn by definition
     const blocking = rule.do.filter(s => ACTIONS[s.act]?.cost === 'blocking');
