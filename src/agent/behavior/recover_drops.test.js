@@ -49,3 +49,27 @@ const rule = seed.policy.rules.find(r => r.name === 'leave_your_death_spot');
 assert.equal(validatePolicy(seed.policy), null, 'stayin_alive stays valid');
 
 console.log('ok: the gear comes back before the bot walks away');
+
+// This server runs YIGD: a death does not scatter the inventory, it puts the
+// whole lot inside a grave block at the death site. So pickupNearbyItems found
+// nothing after every death -- "Picked up 0 item" -- and the bot started from
+// nothing however promptly it walked back. The grave is also the obstacle the
+// pathfinder cannot pass: 269 of 318 stuck resets in one window were a single
+// one, with 3 goals reached in half an hour. Breaking it does both jobs.
+//
+// recoverGrave itself wants a live block registry to do anything, so what is
+// pinned here is the wiring: which one is asked first, and whether the
+// description says so. Both are things a later edit could quietly undo.
+{
+    const { recoverGrave } = await import('../library/skills.js');
+    assert.equal(typeof recoverGrave, 'function', 'the skill exists to be called');
+
+    const src = ACTIONS.pick_up_drops.fn.toString();
+    assert.ok(src.includes('recoverGrave'), 'the action opens the grave');
+    assert.ok(src.indexOf('recoverGrave') < src.indexOf('pickupNearbyItems'),
+        'grave first, loose items second -- the floor is empty on this server');
+    assert.match(ACTIONS.pick_up_drops.desc, /grave/,
+        'and the description says so, since a model picks its actions by reading it');
+}
+
+console.log('ok: the grave is opened before the floor is swept');

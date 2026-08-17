@@ -1046,6 +1046,48 @@ function describeLostDrops(bot, blockType) {
     return 'unreachable';
 }
 
+/**
+ * Break your own grave and take back what it is holding.
+ *
+ * This server runs YIGD, so a death does not scatter the inventory on the
+ * ground -- it puts the lot inside a grave block at the death site and keys it
+ * to a graveId. pickupNearbyItems was therefore finding nothing after every
+ * death, reporting "Picked up 0 item", and the bot started from nothing however
+ * promptly it went back.
+ *
+ * The grave is also an obstacle the pathfinder cannot get past: one window had
+ * 269 of its 318 stuck resets on a single grave block, with 3 goals reached.
+ * Breaking it returns the items and removes the obstruction in one action.
+ *
+ * @param {MinecraftBot} bot, reference to the minecraft bot.
+ * @param {number} range, how far to look for a grave.
+ * @returns {Promise<boolean>} true if a grave was broken.
+ * @example
+ * await skills.recoverGrave(bot);
+ **/
+export async function recoverGrave(bot, range = 16) {
+    const graves = world.getNearestBlocks(bot, ['grave'], range, 1);
+    if (!graves.length) return false;
+    const pos = graves[0].position;
+    await goToPosition(bot, pos.x, pos.y, pos.z, 1);
+    // Re-read after walking: the trip takes seconds and this is the one block
+    // whose disappearance would mean somebody else already claimed it.
+    const block = bot.blockAt(pos);
+    if (!block || block.name !== 'grave') {
+        log(bot, `The grave at ${pos.x}, ${pos.y}, ${pos.z} is gone; nothing to take back.`);
+        return false;
+    }
+    try {
+        await bot.dig(block);
+    } catch (err) {
+        log(bot, `Could not break the grave at ${pos.x}, ${pos.y}, ${pos.z}: ${err.message}`);
+        return false;
+    }
+    log(bot, `Broke the grave at ${pos.x}, ${pos.y}, ${pos.z} and took back what it was holding.`);
+    await pickupNearbyItems(bot, PICKUP_RADIUS);
+    return true;
+}
+
 export async function pickupNearbyItems(bot, radius = PICKUP_RADIUS) {
     /**
      * Pick up all nearby items.

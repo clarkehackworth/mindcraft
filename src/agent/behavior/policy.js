@@ -496,8 +496,17 @@ export const ACTIONS = {
         // blocks away, which is the surest way to let the pile despawn. Most of
         // the deaths in a nine-hour soak were the second, third and fourth in a
         // chain that began with one.
-        desc: 'Pick up loose items on the ground nearby, including everything dropped where you died. Returns false if there is nothing to pick up, so a rule gated only on being at the death spot simply does nothing when the ground is bare.',
-        fn: async (agent, a) => await skills.pickupNearbyItems(agent.bot, a.range ?? 8)
+        desc: 'Take back what you dropped: breaks your grave if there is one nearby, then picks up any loose items. Returns false when there is neither, so a rule gated only on being at the death spot does nothing on bare ground.',
+        fn: async (agent, a) => {
+            // The grave first, because on this server it holds everything. YIGD
+            // puts the whole inventory inside a block at the death site rather
+            // than scattering it, so picking up loose items after a death found
+            // nothing at all -- "Picked up 0 item" -- and the bot began again
+            // from nothing every time however quickly it walked back.
+            const grave = await skills.recoverGrave(agent.bot, a.range ?? 16);
+            const loose = await skills.pickupNearbyItems(agent.bot, a.range ?? 8);
+            return grave || loose;
+        }
     },
     deposit: {
         cost: 'blocking', clears: ['has_item'],
