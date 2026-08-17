@@ -183,10 +183,16 @@ rules)
     # fired 22 times while Andy starved in the shaft it was failing to climb.
     # A fire count alone cannot tell those apart, so it is printed next to the
     # count rather than left for someone to think to ask about.
-    stuck=$(botlog "EVT rule:stuck" "${2:-30m}" | grep -oE 'rule:stuck:[a-z_0-9]+:[0-9]+' || true)
+    # Rule names carry a layer prefix in the event -- rule:stuck:active:foo:5 --
+    # so a pattern of name:count silently matches nothing. That is exactly how
+    # the first rule:unresolved line went unreported: the counter had fired, the
+    # grep could not see it, and it read as "the fix does not work".
+    stuck=$(botlog "EVT rule:(stuck|unresolved)" "${2:-30m}" \
+        | grep -oE 'rule:(stuck|unresolved):[a-z_0-9:]+:[0-9]+' || true)
     if [ -n "$stuck" ]; then
         echo "-- firing and getting nowhere --"
-        echo "$stuck" | awk -F: '{print $3, $4}' | sort -k1,1 -k2,2nr | awk '!seen[$1]++ {printf "%6s consecutive failures  %s\n", $2, $1}'
+        echo "$stuck" | awk -F: '{printf "%s %s %s\n", $2, $(NF-1), $NF}' \
+            | sort -k2,2 -k3,3nr | awk '!seen[$2]++ {printf "%6s %-11s %s\n", $3, $1, $2}'
     fi
     ;;
 
