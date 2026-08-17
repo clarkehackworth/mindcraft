@@ -143,6 +143,11 @@ export const CONDITIONS = {
         // "is it near me" does not need 32. See MAX_COND_SCAN.
         fn: (agent, a) => !!world.getNearestBlock(agent.bot, a.name, Math.min(a.range ?? 16, MAX_COND_SCAN))
     },
+    ranged_hostile_nearby: {
+        args: { range: 'number (default 24)' },
+        desc: 'A hostile that attacks from a distance is within range -- archers, illagers with crossbows, witches, blazes. Prefer this to listing mob names: it matches the mod pack\'s own variants (mutant_skeleton, skeleton_creeper, chillager) without naming them, which a hand-written list cannot.',
+        fn: (agent, a) => !!world.getNearestEntityWhere(agent.bot, e => mc.isRangedHostile(e), a.range ?? 24)
+    },
     animal_nearby: {
         args: { range: 'number (default 16)' },
         desc: 'A huntable animal is within range.',
@@ -375,7 +380,7 @@ export const CONDITIONS = {
 
 export const ACTIONS = {
     flee: {
-        cost: 'blocking', clears: ['hostile_nearby', 'entity_nearby', 'animal_nearby', 'player_nearby', 'at_position', 'at_death_position'],
+        cost: 'blocking', clears: ['hostile_nearby', 'entity_nearby', 'animal_nearby', 'player_nearby', 'at_position', 'at_death_position', 'ranged_hostile_nearby'],
         args: { distance: 'number (default 24)' },
         desc: 'Run away from all nearby enemies.',
         fn: async (agent, a) => await skills.avoidEnemies(agent.bot, a.distance ?? 24)
@@ -442,7 +447,7 @@ export const ACTIONS = {
         // snowfield into another, just as you can flee into a second zombie --
         // but it is real progress rather than waiting, and waiting is the rule
         // shape this vocabulary exists to keep the model away from.
-        cost: 'blocking', clears: ['hostile_nearby', 'entity_nearby', 'animal_nearby', 'player_nearby', 'at_position', 'block_nearby', 'at_death_position', 'is_freezing', 'path_stuck'],
+        cost: 'blocking', clears: ['hostile_nearby', 'entity_nearby', 'animal_nearby', 'player_nearby', 'at_position', 'block_nearby', 'at_death_position', 'is_freezing', 'path_stuck', 'ranged_hostile_nearby'],
         args: { distance: 'number (default 8)' },
         desc: 'Move away from the current position in any direction. Also the reflex for standing in something that is hurting you, like powder snow.',
         fn: async (agent, a) => await skills.moveAway(agent.bot, a.distance ?? 8)
@@ -1383,6 +1388,8 @@ export class Rule {
         this.last_eval = 0;
         this.backoff = 1;
         this.failures = 0;
+        // Consecutive fires that left the trigger still true. See update().
+        this.unresolved = 0;
     }
 
     eligible(agent) {
@@ -1511,6 +1518,44 @@ export class Rule {
             if (real_work) this.failures = 0;
             else if (++this.failures % STUCK_FIRES === 0)
                 console.log(`EVT rule:stuck:${this.spec.name}:${this.failures}`);
+
+            // Both counters above ask about the ACTIONS. This one asks about the
+            // situation, which is the question that was missing.
+            //
+            // flee_ranged_raiders fired 55 times in half an hour while Andy sat
+            // at y=24 and finished zero goals. Nothing caught it: flee genuinely
+            // works -- the bot really does move 40 blocks -- so `progress` and
+            // `real_work` were both true every time and neither counter ever
+            // ticked. Meanwhile it is interrupts:all on a 6s cooldown, and
+            // climb_out_of_the_deep is interrupts:all on 60s with a blocking
+            // action that needs ~20s, so the climb was preempted before it could
+            // ever finish: 19 fires, 0 climbs. Ten times the firing rate wins,
+            // permanently.
+            //
+            // A rule that runs and leaves its own trigger true has not resolved
+            // anything, whatever its steps returned. Counting that catches the
+            // starving rule directly, without needing to model which OTHER rule
+            // is being starved -- and the answer is the same either way: slow it
+            // down so something else can run. The backoff already exists for
+            // that; it just had no way to hear about this.
+            // "always" names no situation, so asking whether the rule resolved
+            // one is meaningless -- a standing behaviour like keeping torches
+            // stocked would otherwise be throttled for never making `always`
+            // false, which it cannot. Caught by rule_stuck's own fixture.
+            let resolved = true;
+            const situational = JSON.stringify(this.spec.when ?? {}) !== JSON.stringify({ cond: 'always' });
+            if (situational) {
+                try { resolved = !evalCondition(this.spec.when, agent); } catch { /* trigger unevaluable */ }
+            }
+            if (resolved) {
+                this.unresolved = 0;
+            } else if (++this.unresolved % STUCK_FIRES === 0) {
+                console.log(`EVT rule:unresolved:${this.spec.name}:${this.unresolved}`);
+                // Grow the backoff even though the steps "worked". Capped the
+                // same as the failure backoff, so a rule that starts resolving
+                // again recovers rather than staying muted forever.
+                this.backoff = Math.min(Math.max(this.backoff, 1) * 2, 200);
+            }
         } else {
             // Nothing here reports progress, so the step backoff above never
             // applies and a prompt-only rule repeats at its cooldown forever --

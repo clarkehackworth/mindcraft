@@ -221,7 +221,7 @@
       },
       {
         "name": "flee_ranged_raiders",
-        "description": "Everything that kills this agent from outside cowardice's radius, in one rule, with the list taken from counting actual deaths rather than from what sounds dangerous. Stray, chillager and the illager family were the first; Illusioner, Iceologer, the mutant skeleton and two kinds of creeper earned their places later. Every id was checked against the server with `summon` before being added, because a name the client spells differently matches nothing and fails silently -- see tools/live_test.sh raider. Zombie is the biggest killer by far and is deliberately absent: it is melee, which is cowardice's job, and this rule is pinned and interrupts everything, so it must not fire for things fleeing cannot fix. Gated on not being under cover: a capped foxhole beats a footrace, and climbing out of one to flee is how the footrace starts. Skeleton earned its place the same way the others did. After the flee comes a dig_in: distance alone leaves the bot standing in the open for the next volley, and the agent kept teaching itself exactly this flee-then-burrow pattern until it was folded in here.",
+        "description": "Everything that kills this agent from outside cowardice's radius, in one rule, with the list taken from counting actual deaths rather than from what sounds dangerous. Stray, chillager and the illager family were the first; Illusioner, Iceologer, the mutant skeleton and two kinds of creeper earned their places later. Every id was checked against the server with `summon` before being added, because a name the client spells differently matches nothing and fails silently -- see tools/live_test.sh raider. Zombie is the biggest killer by far and is deliberately absent: it is melee, which is cowardice's job, and this rule is pinned and interrupts everything, so it must not fire for things fleeing cannot fix. Gated on not being under cover: a capped foxhole beats a footrace, and climbing out of one to flee is how the footrace starts. Skeleton earned its place the same way the others did. After the flee comes a dig_in: distance alone leaves the bot standing in the open for the next volley, and the agent kept teaching itself exactly this flee-then-burrow pattern until it was folded in here. Three changes after it fired 55 times in one half-hour window while the bot sat at y=24 and finished zero goals. The trigger was eleven hardcoded mob names, which a mod pack shipping mutant_skeleton, skeleton_creeper and chillager will always outrun -- ranged_hostile_nearby matches on substrings and catches all three without naming any. The stay ended on \"not is_night\", which is already true in daylight, so it returned instantly and the rule re-armed six seconds later -- the same no-op that night_no_weapon_shelter had; it is bounded at 30s now so the shelter is real. And the cooldown was 6s against climb_out_of_the_deep's 60s, both interrupts:all, so a blocking climb needing ~20s was preempted before it could ever finish: 19 fires, 0 climbs, and the bot stayed 44 blocks underground.",
         "interrupts": "all",
         "when": {
           "all": [
@@ -231,63 +231,8 @@
               }
             },
             {
-              "any": [
-                {
-                  "cond": "entity_nearby",
-                  "name": "frostiful:chillager",
-                  "range": 32
-                },
-                {
-                  "cond": "entity_nearby",
-                  "name": "stray",
-                  "range": 24
-                },
-                {
-                  "cond": "entity_nearby",
-                  "name": "skeleton",
-                  "range": 24
-                },
-                {
-                  "cond": "entity_nearby",
-                  "name": "pillager",
-                  "range": 24
-                },
-                {
-                  "cond": "entity_nearby",
-                  "name": "vindicator",
-                  "range": 24
-                },
-                {
-                  "cond": "entity_nearby",
-                  "name": "ravager",
-                  "range": 32
-                },
-                {
-                  "cond": "entity_nearby",
-                  "name": "illusioner",
-                  "range": 24
-                },
-                {
-                  "cond": "entity_nearby",
-                  "name": "friendsandfoes:iceologer",
-                  "range": 24
-                },
-                {
-                  "cond": "entity_nearby",
-                  "name": "mutantmonsters:mutant_skeleton",
-                  "range": 32
-                },
-                {
-                  "cond": "entity_nearby",
-                  "name": "mutantmonsters:mutant_creeper",
-                  "range": 16
-                },
-                {
-                  "cond": "entity_nearby",
-                  "name": "graveyard:skeleton_creeper",
-                  "range": 16
-                }
-              ]
+              "cond": "ranged_hostile_nearby",
+              "range": 24
             }
           ]
         },
@@ -301,10 +246,11 @@
           },
           {
             "act": "stay",
-            "until": "not is_night 1500"
+            "until": "not is_night 1500",
+            "seconds": 30
           }
         ],
-        "cooldown": 6,
+        "cooldown": 20,
         "pinned": true
       },
       {

@@ -772,6 +772,34 @@ export function isHuntable(mob) {
     return dropsFood(mcdata?.entityLoot?.[name], mcdata?.foodsByName);
 }
 
+// Things that hurt the bot from a distance. There is no "is ranged" flag in
+// minecraft-data, so this is a vocabulary -- but a vocabulary of SUBSTRINGS,
+// matched against the entity name, which is the part that matters: the policy
+// had eleven exact names in it, hand-written by the agent, and a mod pack that
+// ships mutantmonsters:mutant_skeleton, graveyard:skeleton_creeper and
+// frostiful:chillager will always have one more the list has never heard of.
+// Matching "skeleton" catches all three of those without naming any of them.
+const RANGED_HOSTILE = [
+    'skeleton', 'stray', 'bogged',        // arrows
+    'pillager', 'illusioner', 'illager',  // crossbows and magic
+    'witch', 'iceologer', 'chillager',    // thrown potions and ice
+    'blaze', 'ghast', 'shulker',          // fireballs and shells
+    'drowned',                            // tridents
+];
+
+/**
+ * Is this a hostile that attacks from range?
+ *
+ * Fleeing works against something that has to reach you. Against archers it
+ * mostly does not, which is why the rule that answers them is worth telling
+ * apart from ordinary self-defence.
+ */
+export function isRangedHostile(mob) {
+    if (!isHostile(mob) || !mob.name) return false;
+    const name = mob.name.toLowerCase();
+    return RANGED_HOSTILE.some(r => name.includes(r));
+}
+
 export function isHostile(mob) {
     if (!mob || !mob.name) return false;
     return  (mob.type === 'mob' || mob.type === 'hostile') && mob.name !== 'iron_golem' && mob.name !== 'snow_golem';

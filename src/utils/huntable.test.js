@@ -74,3 +74,32 @@ console.log('ok: the menu is whatever the registry calls an animal');
 }
 
 console.log('ok: a rule can ask for meat without naming the animal');
+
+// Fleeing works against something that has to reach you; against archers it
+// mostly does not, which is why the rule answering them is worth telling apart.
+// The policy had ELEVEN exact mob names in it, hand-written by the agent, and a
+// mod pack shipping mutantmonsters:mutant_skeleton, graveyard:skeleton_creeper
+// and frostiful:chillager will always have one more the list never heard of.
+// Substrings catch all three without naming any.
+{
+    const { isRangedHostile } = await import('./mcdata.js');
+    const hostile = (name) => ({ name, type: 'hostile', metadata: [] });
+
+    for (const n of ['skeleton', 'stray', 'pillager', 'witch', 'blaze', 'ghast', 'drowned'])
+        assert.equal(isRangedHostile(hostile(n)), true, `${n} shoots`);
+
+    // The three the hand-written list had to be told about one at a time.
+    for (const n of ['mutantmonsters:mutant_skeleton', 'graveyard:skeleton_creeper', 'frostiful:chillager'])
+        assert.equal(isRangedHostile(hostile(n)), true, `${n} is caught without being named`);
+
+    // Melee hostiles are somebody else's problem: fleeing does work on them.
+    for (const n of ['zombie', 'spider', 'creeper', 'enderman'])
+        assert.equal(isRangedHostile(hostile(n)), false, `${n} has to come to you`);
+
+    // And it must still be hostile -- a skeleton horse is a mount, not an archer.
+    assert.equal(isRangedHostile({ name: 'skeleton_horse', type: 'animal', metadata: [] }), false,
+        'not hostile, not a threat');
+    assert.equal(isRangedHostile(null), false);
+}
+
+console.log('ok: ranged hostiles are recognised by shape, not by roll-call');
