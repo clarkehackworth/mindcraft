@@ -1094,6 +1094,20 @@ export class Agent {
                 console.log(evt);
                 try { sendOutputToServer(this.name, evt); } catch (_) {}
                 this.memory_bank.rememberPlace('last_death_position', death_pos.x, death_pos.y, death_pos.z);
+                // A separate place for the deaths worth walking back to. YIGD
+                // only leaves a grave when there was something to put in it, so
+                // three of the last four death sites had nothing at all --
+                // items0 each -- while the graves holding the bot's actual gear
+                // sat at older coordinates it no longer remembered.
+                // go_back_for_your_grave chased last_death_position, arrived at
+                // empty ground, and came home with nothing three times running.
+                //
+                // Only a death with items in hand leaves something to fetch, so
+                // only that kind updates this. last_death_position keeps meaning
+                // "where I died most recently", which is what the rules that
+                // avoid the spot want.
+                if (items.length > 0)
+                    this.memory_bank.rememberPlace('last_grave_position', death_pos.x, death_pos.y, death_pos.z);
                 let death_pos_text = null;
                 if (death_pos) {
                     death_pos_text = `x: ${death_pos.x.toFixed(2)}, y: ${death_pos.y.toFixed(2)}, z: ${death_pos.z.toFixed(2)}`;

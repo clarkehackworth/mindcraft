@@ -85,7 +85,14 @@ console.log('ok: the grave is opened before the floor is swept');
     assert.ok(back, 'something goes TO the grave, not only reacts at it');
     assert.deepEqual(back.do.map(s => s.act), ['goto_place', 'pick_up_drops'],
         'walk there, then open it');
-    assert.equal(back.do[0].name, 'last_death_position', 'the place the death handler records');
+    assert.equal(back.do[0].name, 'last_grave_position',
+        'the deaths that left something behind, not merely the most recent one');
+    // YIGD makes a grave only when there was something to store, so three of
+    // four recent death sites were bare ground -- items0 each -- and this rule
+    // walked to all three and came home empty while the gear sat at older
+    // coordinates the bot no longer remembered.
+    assert.match(JSON.stringify(back.when), /last_grave_position/,
+        'and it stays quiet until there is a grave worth the walk');
 
     // Daylight and no hostiles: the sibling rule already paid for that lesson --
     // "the walk is what killed the bot, 28 times in one game-day".

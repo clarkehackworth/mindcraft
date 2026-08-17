@@ -1095,7 +1095,14 @@ function describeLostDrops(bot, blockType) {
  **/
 export async function recoverGrave(bot, range = 16) {
     const graves = world.getNearestBlocks(bot, ['grave'], range, 1);
-    if (!graves.length) return false;
+    if (!graves.length) {
+        // Silent here meant go_back_for_your_grave could walk the whole way to
+        // the death position, run, and leave nothing in the log to say whether
+        // it found a grave, found one it could not break, or was standing in
+        // the wrong place. Three trips looked identical to never firing.
+        log(bot, `No grave within ${range} blocks of ${Math.floor(bot.entity.position.x)}, ${Math.floor(bot.entity.position.y)}, ${Math.floor(bot.entity.position.z)}; nothing here to take back.`);
+        return false;
+    }
     const pos = graves[0].position;
     await goToPosition(bot, pos.x, pos.y, pos.z, 1);
     // Re-read after walking: the trip takes seconds and this is the one block
