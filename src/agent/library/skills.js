@@ -650,6 +650,34 @@ export async function clearNearestFurnace(bot) {
 }
 
 
+/**
+ * Hunt whatever animal is actually here, rather than one named in advance.
+ *
+ * The food rules all named species: rabbit, sheep, cow, sweet_berry_bush. In a
+ * Frozen Pine Taiga none of them exist, the nearest plains biome was 704 blocks
+ * away against a 200 block exploration radius, and Andy fired search_out_game
+ * every three minutes for "Could not find any rabbit in 128 blocks" while his
+ * food fell to 8. The only meal he managed in nine hours came from respawning.
+ *
+ * isHuntable knows what counts, including the mod pack's own livestock, so the
+ * caller does not have to guess the local fauna.
+ *
+ * @param {MinecraftBot} bot, reference to the minecraft bot.
+ * @param {number} range, how far to look.
+ * @returns {Promise<boolean>} true if something was hunted.
+ * @example
+ * await skills.huntNearestAnimal(bot, 64);
+ **/
+export async function huntNearestAnimal(bot, range = 64) {
+    const prey = world.getNearestEntityWhere(bot, e => mc.isHuntable(e), range);
+    if (!prey) {
+        log(bot, `No animal within ${range} blocks to hunt.`);
+        return false;
+    }
+    log(bot, `Hunting ${prey.name}.`);
+    return await attackEntity(bot, prey, true);
+}
+
 export async function attackNearest(bot, mobType, kill=true) {
     /**
      * Attack mob of the given type.

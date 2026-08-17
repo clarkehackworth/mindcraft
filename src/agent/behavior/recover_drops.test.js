@@ -73,3 +73,33 @@ console.log('ok: the gear comes back before the bot walks away');
 }
 
 console.log('ok: the grave is opened before the floor is swept');
+
+// Going back for the grave had to be a rule of its own. Every recovery path was
+// reactive -- leave_your_death_spot wants the bot already within 12 blocks of
+// the death spot, the stuck handler wants eight collisions on the grave itself
+// -- and the bot respawns elsewhere and walks off, so neither ever fired. Two
+// graves stood unopened holding everything it owned while it starved.
+{
+    const seed = JSON.parse(readFileSync(new URL('../../../policies/stayin_alive.json', import.meta.url)));
+    const back = seed.policy.rules.find(r => r.name === 'go_back_for_your_grave');
+    assert.ok(back, 'something goes TO the grave, not only reacts at it');
+    assert.deepEqual(back.do.map(s => s.act), ['goto_place', 'pick_up_drops'],
+        'walk there, then open it');
+    assert.equal(back.do[0].name, 'last_death_position', 'the place the death handler records');
+
+    // Daylight and no hostiles: the sibling rule already paid for that lesson --
+    // "the walk is what killed the bot, 28 times in one game-day".
+    const gates = JSON.stringify(back.when);
+    assert.match(gates, /is_night/, 'not at night');
+    assert.match(gates, /hostile_nearby/, 'not with something watching');
+    assert.match(gates, /place_known/, 'and only once there is somewhere to go');
+    assert.equal(back.interrupts, 'idle', 'the gear can wait for a gap');
+
+    // It waits its turn behind coming home: the first idle rule claims the gap,
+    // and drifting home outranks fetching gear. night_work pins that ordering.
+    const idle = seed.policy.rules.filter(r => r.interrupts === 'idle').map(r => r.name);
+    assert.equal(idle[0], 'come_home_when_far', 'homing still claims the gap first');
+    assert.equal(idle[1], 'go_back_for_your_grave', 'and the grave trip is next in line');
+}
+
+console.log('ok: something goes back for the grave on purpose');

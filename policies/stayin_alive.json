@@ -664,6 +664,48 @@
         "cooldown": 120
       },
       {
+        "name": "go_back_for_your_grave",
+        "description": "Every fix for recovering a death drop was reactive -- leave_your_death_spot wants the bot already within 12 blocks of where it died, the stuck handler wants eight collisions on the grave itself -- and the bot respawns elsewhere, walks off, and never comes back, so neither ever fired. Two graves stood unopened at -26,67,8 and -26,66,9 holding everything it owned while it starved in a biome with no food. Nothing went TO the grave on purpose. The gates are the ones the sibling rule already argued for: daylight, and nothing hostile in sight, because walking back into what killed you is how you die twice. interrupts:idle, not all -- the gear has waited this long and can wait for a gap -- and a two minute cooldown so a failed trip does not become a commute. Sits after come_home_when_far because the first idle rule claims the gap, and drifting home outranks fetching gear.",
+        "interrupts": "idle",
+        "when": {
+          "all": [
+            {
+              "cond": "place_known",
+              "name": "last_death_position"
+            },
+            {
+              "not": {
+                "cond": "at_death_position",
+                "range": 12
+              }
+            },
+            {
+              "not": {
+                "cond": "is_night"
+              }
+            },
+            {
+              "not": {
+                "cond": "hostile_nearby",
+                "range": 16
+              }
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "goto_place",
+            "name": "last_death_position",
+            "closeness": 2
+          },
+          {
+            "act": "pick_up_drops",
+            "range": 16
+          }
+        ],
+        "cooldown": 120
+      },
+      {
         "name": "wait_out_the_night_under_cover",
         "description": "Already under a roof at night with no bed: hold position until dawn. Free, and it keeps the goal loop parked -- an idle sheltered bot would otherwise resume self-prompting and wander back out into the dark.",
         "interrupts": "idle",

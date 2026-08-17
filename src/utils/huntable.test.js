@@ -39,3 +39,19 @@ assert.equal(isHuntable({}), false);
 assert.equal(isHuntable({ name: 'cow' }), false, 'no type is not an animal');
 
 console.log('ok: the menu is whatever the registry calls an animal');
+
+// And a rule has to be able to ask for "meat" without naming the species. The
+// hunting MODE could already see any animal, at range 8, when idle -- but no
+// action exposed it, so every food rule had to guess the local fauna and every
+// one of them guessed a temperate biome.
+{
+    const { ACTIONS } = await import('../agent/behavior/policy.js');
+    assert.ok(ACTIONS.hunt, 'hunt is an action a rule can name');
+    assert.equal(ACTIONS.hunt.cost, 'blocking', 'it walks to the animal and fights it');
+    assert.ok(ACTIONS.hunt.clears.includes('has_food'),
+        'succeeding is what stops the rule firing again');
+    assert.doesNotMatch(ACTIONS.hunt.desc, /rabbit|sheep|cow\b/,
+        'the description must not teach a model to think in species again');
+}
+
+console.log('ok: a rule can ask for meat without naming the animal');

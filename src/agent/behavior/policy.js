@@ -486,6 +486,19 @@ export const ACTIONS = {
         desc: 'Collect blocks of a type within 64 blocks. Family names ("log", "<x>_ore") collect any variant. If none are that close, the rule simply collects nothing -- gate it on block_nearby so it does not retry forever.',
         fn: async (agent, a) => await skills.collectBlock(agent.bot, a.type, a.num ?? 1)
     },
+    hunt: {
+        cost: 'blocking', clears: ['animal_nearby', 'has_food'],
+        args: { range: 'number (default 64), how far to look for something to hunt' },
+        // Every food rule named a species -- rabbit, sheep, cow, sweet_berry_bush
+        // -- and a Frozen Pine Taiga has none of them. The nearest plains was 704
+        // blocks away against a 200 block exploration radius, so search_out_game
+        // fired every three minutes for "Could not find any rabbit in 128
+        // blocks" while food fell to 8, and the only meal in nine hours came
+        // from respawning. isHuntable already knows what counts, mod livestock
+        // included, so a rule can just ask for meat.
+        desc: 'Hunt the nearest animal, whatever species lives here. Prefer this to search_entity with a species name: it finds modded animals too, and it does not need the biome guessed in advance. Returns false when there is nothing within range.',
+        fn: async (agent, a) => await skills.huntNearestAnimal(agent.bot, a.range ?? 64)
+    },
     pick_up_drops: {
         cost: 'blocking', clears: ['has_item'],
         args: { range: 'number (default 8), how far to walk for a drop' },
