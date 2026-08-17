@@ -912,6 +912,28 @@ export class Agent {
                 ? [[1,0],[-1,0],[0,1],[0,-1]].map(([dx, dz]) => `${nameAt(dx,0,dz)}/${nameAt(dx,1,dz)}`).join(' ')
                 : '?';
             console.log(`EVT move:path_reset:stuck:at=${at}:on=${nameAt(0,0,0)}:ring=${ring}`);
+            // Snow is 12 of every 19 things the bot walks into, and the planner
+            // cannot see it: minecraft-data gives the snow LAYER
+            // boundingBox 'empty', so A* routes straight through what is really
+            // a collision box on the server. Nothing plans to break it because
+            // nothing believes it is there.
+            //
+            // Not blocksToAvoid -- this repo already tried refusing snow and
+            // recorded the result: "no path existed anywhere, every goal timed
+            // out, and Andy sat in one spot and died 7 times", in a biome made
+            // of the stuff. So clear it at execution instead, which is what a
+            // player does without thinking. Snow is about a second by hand.
+            if (!p || this.bot.targetDigBlock) return;
+            for (const [dx, dz] of [[1,0],[-1,0],[0,1],[0,-1],[0,0]]) {
+                const b = (() => { try { return this.bot.blockAt(p.offset(dx, 0, dz)); } catch { return null; } })();
+                if (!b || b.name !== 'snow') continue;
+                // Fire and forget: this runs on a pathfinder event, and awaiting
+                // a dig here would hold the event loop the same way the air
+                // sampler used to be held.
+                this.bot.dig(b).catch(() => {});
+                console.log(`EVT move:snow_cleared:${Math.floor(b.position.x)},${Math.floor(b.position.y)},${Math.floor(b.position.z)}`);
+                break;
+            }
         });
         // Logging callbacks
         this.bot.on('error' , (err) => {
