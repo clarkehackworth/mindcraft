@@ -888,7 +888,7 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                     log(bot, `Skipping ${blockType} at ${block.position}: breaking it would strand you on a pillar.`);
                     continue;
                 }
-                await bot.dig(block);
+                await protectedDig(bot, block);
                 await pickupNearbyItems(bot);
                 success = true;
             }
@@ -1141,7 +1141,7 @@ export async function recoverGrave(bot, range = 16) {
         return false;
     }
     try {
-        await bot.dig(block);
+        await protectedDig(bot, block);
     } catch (err) {
         log(bot, `Could not break the grave at ${pos.x}, ${pos.y}, ${pos.z}: ${err.message}`);
         return false;
@@ -1297,7 +1297,7 @@ export async function breakBlockAt(bot, x, y, z, allowNoDrop = false) {
             log(bot, `Not breaking ${block.name} at x:${x.toFixed(1)}, y:${y.toFixed(1)}, z:${z.toFixed(1)}: it is the last block you could step onto, and removing it would strand you on a pillar. Move somewhere else first, or place a block to stand on.`);
             return false;
         }
-        await bot.dig(block, true);
+        await protectedDig(bot, block, true);
         markCleared(x, y, z);
         log(bot, `Broke ${block.name} at x:${x.toFixed(1)}, y:${y.toFixed(1)}, z:${z.toFixed(1)}.`);
     }
@@ -1976,6 +1976,30 @@ export async function goToPosition(bot, x, y, z, min_distance=2) {
     }
     
     const checkDigProgress = () => {
+        // Only ever cancel a dig the PATHFINDER started. This watchdog runs on a
+        // 1s interval and used to call bot.stopDigging() on whatever dig it
+        // happened to find in flight -- there is only one bot, and
+        // bot.targetDigBlock is global to it, so "a dig is running" was read as
+        // "my dig is running".
+        //
+        // What that cost: surface() punching through a ceiling to escape a
+        // flooded cave is digging stone underwater and off the ground, which is
+        // 25x the normal time and therefore always over MAX_HAND_DIG_MS. So the
+        // rescue was cancelled, every time, by a pathfinding watchdog that had
+        // no opinion about drowning at all -- five drown deaths in one 30-minute
+        // window, each one logged "pinned under stone, digging it failed: Error:
+        // Digging aborted". The same abort was killing night_no_weapon_shelter's
+        // dig_in, which is also nobody's pathfinding.
+        //
+        // No goal means this interval is a leftover and its opinion is stale.
+        //
+        // isMoving too, and that second half is the one that matters: pathfinder
+        // .stop() only sets a stopPathing flag (index.js:167) and leaves .goal
+        // standing, so a goal check alone still let this cancel the drowning
+        // rescue -- measured after the first attempt at this fix, "pinned under
+        // stone, digging it failed: Error: Digging aborted" at -9,76,2, one more
+        // drown death. A pathfinder with no path underfoot is not digging.
+        if (!bot.pathfinder?.goal || !bot.pathfinder.isMoving?.()) return;
         if (bot.targetDigBlock) {
             const targetBlock = bot.targetDigBlock;
             // canHarvest asks whether the block DROPS anything, not whether it can
@@ -1995,10 +2019,15 @@ export async function goToPosition(bot, x, y, z, min_distance=2) {
     };
     
     const progressInterval = setInterval(checkDigProgress, 1000);
-    
+    // unref so a leaked one cannot hold the process open. finally below is the
+    // real cleanup: the two clearInterval calls this replaces covered the
+    // success and throw paths, but an abandoned goToGoal that never settles left
+    // the interval running for the rest of the session -- a 1Hz stopDigging
+    // watchdog with no pathfinding behind it, outliving the call that made it.
+    progressInterval.unref?.();
+
     try {
         await goToGoal(bot, new pf.goals.GoalNear(x, y, z, min_distance));
-        clearInterval(progressInterval);
         const distance = bot.entity.position.distanceTo(new Vec3(x, y, z));
         if (distance <= min_distance+1) {
             log(bot, `You have reached at ${x}, ${y}, ${z}.`);
@@ -2010,8 +2039,9 @@ export async function goToPosition(bot, x, y, z, min_distance=2) {
         }
     } catch (err) {
         log(bot, `Pathfinding stopped: ${err.message}.`);
-        clearInterval(progressInterval);
         return false;
+    } finally {
+        clearInterval(progressInterval);
     }
 }
 
@@ -2330,6 +2360,58 @@ export async function followPlayer(bot, username, distance=4) {
 }
 
 
+// Blocks that fill your lungs. Only the first is called water, which is why
+// every name === 'water' test in this file's history missed a kelp forest.
+// Waterlogged stairs, slabs and fences are not on the list because they are not
+// a name at all -- they are a property, checked below.
+const DROWNING_BLOCKS = ['water', 'flowing_water', 'bubble_column',
+    'kelp', 'kelp_plant', 'seagrass', 'tall_seagrass'];
+
+/**
+ * Is the bot's head in something that drowns it?
+ *
+ * Positional, not physical: bot.entity.isInWater is deliberately NOT consulted.
+ * It was measured false through a drowning that ended in death, and every
+ * repair that AND-ed it in inherited that. Whether the reading was honest or was
+ * one more casualty of the oxygen bug is unknown, but a signal that has been
+ * false when it mattered does not get a vote.
+ *
+ * @param {MinecraftBot} bot, reference to the minecraft bot.
+ * @returns {boolean} true if the eye-level block would drain air.
+ */
+/**
+ * Run one deliberate dig with the pathfinder's cancel-on-goal-change refused.
+ *
+ * mineflayer-pathfinder's resetPath calls bot.stopDigging() every time a goal
+ * is set, assuming the dig in flight is one of its own path steps -- but
+ * bot.targetDigBlock is global to the bot, so any rule that walks somewhere
+ * cancels whatever else was digging. Measured: two rules 0.2s apart, one
+ * killing the other's dig, and a drowning rescue restarted from zero about once
+ * a second for the whole of a fatal drowning.
+ *
+ * Every deliberate dig in this file goes through here. The pathfinder breaks
+ * its own path steps internally rather than through these skills, so its digs
+ * remain cancellable and pathfinding behaviour is unchanged.
+ */
+export async function protectedDig(bot, ...dig_args) {
+    bot._protected_digs = (bot._protected_digs ?? 0) + 1;
+    try { return await bot.dig(...dig_args); }
+    finally { bot._protected_digs--; }
+}
+
+export function headSubmerged(bot) {
+    const eye = bot?.entity?.position?.offset(0, bot.entity.eyeHeight ?? 1.62, 0);
+    if (!eye) return false;
+    const head = bot.blockAt(eye);
+    // An unloaded chunk is not evidence of water. Guessing "submerged" here
+    // would hand the reflex a trigger it can never clear.
+    if (!head) return false;
+    if (DROWNING_BLOCKS.includes(head.name)) return true;
+    // Waterlogged: the block is a stair or a fence AND it is full of water.
+    try { return head.getProperties?.().waterlogged === true; }
+    catch (_) { return false; }
+}
+
 export function isBreathing(bot) {
     /**
      * Is the bot's head out of water? Oxygen only falls while the head is
@@ -2348,12 +2430,14 @@ export function isBreathing(bot) {
     // on dry land, since the early return never fired.
     // Read once: oxygenLevel is a live property, and sampling it twice in one
     // decision can straddle a change and answer about two different moments.
-    const oxygen = bot.oxygenLevel;
-    if (oxygen === undefined || oxygen < 0) {
-        const head = bot.blockAt(bot.entity.position.offset(0, bot.entity.eyeHeight ?? 1.62, 0));
-        return !head || head.name === 'air';
-    }
-    return oxygen >= 20;
+    // The head block decides, not the bar. bot.oxygenLevel was measured stuck
+    // at 0 for the rest of a session after one drowning -- the refill update is
+    // never sent, because metadata only moves when a value changes and the
+    // scoped guard means we no longer inherit someone else's. A bar that can
+    // stick means `oxygen >= 20` can be false forever on a bot standing in a
+    // field, and surface() would then never take its early return.
+    if (headSubmerged(bot)) return false;
+    return true;
 }
 
 // The air bar is sampled once per mode tick (300ms), so a 4s window holds about
@@ -2381,9 +2465,19 @@ export function recordAir(bot, window_ms=AIR_WINDOW_MS) {
     // cannot fill the window and satisfy the debounce on its own.
     if (bot.oxygenLevel < 0) return;
     if (!seen.length || now - seen[seen.length - 1].t > 100)
-        seen.push({ t: now, oxygen: bot.oxygenLevel });
+        // submerged rides along in the same sample so the two channels share one
+        // clock. A separate history would drift, and drift is what made the
+        // 4-second window mean two different things to two callers once already.
+        seen.push({ t: now, oxygen: bot.oxygenLevel, submerged: headSubmerged(bot) });
     while (seen.length && now - seen[0].t > window_ms) seen.shift();
 }
+
+// How long the head must stay under before the block channel calls it drowning.
+// Longer than the oxygen channel's 5 samples (1.5s) on purpose: with no air bar
+// there is no way to tell a bot fifteen seconds from death from one that waded
+// in a moment ago, so the only protection against interrupting an ordinary swim
+// is time. ~3s of a ~15s lungful, leaving room to surface twice over.
+const SUBMERGED_MIN_SAMPLES = 10;
 
 /**
  * Has the air bar been low for long enough to believe it?
@@ -2404,8 +2498,33 @@ export function recordAir(bot, window_ms=AIR_WINDOW_MS) {
  */
 export function lowAirPersists(bot, air=12, min_samples=AIR_MIN_SAMPLES) {
     if (!bot) return false;
+    // A head in air is not drowning, whatever the number says. This is a veto
+    // over BOTH channels and it goes first, because the number is the part that
+    // has repeatedly lied and the block is the part that has not.
+    //
+    // Measured in the pen at 8,63,-7, one run, in order:
+    //     selfpres:drown:oxygen=0:above=air:inwater=true :wet=12/12   <- real
+    //     selfpres:drown:oxygen=0:above=air:inwater=false:wet=0/6     <- phantom
+    //     ... eleven more, wet=0/8, 0/11, 0/14 ... 0/32
+    // The bot drowned, was rescued, and then the oxygen channel fired eleven
+    // more times on a bot standing in air. bot.oxygenLevel stuck at 0 and never
+    // recovered: metadata is only sent when a value CHANGES, and once scoped to
+    // our own entity the refill update never arrived to clear it. So the stale
+    // reading is now OUR stale reading rather than a squid's -- an improvement
+    // in provenance and no improvement at all in truth.
+    //
+    // wet=0/32 is the whole argument. Thirty-two consecutive samples say the
+    // head is in air while the number says empty; one of them is wrong, and the
+    // one that tracked the real drowning at 12/12 is not it.
+    if (!headSubmerged(bot)) return false;
     const oxygen = bot.oxygenLevel;
-    if (oxygen === undefined) return false;
+    // No air bar to consult -- the honest state for a bot that has not been
+    // losing air, since nothing is sent while the value holds steady. The head
+    // block already said we are under, so count how long it has said it.
+    if (oxygen === undefined) {
+        const seen = bot._air_history ?? [];
+        return seen.filter(s => s.submerged).length >= SUBMERGED_MIN_SAMPLES;
+    }
     // The bar is 0..20. A negative reading is not a very empty bar, it is the
     // server telling us nothing -- and "nothing" tested as <= 12, so the reflex
     // fired on dry land. Andy stood at -8,77,3 with air above his head and
@@ -2448,7 +2567,12 @@ export async function surface(bot, timeout_seconds=20) {
         return true;
     }
     let blocked_by = null, could_dig = false, dig_error = null;
+    // setGoal(null), not just stop(). stop() is cooperative -- it raises a flag
+    // that lands when the bot reaches its next node, and a bot pinned underwater
+    // may never reach one, so the goal outlives the emergency and every watchdog
+    // hanging off it keeps running. Drowning outranks wherever it was going.
     bot.pathfinder.stop();
+    try { bot.pathfinder.setGoal(null); } catch (_) {}
     bot.clearControlStates();
     bot.setControlState('jump', true);
     const start = Date.now();
@@ -2474,7 +2598,19 @@ export async function surface(bot, timeout_seconds=20) {
                 // times a second and the interesting value is the last one.
                 blocked_by = ceiling.name;
                 could_dig = bot.canDigBlock(ceiling);
-                if (could_dig) { try { await bot.dig(ceiling); } catch (err) { dig_error = String(err).slice(0, 60); } }
+                if (could_dig) {
+                    // Let go of jump while digging. Swimming up bobs the bot,
+                    // and a bot that drifts out of range mid-swing aborts its
+                    // own dig -- holding the escape control and the escape
+                    // action at the same time made them fight each other.
+                    bot.setControlState('jump', false);
+                    // protectedDig: a goal change elsewhere would otherwise
+                    // cancel this, and during a drowning the rules fire about
+                    // once a second.
+                    try { await protectedDig(bot, ceiling); dig_error = null; }
+                    catch (err) { dig_error = String(err).slice(0, 60); }
+                    finally { bot.setControlState('jump', true); }
+                }
             }
             await new Promise(resolve => setTimeout(resolve, 100));
         }
@@ -2497,7 +2633,15 @@ export async function surface(bot, timeout_seconds=20) {
         why = `pinned under ${blocked_by}, dug at it and still stuck`;
     }
     const p = bot.entity.position;
-    log(bot, `Could not reach the surface within ${timeout_seconds} seconds at ` +
+    // How it ended, not how long it was allowed to run. Three of these reported
+    // "within 20 seconds" after 0.6s, because the loop also exits on
+    // interrupt_code -- and one of those 0.6s runs ended because the bot had
+    // already drowned. A failure line that names the wrong cause is what sent me
+    // looking inside surface() for a bug that was in the pathfinder's watchdog.
+    const elapsed = Math.round((Date.now() - start) / 1000);
+    const ending = bot.interrupt_code ? `interrupted after ${elapsed}s`
+        : `gave up after ${elapsed}s of ${timeout_seconds}`;
+    log(bot, `Could not reach the surface, ${ending}, at ` +
         `${Math.floor(p.x)},${Math.floor(p.y)},${Math.floor(p.z)} with ${bot.oxygenLevel}/20 air: ${why}.`);
     return false;
 }

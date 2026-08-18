@@ -181,6 +181,136 @@ export const WOOL_COLORS = [
 ]
 
 
+/**
+ * Repair bot.oxygenLevel, which upstream mineflayer fills in from the wrong
+ * entity.
+ *
+ * lib/plugins/entities.js handles entity_metadata for EVERY entity, and on the
+ * mcDataHasEntityMetadata path it ends with an unguarded
+ *
+ *     if (metas.air_supply != null) bot.oxygenLevel = Math.round(metas.air_supply / 15)
+ *
+ * The old lib/plugins/breath.js it replaced opened with
+ * `if (bot.entity.id !== packet.entityId) return` -- that guard did not survive
+ * the move, so any nearby mob carrying an air_supply now writes the bot's own
+ * oxygen bar. A Drowned reports 0 or below; Math.round(-15/15) is the -1 that
+ * has been showing up in "Surfaced with -1/20 air left".
+ *
+ * Measured: 12 consecutive rcon reads of the real entity said Air=300 (a full
+ * bar, on dry land) while the bot's own readings over the same seconds went
+ * 20 -> 12 -> 6 -> 5 -> 0 -> -1 and the drowning reflex fired on every dip.
+ * The `oxygen < 0` guards downstream were fitted to the ugliest values this
+ * produces; the values inside 0..20 are just as wrong and no guard can tell
+ * them apart, because there is nothing wrong with the number -- it is the
+ * right number about the wrong entity.
+ *
+ * ponytail: no metadata layout parsed here. Own the property instead: a write
+ * is only believed while the packet being handled is about this bot. That stays
+ * true across protocol versions, and across handler registration order.
+ *
+ * The first attempt at this DID depend on registration order -- restore our
+ * last good value from a handler added after createBot, on the assumption that
+ * upstream's was already in place. It is not: loader.js:134 defers plugin
+ * injection with `setTimeout(() => bot.emit('inject_allowed'), 0)`, so
+ * entities.js registers on the NEXT TICK, after this function has run. Ours
+ * went first in the queue and upstream overwrote it immediately afterwards.
+ * Deployed, it changed nothing and the reflex kept firing on dry land. Nothing
+ * about the diagnosis was wrong; the repair just leaned on an ordering that is
+ * inverted from what it looks like. Hence prependListener plus a setter guard,
+ * which are both order-independent.
+ *
+ * What the scoped counter then measured, and it is worse than a stray mob:
+ *
+ *     EVT oxyprobe:ours=10:foreign=790:own=undefined:self=194640
+ *
+ * 790 metadata packets for other entities, 10 for the bot, and none of its own
+ * ten carried air_supply -- own_oxygen never left undefined across that window.
+ *
+ * I read that as "this server never reports the bot's own air" and was wrong.
+ * Penning the bot in water proved it: the moment it was actually submerged its
+ * OWN packets carried air_supply and the reading tracked the drowning honestly,
+ * down through 1 and 0 to -1 while taking damage. Metadata is only sent when a
+ * value CHANGES, and a bot standing on dry land at a full bar has nothing to
+ * report -- the silence was correct, and 100% of the traffic in that window was
+ * other people's precisely because nothing was happening to ours.
+ *
+ * So the bug is exactly the missing entity-id guard and nothing more. Scoped,
+ * oxygen is trustworthy when it speaks and undefined the rest of the time,
+ * which is the honest answer to "how much air do I have" on a bot that has not
+ * been losing any. lowAirPersists falls through to the head block for that
+ * case; see headSubmerged in skills.js.
+ *
+ * Footnote for whoever revisits the `oxygen < 0` guards: -1 is a REAL reading
+ * for a player taking drowning damage (vanilla Air runs negative), not only the
+ * corruption it was originally fitted to. It is now the least urgent thing in
+ * this file, but it is no longer nonsense.
+ */
+export function scopeOxygenToSelf(bot) {
+    let own_oxygen = bot.oxygenLevel;
+    let packet_is_ours = false;
+    // prependListener, not on: this has to observe the packet BEFORE whoever
+    // acts on it, and upstream's handler does not exist yet to be ordered after.
+    // Later .on() registrations append behind this one, so it stays first.
+    bot._client.prependListener('entity_metadata', (packet) => {
+        packet_is_ours = !!bot.entity && packet.entityId === bot.entity.id;
+    });
+    Object.defineProperty(bot, 'oxygenLevel', {
+        get: () => own_oxygen,
+        // Dropped rather than corrected: a foreign reading carries no
+        // information about our air, so there is nothing to salvage from it.
+        set: (v) => { if (packet_is_ours) own_oxygen = v; },
+        configurable: true,
+        enumerable: true,
+    });
+    return bot;
+}
+
+/**
+ * Stop the pathfinder cancelling a dig that some other part of the bot started.
+ *
+ * Traced, after two fixes aimed at the wrong culprit, by wrapping stopDigging
+ * and printing its caller:
+ *
+ *     EVT digabort:by:resetPath <- bot.pathfinder.setGoal <- bot.pathfinder.setGoal
+ *
+ * mineflayer-pathfinder's resetPath calls bot.stopDigging() on every goal
+ * change, because it assumes the dig in flight is one of its own path steps.
+ * bot.targetDigBlock is global to the bot, so any rule that sets a goal -- flee,
+ * go_back_for_your_grave, requestInterrupt, or surface() itself clearing the
+ * goal -- cancels whatever else is digging. While the bot is drowning, rules
+ * fire about once a second, so the ceiling dig was restarted from zero roughly
+ * as often as it was attempted and never finished. Same shape as the
+ * MAX_HAND_DIG_MS watchdog in skills.js: "a dig is running" read as "my dig".
+ *
+ * The first version of this guarded only surface()'s ceiling dig, on the theory
+ * that drowning was the emergency worth protecting. That was scoping the fix to
+ * the symptom I happened to be chasing rather than to the defect, and the bot
+ * paid for it inside half an hour: pinned by a stray it could not outrun, at
+ * 15/60 health, with
+ *     Rule 'active:flee_ranged_raiders' step dig_in failed: Digging aborted
+ * -- dig_in being the one escape from a ranged attacker, cancelled by the same
+ * resetPath. A foxhole under fire and a ceiling while drowning are the same
+ * claim: a dig that a skill deliberately started is not the pathfinder's to
+ * cancel.
+ *
+ * ponytail: a counter, not a boolean, so nested or overlapping digs cannot have
+ * an inner one clear the outer one's protection. Scoped to skills' own digs --
+ * the pathfinder breaks its path steps internally rather than through
+ * breakBlockAt, so its own digs stay cancellable and pathfinding is unchanged.
+ */
+export function protectDeliberateDigs(bot) {
+    let stop_digging = () => {};
+    Object.defineProperty(bot, 'stopDigging', {
+        // Reassigned per dig by plugins/digging.js, and set to noop between
+        // digs, so the guard has to live on the property rather than wrap one
+        // function once.
+        get: () => (bot._protected_digs > 0 ? () => {} : stop_digging),
+        set: (fn) => { stop_digging = fn; },
+        configurable: true,
+    });
+    return bot;
+}
+
 export function initBot(username) {
     const options = {
         username: username,
@@ -339,6 +469,10 @@ export function initBot(username) {
         rollup.unref?.();
         bot.once('end', () => clearInterval(rollup));
     }
+
+    scopeOxygenToSelf(bot);
+
+    protectDeliberateDigs(bot);
 
     bot.loadPlugin(pathfinder);
     bot.loadPlugin(pvp);

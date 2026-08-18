@@ -40,10 +40,12 @@ assert.equal(breathing.swam, false, 'no swimming, no control states touched');
 
 // A bot that really is underwater still does the work and reports the real one.
 const drowning = fakeBot(5);
-drowning.blockAt = () => ({ name: 'water' });
-// Reaches air on the second look.
+// Reaches air on the second look. Surfacing is the HEAD BLOCK changing, not the
+// bar changing: isBreathing reads the block now, because the bar was measured
+// stuck at 0 for a whole session after one drowning and a stub that only moves
+// the number describes a bot that never gets out.
 let looks = 0;
-Object.defineProperty(drowning, 'oxygenLevel', { get: () => (++looks > 2 ? 20 : 5) });
+drowning.blockAt = () => ({ name: ++looks > 2 ? 'air' : 'water' });
 assert.equal(await surface(drowning), true);
 assert.match(drowning.output, /Surfaced with/, 'a real rescue still reports one');
 assert.equal(drowning.swam, true, 'and it actually swam');

@@ -25,7 +25,20 @@ const tick = async (agent, oxygenLevel, args = {}) => {
     recordAir(agent.bot);
     return drowning(agent, args);
 };
-const fresh = () => ({ bot: { oxygenLevel: 20, _air_history: [] } });
+// The head is in water in every case here, because what is under test is the
+// DEBOUNCE and a drowning bot's head is wet. lowAirPersists now vetoes on the
+// head block first -- measured after a real rescue in the pen at 8,63,-7, the
+// bar stuck at 0 and fired eleven more times at wet=0/6 through wet=0/32 with
+// the bot standing in air. A stub with no world at all inherits that veto and
+// would make every case below pass for the wrong reason.
+const fresh = () => ({
+    bot: {
+        oxygenLevel: 20,
+        _air_history: [],
+        entity: { position: { offset: () => ({}) }, eyeHeight: 1.62 },
+        blockAt: () => ({ name: 'water' }),
+    },
+});
 
 test('a single stray low packet does not fire', async () => {
     const agent = fresh();

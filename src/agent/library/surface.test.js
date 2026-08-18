@@ -75,21 +75,35 @@ assert.equal(interrupted.controls.jump, false, 'the jump control is released whe
 // Andy drowned in a kelp forest while the log said "Surfaced with -1/20 air
 // left". Water, kelp, seagrass and waterlogged stairs all drown you; only the
 // first is named 'water', so any block-name test of "am I underwater" is wrong.
-for (const name of ['kelp', 'kelp_plant', 'seagrass', 'tall_seagrass', 'oak_stairs'])
+for (const name of ['kelp', 'kelp_plant', 'seagrass', 'tall_seagrass'])
     assert.equal(isBreathing({ oxygenLevel: 3, entity: fakeEntity, blockAt: () => ({ name }) }), false,
         `a head in ${name} with 3 air is not breathing`);
 assert.equal(isBreathing({ oxygenLevel: -1, entity: fakeEntity, blockAt: () => ({ name: 'kelp' }) }), false,
     'negative air is definitely not breathing');
-assert.equal(isBreathing({ oxygenLevel: 19, entity: fakeEntity, blockAt: () => ({ name: 'air' }) }), false,
-    'still refilling is not surfaced yet');
+// A stair drowns you when it is waterlogged, which is a property and not a
+// name. The old assertion checked the name alone, so it also condemned every
+// dry staircase in the world -- fine while nothing consulted it, wrong now that
+// the head block is what decides.
+assert.equal(isBreathing({ oxygenLevel: 3, entity: fakeEntity,
+    blockAt: () => ({ name: 'oak_stairs', getProperties: () => ({ waterlogged: true }) }) }), false,
+    'a waterlogged stair is water');
+assert.equal(isBreathing({ oxygenLevel: 3, entity: fakeEntity,
+    blockAt: () => ({ name: 'oak_stairs', getProperties: () => ({ waterlogged: false }) }) }), true,
+    'a dry stair is a stair');
+// Reversed deliberately. This used to demand a full bar before calling it
+// surfaced, which was right when the bar was the only signal -- but the bar was
+// measured stuck at 0 for the rest of a session after one drowning, and under
+// the old rule that bot could never be "breathing" again while standing in a
+// field. Head in air is breathing; that is what the word means.
+assert.equal(isBreathing({ oxygenLevel: 19, entity: fakeEntity, blockAt: () => ({ name: 'air' }) }), true,
+    'head in air is breathing, whatever the bar is doing');
 // An air pocket counts: he can breathe, whatever is packed around him.
 assert.equal(isBreathing({ oxygenLevel: 20, entity: fakeEntity, blockAt: () => ({ name: 'stone' }) }), true,
     'full air in a pocket is breathing');
-// Only a server that sends no oxygen at all falls back to block names.
 assert.equal(isBreathing({ entity: fakeEntity, blockAt: () => ({ name: 'air' }) }), true,
-    'no oxygen data falls back to the head block');
+    'no oxygen data is not an emergency');
 assert.equal(isBreathing({ entity: fakeEntity, blockAt: () => ({ name: 'kelp' }) }), false,
-    'and the fallback still rejects kelp');
+    'and a wet head is, with or without a bar');
 
 console.log('ok: drowning abandons the path, swims up, and always releases the jump');
 

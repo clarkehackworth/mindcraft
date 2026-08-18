@@ -1092,6 +1092,17 @@ export class Agent {
                     + `:${this.bot.time.timeOfDay >= 13000 ? 'night' : 'day'}:${armed ? 'armed' : 'unarmed'}`
                     + `:items${items.length}`;
                 console.log(evt);
+                // What the drowning detector could see in its last four seconds.
+                // Every previous attempt at this reflex was judged on samples
+                // taken when it FIRED; none showed what the signals said while
+                // the bot was actually dying, which is why a detector that never
+                // fired kept looking merely quiet. Cheap: one line, on death.
+                if (/drown/.test(jsonMsg.translate ?? '')) {
+                    const seen = this.bot._air_history ?? [];
+                    console.log(`EVT death:drown:trace:samples${seen.length}` +
+                        `:wet${seen.filter(s => s.submerged).length}` +
+                        `:oxy=${seen.map(s => s.oxygen).join(',') || 'none'}`);
+                }
                 try { sendOutputToServer(this.name, evt); } catch (_) {}
                 this.memory_bank.rememberPlace('last_death_position', death_pos.x, death_pos.y, death_pos.z);
                 // A separate place for the deaths worth walking back to. YIGD

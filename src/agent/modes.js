@@ -76,7 +76,23 @@ const modes_list = [
             //     EVT air:low:oxygen=4:seen=14:above=air:inwater=false:head_wet=false
             // -- the bot floats at the surface, so the block above is air and the
             // physics engine says it is not in water, while oxygen falls to 4 and
-            // keeps going. Meanwhile the fires head_wet DID allow were at
+            // keeps going.
+            //
+            // That reading is void, and now provably so. "Oxygen falling while
+            // inwater=false and the block above is air" is the exact signature
+            // of the upstream mineflayer bug scopeOxygenToSelf() patches: a
+            // nearby Drowned's air_supply was landing in bot.oxygenLevel,
+            // unguarded by entity id. So the "oxygen falling" in that sample
+            // was a mob suffocating nearby while the bot breathed fine, and
+            // above=air / inwater=false were simply the truth about a bot that
+            // was not in any water. head_wet was never the liar it was retired
+            // for being; it was the only honest witness in the room.
+            //
+            // It does not come back on this branch anyway. With no air bar,
+            // lowAirPersists now decides on the head block itself over a ~3s
+            // window (headSubmerged), which is head_wet's evidence with a
+            // debounce and without the isInWater term that read false through a
+            // fatal drowning. Meanwhile the fires head_wet DID allow were at
             // oxygen=19 and oxygen=20, bobbing in the shallows with full air. It
             // fired when nothing was wrong and stayed silent while the bot
             // drowned; the same run killed it twice with this mode enabled.
@@ -87,7 +103,13 @@ const modes_list = [
             // swim physics rather than detection.
             const air_low = skills.lowAirPersists(bot);
             if (air_low) {
-                console.log(`EVT selfpres:drown:oxygen=${bot.oxygenLevel}:above=${blockAbove.name}:inwater=${bot.entity.isInWater}`);
+                // wet= is the channel that actually decided this now, so it has
+                // to be in the line. A window that reports which signal fired is
+                // the difference between the last four soaks and the ones before
+                // them, where an empty section read as good news.
+                const wet = (bot._air_history ?? []).filter(s => s.submerged).length;
+                console.log(`EVT selfpres:drown:oxygen=${bot.oxygenLevel}:above=${blockAbove.name}` +
+                    `:inwater=${bot.entity.isInWater}:wet=${wet}/${(bot._air_history ?? []).length}`);
                 // Actually drowning. Interrupt whatever it was doing -- the bot
                 // drowned pathfinding to a block it had found underwater, and
                 // the passive branch below never fired because a goal was set.
@@ -663,6 +685,47 @@ class ModeController {
     }
 }
 
+// Detection on the same clock as sampling. Moving recordAir to physicsTick
+// fixed half of this bug and left the other half in place: the SAMPLES kept
+// arriving at 20Hz while the DECISION stayed inside update(), which the agent
+// loop awaits and which therefore stops for the whole of any blocking action.
+//
+// Measured over five hours: eleven drowning deaths whose death trace was a full
+// house -- samples17:wet17, 16/16, 15/15, 13/13 -- with no selfpres:drown line
+// anywhere. The reflex was not wrong and was not vetoed; it was never asked.
+// Every one of those deaths happened inside something that holds the loop:
+//     EVT mode:fire:policy:active:expand_storage_room
+//     EVT mode:fire:policy:active:flee_ranged_raiders
+//     Awaiting openai api response from model default
+// The fires that DID land were the harmless ones -- wet=0/15, wet=1/27 -- which
+// is exactly the tell: those are the moments the bot was idle enough for
+// update() to get a turn, and an idle bot is not the one drowning.
+//
+// Routed through execute() rather than calling surface() straight from the
+// tick, so this keeps the interrupt semantics, the active flag and the
+// reprompt suppression that every other mode fire has. execute() clears
+// interrupt_code as part of starting its action, which calling surface()
+// directly would not -- the rescue would abort on the interrupt it just raised.
+let drowning_rescue = null;
+function drowningTick(agent) {
+    const mode = modes_map.self_preservation;
+    // active guards re-entry at 20Hz; the promise guards the gap between
+    // dispatching and execute() setting active.
+    if (drowning_rescue || !mode || !mode.on || mode.active) return;
+    // Deliberately NOT gated on mode.paused. A pause is another rule saying
+    // "I have the wheel", which is a reasonable thing to say about torch
+    // placing and never about drowning.
+    if (!skills.lowAirPersists(agent.bot)) return;
+    const seen = agent.bot._air_history ?? [];
+    console.log(`EVT selfpres:drown:tick:oxygen=${agent.bot.oxygenLevel}` +
+        `:wet=${seen.filter(s => s.submerged).length}/${seen.length}` +
+        `:busy=${agent.actions?.currentActionLabel ?? 'idle'}`);
+    drowning_rescue = execute(mode, agent, async () => {
+        await skills.surface(agent.bot);
+    }).catch(err => console.error('drowning rescue failed:', err))
+      .finally(() => { drowning_rescue = null; });
+}
+
 export function initModes(agent) {
     _agent = agent;
     // Air is sampled on the game's own tick, not the agent loop, because the
@@ -679,7 +742,10 @@ export function initModes(agent) {
     // physicsTick belongs to mineflayer, runs at 20Hz, and is not reachable from
     // anything an action can block. recordAir keeps its own 100ms spacing, so
     // the extra ticks cost nothing and the window keeps meaning one thing.
-    agent.bot.on('physicsTick', () => skills.recordAir(agent.bot));
+    agent.bot.on('physicsTick', () => {
+        skills.recordAir(agent.bot);
+        drowningTick(agent);
+    });
     // the mode controller is added to the bot object so it is accessible from anywhere the bot is used
     agent.bot.modes = new ModeController();
     if (agent.task) {

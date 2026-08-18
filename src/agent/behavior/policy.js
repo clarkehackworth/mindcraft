@@ -653,8 +653,29 @@ export const ACTIONS = {
             // old surface level, so the cap spot is surrounded by open air and
             // there is nothing to place it against. At three deep the cap sits
             // where the surface block was, flush with solid ground on every
-            // side. digDown already refuses lava, water and drops.
-            if (!await skills.digDown(bot, 3)) return false;
+            // Depth floor. isSheltered above catches the case where the cap is
+            // still on, but not the loop that actually happened: dig_in caps,
+            // climb_out_of_the_deep breaks the cap to escape and reports "gained
+            // no height, nothing to pillar with and nothing to dig", and the bot
+            // is now unsheltered at the bottom of its own shaft -- so dig_in
+            // fires again and answers by going three blocks DEEPER. Net -3 per
+            // cycle. Measured over one hour: y=68 down to y=52, and at that
+            // depth in this biome the shaft opens into flooded cave, which is
+            // where all five of that window's drown deaths happened.
+            //
+            // Digging in is a surface behaviour. Below the home anchor by this
+            // much, the bot is not exposed to the night at all and the answer to
+            // "I need shelter" is a roof, never more descent.
+            const anchor = skills.explorationAnchor(bot);
+            const depth = anchor ? anchor.y - bot.entity.position.y : 0;
+            const deep = depth > 8;
+            if (!deep) {
+                // digDown already refuses lava, water and drops.
+                if (!await skills.digDown(bot, 3)) return false;
+            } else {
+                skills.log(bot, `Already ${Math.round(depth)} blocks below home; ` +
+                    `capping where I stand rather than digging deeper.`);
+            }
             const p = bot.entity.position.floored();
             // ponytail: first carried non-falling cover block wins; no gravel or
             // sand, which would fall into the shaft onto the bot's head.

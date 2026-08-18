@@ -61,15 +61,19 @@ assert.equal(land.ranAction(), null, 'and once the real value lands there is not
 // self_preservation interrupts every action and stops the self-prompt loop, and
 // it was doing that on air that had already refilled by the time surface() ran.
 //
-// The head block is 'air' here on purpose. Penned in water and instrumented,
-// a really drowning bot reports above=air, inwater=false, head_wet=false while
-// oxygen falls to 4 -- it floats at the surface and every positional test reads
-// dry. Requiring a wet head made this mode fire in the shallows at oxygen=20
-// and stay silent through two actual drowning deaths in one run.
+// The head block is 'water' here, reversing what this test used to assert.
+// It claimed a really drowning bot reads above=air with a dry head, from a
+// sample of oxygen falling while every positional test said dry. That sample
+// was the mineflayer entity-id bug: a Drowned's air_supply landing in
+// bot.oxygenLevel while this bot breathed fine on land. Re-measured in the pen
+// at 8,63,-7 against a scoped bar, a real drowning reads
+//     selfpres:drown:oxygen=0:above=air:inwater=true:wet=12/12
+// -- twelve of twelve samples with the head genuinely under. The positional
+// tests were never lying; the number was.
 // Fresh copy of the module: modes_list is module state, so the debounce window
 // from the respawn case above carries into this one and its first reading would
 // count as the second. (The jump cases below do the same thing for `active`.)
-const kelp = fakeAgent('air', 4, (await import('./modes.js?case=drowning')).initModes);
+const kelp = fakeAgent('water', 4, (await import('./modes.js?case=drowning')).initModes);
 kelp.tick();
 await kelp.agent.bot.modes.update();
 assert.equal(kelp.ranAction(), null, 'one low reading does not interrupt anything');
@@ -83,15 +87,13 @@ for (let i = 0; i < 4; i++) {
 }
 assert.equal(kelp.ranAction(), 'mode:self_preservation', 'sustained low air is drowning');
 
-// The policy condition took the opposite lesson, on purpose, and the two are
-// not in conflict. self_preservation above runs on every tick and can afford a
-// head-block check as a cheap veto. The policy condition cannot: instrumented
-// through a real drowning on this server, isInWater is false the whole time,
-// the block above the bot is air (it floats at the surface) and the eye block
-// is air too, while oxygen goes 17,14,1,-1 and the bot dies of attack.drown.
-// Every positional test reads "dry" exactly when it is drowning, so the
-// condition reads the air bar and nothing else. Three fixes failed because each
-// kept one of those world tests.
+// The policy condition shares lowAirPersists with the mode above, so it now
+// shares the head-block veto too -- there is no longer a split lesson here. The
+// "every positional test reads dry exactly when it is drowning" reading that
+// used to justify one is retired: it came from oxygen readings that belonged to
+// other entities, and the cases below still pass because they are about the
+// DEBOUNCE, which is unchanged. A single reading is a stray packet whether or
+// not the head is wet.
 //
 // The dry-mineshaft phantom that head-block checks were meant to catch is
 // handled by a debounce instead: five low samples inside a four second window,

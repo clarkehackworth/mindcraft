@@ -29,10 +29,17 @@ assert.equal(lowAirPersists(b), false, 'and never amount to a drowning');
 // jumping for the full timeout instead of returning immediately.
 assert.equal(isBreathing(b), true, 'no reading falls back to the block at the head');
 
-// Empty is still empty: 0 is a real drowning and must survive the change.
+// Empty is still empty: 0 is a real reading and must survive the change.
 const empty = bot(0);
 for (let i = 0; i < 10; i++) { empty._air_history = (empty._air_history ?? []); recordAir(empty); }
 assert.ok((empty._air_history ?? []).length > 0, '0 is a real reading and is stored');
-assert.equal(isBreathing(empty), false, 'and an empty bar is not breathing');
+// ...but an empty bar on a head in AIR is not drowning, and this stub's head is
+// in air. Measured in the pen at 8,63,-7: after one real rescue the bar stuck
+// at 0 permanently -- the refill metadata is never sent -- and the reflex fired
+// eleven more times on dry land, logged wet=0/6 through wet=0/32. The head
+// block is the veto now. A bot at oxygen 0 with its head under water is still
+// drowning; see drowning_blockbased.test.js.
+assert.equal(isBreathing(empty), true, 'an empty bar with a dry head is a stuck bar, not a drowning');
+assert.equal(lowAirPersists(empty), false, 'and it cannot fire the reflex');
 
 console.log('ok: a negative air reading is no reading, not an emergency');
