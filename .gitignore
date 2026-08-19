@@ -37,5 +37,9 @@ tools/mod-data-dumper/.gradle/
 # serena mcp workspace cache
 .serena/
 
+# agent-zero local project state (secrets, memory index) and live-state snapshots
+.a0proj/
+.backup/
+
 # Generated code index (9MB+, rebuilt from source on demand)
 .codegraph/

@@ -31,6 +31,7 @@ below started as "the bot died again" on that server.
 | 2026-08-01 | [The bot drowned reaching for a command that didn't exist](2026-08-01-drowning-handling.md) | uncommitted |
 | 2026-08-01 | [`!stats` and the policy engine disagreed about night](2026-08-01-two-definitions-of-night.md) | uncommitted |
 | 2026-08-05 | [Code issues seen while tuning the survival policies](2026-08-05-observed-code-issues.md) | **open** |
+| 2026-08-18 | [Arm, mine, and actually recover the grave](2026-08-18-gear-and-mining-activation.md) | shipped |
 
 `ARCHITECTURE.md` at the repo root was written alongside the behavior policy
 layer — the arbiter needed a written model of where it sits before it could be
