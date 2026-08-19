@@ -1,6 +1,6 @@
 # Arm, mine, and actually recover the grave
 
-**Commit:** `a33c75d` · 2026-08-18 · shipped
+**Commit:** `4917d30` · 2026-08-18 · shipped
 
 The bot was configured to survive and gather food, and it did -- but it kept
 dying in the frozen taiga at night **unarmed**. Of the 54 deaths logged over a
