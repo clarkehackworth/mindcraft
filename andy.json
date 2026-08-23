@@ -1,6 +1,8 @@
 {
     "name": "andy",
 
-    "model": "gpt-5.4-mini"
+    "model": "gpt-5.4-mini",
+
+    "use_tool_calling": true
 
 }

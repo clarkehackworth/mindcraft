@@ -29,6 +29,8 @@ const MAX_COND_SCAN = 16;
 // enough that a rule failing twice while conditions change is not news.
 // ponytail: one threshold for every rule; per-rule tuning if one ever earns it.
 const STUCK_FIRES = 5;
+// Minimum gap between telemetry prompts from one rule; see _reportToAgent.
+const TELEMETRY_PROMPT_MS = 10 * 60 * 1000;
 
 // Defined in mcdata so skills.js can share it; re-exported because this module
 // is where every existing caller looks for it.
@@ -75,12 +77,7 @@ const COLD_BIOME = /snow|frozen|ice|glacial|frost|freezing/i;
 // add their own, so take the first that answers and fall back to vanilla rather
 // than reporting a max of zero and making every rule fire forever.
 function maxHealth(bot) {
-    const attributes = bot?.entity?.attributes ?? {};
-    for (const key of ['minecraft:generic.max_health', 'generic.maxHealth', 'generic.max_health', 'max_health']) {
-        const value = attributes[key]?.value ?? attributes[key];
-        if (typeof value === 'number' && value > 0) return value;
-    }
-    return 20;
+    return world.getMaxHealth(bot);
 }
 
 function isFreezing(bot) {
@@ -679,8 +676,14 @@ export const ACTIONS = {
             const p = bot.entity.position.floored();
             // ponytail: first carried non-falling cover block wins; no gravel or
             // sand, which would fall into the shaft onto the bot's head.
-            const cover = bot.inventory.items().find(i =>
-                /^(dirt|cobblestone|cobbled_deepslate|stone|netherrack|snow_block|.*planks|.*log)$/.test(i.name));
+            // Cheap familiar covers first; failing those, ANY solid full block
+            // the registry knows -- the old regex alone meant a bot carrying
+            // only modded stone could not cap its own foxhole.
+            const CHEAP_COVER = /^(dirt|cobblestone|cobbled_deepslate|stone|netherrack|snow_block|.*planks|.*log)$/;
+            const FALLING = /sand|gravel|powder|anvil/;
+            const solid = (i) => bot.registry?.blocksByName?.[i.name]?.boundingBox === 'block' && !FALLING.test(i.name);
+            const cover = bot.inventory.items().find(i => CHEAP_COVER.test(i.name))
+                ?? bot.inventory.items().find(solid);
             if (cover) {
                 try { await skills.placeBlock(bot, cover.name, p.x, p.y + 2, p.z, 'side'); } catch {}
             }
@@ -1483,6 +1486,10 @@ export class Rule {
         this.unresolved = 0;
         // A floor the flap cannot erode. See eligible() and the unresolved branch.
         this.backoff_floor = 1;
+        // Consecutive false evaluations (eligible) and consecutive prompt-only
+        // fires with no real resolution in between (update's else branch).
+        this._false_streak = 0;
+        this.prompt_unresolved = 0;
     }
 
     eligible(agent) {
@@ -1514,7 +1521,21 @@ export class Rule {
         // blinks off between mobs and every blink halved the brake. Exactly the
         // flap the failure counter was hardened against; I hardened the counter
         // and left the backoff it sets exposed.
-        if (!fires) this.backoff = Math.max(this.backoff_floor, this.backoff / 2);
+        if (!fires) {
+            this.backoff = Math.max(this.backoff_floor, this.backoff / 2);
+            // Two consecutive false evaluations is a resolution, one is a
+            // flap. Only the former releases the prompt-only floor below --
+            // and ONLY for prompt-only rules: a step rule's floor is earned
+            // from measured non-resolution and is cleared solely by measured
+            // resolution (see the unresolved branch in update).
+            if (++this._false_streak >= 2) {
+                this.prompt_unresolved = 0;
+                if (!(this.spec.do ?? []).some(s => s.act !== 'prompt_self'))
+                    this.backoff_floor = Math.max(1, this.backoff_floor / 2);
+            }
+        } else {
+            this._false_streak = 0;
+        }
         return fires;
     }
 
@@ -1617,8 +1638,10 @@ export class Rule {
             // rule keeps firing and nothing changes" is the thing worth saying
             // out loud and a cheap step cannot answer it.
             if (real_work) this.failures = 0;
-            else if (++this.failures % STUCK_FIRES === 0)
+            else if (++this.failures % STUCK_FIRES === 0) {
                 console.log(`EVT rule:stuck:${this.spec.name}:${this.failures}`);
+                this._reportToAgent(agent, `has fired ${this.failures} times without its blocking steps accomplishing anything`);
+            }
 
             // Both counters above ask about the ACTIONS. This one asks about the
             // situation, which is the question that was missing.
@@ -1653,6 +1676,7 @@ export class Rule {
                 this.backoff_floor = 1;
             } else if (++this.unresolved % STUCK_FIRES === 0) {
                 console.log(`EVT rule:unresolved:${this.spec.name}:${this.unresolved}`);
+                this._reportToAgent(agent, `has fired ${this.unresolved} times and its trigger is still true after each fire -- the action "works" but never resolves the situation`);
                 // Grow the backoff even though the steps "worked". Capped the
                 // same as the failure backoff, so a rule that starts resolving
                 // again recovers rather than staying muted forever.
@@ -1664,11 +1688,35 @@ export class Rule {
             // applies and a prompt-only rule repeats at its cooldown forever --
             // one fired 959 times in a session. Asking again while the trigger
             // is still true means the last ask did not work, so slow down.
-            // eligible() resets this the moment the trigger goes false.
+            // eligible() halves this the moment the trigger goes false -- which
+            // is exactly how a flapping trigger kept a prompt-only rule fast:
+            // fire (x2), flap (/2), net nothing. Consecutive fires with no real
+            // resolution in between (two false evals -- see eligible) earn the
+            // same floor the step branch gets, so the flap cannot erode it.
             this.backoff = Math.min(this.backoff * 2, 200);
+            if (++this.prompt_unresolved >= 2) {
+                this.backoff_floor = Math.min(Math.max(this.backoff_floor, 1) * 2, 200);
+                this.backoff = Math.max(this.backoff, this.backoff_floor);
+            }
         }
         for (let message of prompts)
             agent.handleMessage('system', `(POLICY RULE '${this.spec.name}') ${message}`);
+    }
+
+    // The stuck/unresolved counters used to end at console.log, for a human
+    // reading soak logs -- the "self-optimization loop" was a person. Closing
+    // it means the agent itself hears that a rule it depends on is spinning,
+    // with enough context to fix it via !policy. Throttled hard: this is a
+    // paid generation, and a rule stuck for an hour needs one nudge, not
+    // twelve.
+    _reportToAgent(agent, what) {
+        const now = Date.now();
+        if (now - (this._last_telemetry ?? 0) < TELEMETRY_PROMPT_MS) return;
+        this._last_telemetry = now;
+        agent.handleMessage('system',
+            `(POLICY TELEMETRY) Your policy rule '${this.spec.name}' ${what}. ` +
+            `Its spec: ${JSON.stringify(this.spec)}. ` +
+            `Decide whether its trigger or its action is wrong and revise or remove it with !policy; if it is genuinely correct and the situation is just hard, leave it alone.`);
     }
 }
 
@@ -1689,9 +1737,8 @@ function policyPath(agentName) {
 // with any number of attribute profiles (see generatePolicy). "self" is what the
 // agent worked out for itself, and it now sits on TOP -- the agent watching its
 // own deaths knows things the profile author did not. A person still has the
-// last word through pinning: pinned rules outrank unpinned ones from any layer.
-// Among pinned rules RULE_ORDER decides, which now means a self pin outranks a
-// person's pin; that is accepted, since only survival rules should be pinned.
+// last word through pinning: pinned rules outrank unpinned ones from any layer,
+// and among pinned rules the person's layer wins -- see composePolicy.
 export const LAYERS = ['active', 'self'];
 
 // Modes later in this list win; rules earlier in the composed list win.
@@ -1807,14 +1854,16 @@ export function composePolicy(state) {
         Object.assign(modes, state.layers?.[layer]?.policy?.modes ?? {});
     // A pinned rule sorts above every unpinned one, whatever layer it came from:
     // it is how a survival rule the agent wrote for itself survives a job profile
-    // loaded into the layer above it. Pinning does not flatten the layers, it
-    // just moves the whole priority contest up one level -- among pinned rules
-    // the usual active > base > self order still decides, so a person can always
-    // pin their own rule to outrank one the agent pinned.
+    // loaded into the layer above it. Among pinned rules the layer order is
+    // REVERSED: a person's pin outranks the agent's. Unpinned keeps self on
+    // top (the agent watching its own deaths knows things the profile author
+    // did not), but a pin is the person saying "this one is not negotiable",
+    // and for a while a self-written pin could outrank it -- the exact
+    // mechanism by which one bad note-to-self could bury a human survival rule.
     for (let layer of RULE_ORDER)
         for (let rule of state.layers?.[layer]?.policy?.rules ?? [])
             rules.push({ ...rule, name: `${layer}:${rule.name}`, _rank: RULE_ORDER.indexOf(layer) });
-    rules.sort((a, b) => (!!b.pinned - !!a.pinned) || (a._rank - b._rank));
+    rules.sort((a, b) => (!!b.pinned - !!a.pinned) || (a.pinned ? (b._rank - a._rank) : (a._rank - b._rank)));
     return { modes, rules: dedupeRules(rules).map(({ _rank, ...rule }) => rule) };
 }
 
@@ -1973,7 +2022,7 @@ Rule format:
 - "not", "all" and "any" are not conditions, they are the key that does the grouping. Correct: {"not": {"cond": "is_night"}}, {"any": [{"cond": "hostile_nearby", "range": 12}, {"cond": "is_night"}]}, {"all": [...]}. Rejected every time: {"cond": "not", ...}, {"cond": "any", ...}, {"cond": "all", ...}. The word after "cond" is always one of the condition names listed above and never one of these three.
 - Resources are often not right next to the agent. A bare collect only reaches 64 blocks, so on empty terrain it harvests nothing every time it fires and the agent looks frozen. Block searches cannot reach past 64 blocks, so a gathering rule for something that is not in this biome will simply collect nothing every time it fires. Gate gathering rules on block_nearby or animal_nearby so they only run when the resource is actually there, and prefer resources you can see over ones you hope exist.
 - "underwater" or "drowning" is the "drowning" condition paired with the "go_to_surface" action. Do not use block_nearby water for this: it is also true when standing safely on the shore, so the rule fires over and over.
-- "consume" only works on food the player can actually eat (bread, cooked_beef, cooked_porkchop, cooked_chicken, apple, carrot, potato, sweet_berries). Raw materials like wheat, seeds or grass are not edible — do not list them.
+- "consume" only works on food the player can actually eat (e.g. bread, cooked meats, apples — including modded foods; the runtime checks the registry). Raw materials like wheat, seeds or grass are not edible — do not list them. Prefer omitting "item" entirely so consume picks the best edible thing actually carried.
 
 Respond ONLY with a JSON object: {"modes": {...}, "rules": [...]}. No explanation, no markdown fences.
 Emit it as compact JSON on a single line: no indentation, no line breaks, no space after ":" or ",". A merged policy pretty-printed runs about 40% longer than the same thing minified, which is the difference between fitting in the reply and being truncated mid-rule.

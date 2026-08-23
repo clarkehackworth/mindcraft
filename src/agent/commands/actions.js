@@ -26,7 +26,7 @@ function runAsAction (actionFn, resume = false, timeout = -1) {
         // command was broken. An interrupted action still has something to say --
         // getBotOutputSummary marks it as partial.
         return code_return.message;
-    }
+    };
 
     return wrappedAction;
 }
@@ -187,6 +187,22 @@ export const actionsList = [
         })
     },
     {
+        name: '!remember',
+        description: 'Permanently save an important fact (a hard-won lesson, a mob\'s behavior, a location\'s danger). Facts survive restarts and are always shown to you, unlike summarized memory.',
+        params: {'fact': { type: 'string', description: 'The fact to remember, one short sentence.' }},
+        perform: async function (agent, fact) {
+            return agent.history.addNote(fact);
+        }
+    },
+    {
+        name: '!forget',
+        description: 'Delete a saved fact that is wrong or no longer matters. Must match the saved text exactly.',
+        params: {'fact': { type: 'string', description: 'The exact saved fact to delete.' }},
+        perform: async function (agent, fact) {
+            return agent.history.forgetNote(fact);
+        }
+    },
+    {
         name: '!rememberHere',
         description: 'Save the current location with a given name.',
         params: {'name': { type: 'string', description: 'The name to remember the location as.' }},
@@ -304,6 +320,17 @@ export const actionsList = [
         })
     },
     {
+        name: '!obtainItem',
+        description: 'Obtain an item by whatever chain it takes: mines the raw materials (crafting the pickaxe tier the block needs first), smelts ingots with fuel it fetches itself, then crafts. Use this instead of driving collect/smelt/craft yourself. Cannot hunt, farm, or loot.',
+        params: {
+            'item_name': { type: 'ItemName', description: 'The item to obtain.' },
+            'num': { type: 'int', description: 'The number to end up holding.', domain: [1, Number.MAX_SAFE_INTEGER] }
+        },
+        perform: runAsAction(async (agent, item_name, num) => {
+            await skills.obtainItem(agent.bot, item_name, num);
+        }, true, 20) // resumable; whole gear chains take a while
+    },
+    {
         name: '!smeltItem',
         description: 'Smelt the given item the given number of times.',
         params: {
@@ -313,9 +340,11 @@ export const actionsList = [
         perform: runAsAction(async (agent, item_name, num) => {
             let success = await skills.smeltItem(agent.bot, item_name, num);
             if (success) {
-                setTimeout(() => {
-                    agent.cleanKill('Safely restarting to update inventory.');
-                }, 500);
+                // The furnace window leaves the client's inventory stale, so a
+                // refresh is still needed -- but an in-process relog does it.
+                // This used to cleanKill the entire process on every
+                // successful smelt.
+                setTimeout(() => { agent.softRelog('inventory refresh after smelt'); }, 500);
             }
         })
     },
@@ -434,6 +463,23 @@ export const actionsList = [
         }
     },
     {
+        name: '!setPlan',
+        description: 'Write down the steps for your current goal, separated by ";". The plan is re-shown to you every self-prompt turn, so it survives interruptions. Replaces any existing plan.',
+        params: {
+            'steps': { type: 'string', description: 'The steps in order, separated by ";". Example: "get wood; craft pickaxe; mine stone"' },
+        },
+        perform: async function (agent, steps) {
+            return agent.self_prompter.setPlan(steps);
+        }
+    },
+    {
+        name: '!completeStep',
+        description: 'Mark the first unchecked step of your plan as done.',
+        perform: async function (agent) {
+            return agent.self_prompter.completeStep();
+        }
+    },
+    {
         name: '!endGoal',
         description: 'Call when you have accomplished your goal. It stops the current action and returns you to your standing goal, or stops self-prompting if there is none.',
         perform: async function (agent) {
@@ -460,8 +506,17 @@ export const actionsList = [
             }
             const state = loadPolicyState(agent.name);
             const { source, evicted } = appendLayerSource(state, layer, instructions);
-            if (evicted.length)
-                note += `\n(You may hold ${SELF_SOURCE_CAP} standing instructions at once, so your oldest no longer applies: "${evicted.join('", "')}". Re-add it if you still need it.)`;
+            if (evicted.length) {
+                // Evicted is not deleted: the 9th thing the bot learned used to
+                // silently erase the 1st, and hard-won survival notes died at
+                // the cap. The archive costs one append and keeps them findable.
+                try {
+                    const fs = await import('fs');
+                    fs.appendFileSync(`./bots/${agent.name}/policy_archive.txt`,
+                        evicted.map(e => `${new Date().toISOString()} [${layer}] ${e}`).join('\n') + '\n');
+                } catch (err) { console.warn('policy archive write failed:', err.message); }
+                note += `\n(You may hold ${SELF_SOURCE_CAP} standing instructions at once, so your oldest no longer applies: "${evicted.join('", "')}". It was saved to your policy archive; re-add it if you still need it.)`;
+            }
             let policy;
             const goal = agent.self_prompter.isActive() ? agent.self_prompter.prompt : null;
             try {
@@ -721,12 +776,16 @@ export const actionsList = [
         description: 'Digs down a specified distance. Will stop if it reaches lava, water, or a fall of >=4 blocks below the bot.',
         params: {'distance': { type: 'int', description: 'Distance to dig down', domain: [1, Number.MAX_SAFE_INTEGER] }},
         perform: runAsAction(async (agent, distance) => {
-            await skills.digDown(agent.bot, distance)
+            await skills.digDown(agent.bot, distance);
         })
     },
     {
-        name: '!goToSurface',
-        description: 'Moves the bot to the highest block above it (usually the surface).',
+        // Was also registered as !goToSurface, which silently shadowed the
+        // swim-up drowning escape above (commandMap is keyed by name, last
+        // wins): 17 false "surfaced" reports while the bot sank 56 blocks.
+        // Different job, different name.
+        name: '!climbToSurface',
+        description: 'Pathfind up and out to the open sky (use when underground in a cave or hole). NOT for drowning: use !goToSurface to swim up.',
         params: {},
         perform: runAsAction(async (agent) => {
             await skills.goToSurface(agent.bot);

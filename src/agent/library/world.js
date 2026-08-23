@@ -98,7 +98,7 @@ export function getFirstBlockAboveHead(bot, ignore_types=null, distance=32) {
     }
     // The block above, stops when it finds a solid block .
     let block_above = {name: 'air'};
-    let height = 0
+    let height = 0;
     for (let i = 0; i < distance; i++) {
         let block = bot.blockAt(bot.entity.position.offset(0, i+2, 0));
         if (!block) block = {name: 'air'};
@@ -353,6 +353,18 @@ export function getNearestBlock(bot, block_type, distance=16) {
 }
 
 
+// Real max health from server attributes. On this server it is 52, not 20;
+// reporting "N / 20" had the model judging every fight at 2.6x the real
+// danger. Same lookup the policy layer uses (policy.js delegates here).
+export function getMaxHealth(bot) {
+    const attributes = bot?.entity?.attributes ?? {};
+    for (const key of ['minecraft:generic.max_health', 'generic.maxHealth', 'generic.max_health', 'max_health']) {
+        const value = attributes[key]?.value ?? attributes[key];
+        if (typeof value === 'number' && value > 0) return value;
+    }
+    return 20;
+}
+
 export function getNearbyEntities(bot, maxDistance=16) {
     let entities = [];
     for (const entity of Object.values(bot.entities)) {
@@ -582,7 +594,7 @@ export async function isClearPath(bot, target) {
      * @param {Entity} target - The target to path to.
      * @returns {boolean} - True if there is a clear path, false otherwise.
      */
-    let movements = new pf.Movements(bot)
+    let movements = new pf.Movements(bot);
     movements.canDig = false;
     movements.canPlaceOn = false;
     movements.canOpenDoors = false;

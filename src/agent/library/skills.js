@@ -4,6 +4,7 @@ import pf from 'mineflayer-pathfinder';
 import Vec3 from 'vec3';
 import settings from "../../../settings.js";
 import { isUnreachable } from '../path_spin.js';
+import { action_context } from '../action_manager.js';
 
 // How many blocks collectBlocks may break before it stops to pick the drops up,
 // when nothing is arriving in the bag on its own. See the sweep in collectBlocks.
@@ -32,6 +33,16 @@ const blockPlaceDelay = settings.block_place_delay == null ? 0 : settings.block_
 const useDelay = blockPlaceDelay > 0;
 
 export function log(bot, message) {
+    // An abandoned action keeps running after its replacement starts (see
+    // ActionManager.stop). Its logs used to land in bot.output where the
+    // replacement read them as its own; the generation context says whose
+    // chain this write belongs to, and a stale chain's narration goes to the
+    // console only. No context (a mode helper, a test) writes as always.
+    const ctx = action_context.getStore();
+    if (ctx && ctx.gen !== ctx.manager.generation) {
+        console.log(`[stale gen ${ctx.gen}] ${message}`);
+        return;
+    }
     bot.output += message + '\n';
 }
 
@@ -229,6 +240,120 @@ function reachableCounts(bot) {
     return {...counts, ...world.getInventoryCounts(bot)};
 }
 
+// The middle tier that used to be missing: craftRecipe walks the recipe graph
+// but fails the moment a raw material is not in the bag, so the model had to
+// drive gather -> smelt -> craft one paid decision at a time. obtainItem owns
+// the whole chain: it plans with getCraftingPlan, mines what is mineable
+// (bootstrapping the pickaxe the block needs, recursively), smelts ingots from
+// their raw forms with fuel it fetches itself, then hands off to craftRecipe.
+// One decision ("get an iron pickaxe") becomes one action.
+const OBTAIN_MAX_DEPTH = 4;
+export async function obtainItem(bot, itemName, num=1, depth=0) {
+    /**
+     * Obtain the given item by whatever chain it takes: collect, smelt, craft.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @param {string} itemName, the item to obtain.
+     * @param {number} num, how many to end up holding. Defaults to 1.
+     * @returns {Promise<boolean>} true if the bot now has num of the item.
+     **/
+    const have = () => world.getInventoryCounts(bot)[itemName] ?? 0;
+    if (have() >= num) {
+        if (depth === 0) log(bot, `Already have ${num} ${itemName}.`);
+        return true;
+    }
+    if (depth > OBTAIN_MAX_DEPTH) {
+        log(bot, `Gave up obtaining ${itemName}: the chain of prerequisites is deeper than ${OBTAIN_MAX_DEPTH}.`);
+        return false;
+    }
+    if (bot.interrupt_code) return false;
+
+    const missing = () => num - have();
+    const plan = mc.getCraftingPlan(itemName, missing(), world.getInventoryCounts(bot));
+    if (plan && Object.keys(plan.required).length > 0) {
+        log(bot, `To craft ${num} ${itemName} I still need: ${Object.entries(plan.required).map(([n, c]) => `${c} ${n}`).join(', ')}.`);
+        for (const [raw, cnt] of Object.entries(plan.required)) {
+            if (bot.interrupt_code) return false;
+            if (!await _acquireRaw(bot, raw, cnt, depth)) {
+                log(bot, `Could not obtain ${itemName}: missing ${raw}.`);
+                return false;
+            }
+        }
+    }
+    if (plan || mc.getItemCraftingRecipes(itemName)) {
+        if (!await craftRecipe(bot, itemName, missing())) return false;
+        return have() >= num;
+    }
+    // Not craftable at all: it is a raw thing itself.
+    if (!await _acquireRaw(bot, itemName, num, depth)) return false;
+    return have() >= num;
+}
+
+// Get cnt of a non-craftable item: mine the block that is (or yields) it,
+// smelting first if the item is the cooked form of something minable.
+async function _acquireRaw(bot, name, cnt, depth) {
+    const counts = () => world.getInventoryCounts(bot);
+    if ((counts()[name] ?? 0) >= cnt) return true;
+    const need = () => cnt - (counts()[name] ?? 0);
+
+    // Smeltable product (iron_ingot from raw_iron, glass from sand...): get
+    // the input, get fuel, run the furnace.
+    const smelt_source = _smeltSourceFor(bot, name);
+    if (smelt_source) {
+        if (!await obtainItem(bot, smelt_source, need(), depth + 1)) return false;
+        if (!(counts()['coal'] ?? 0) && !(counts()['charcoal'] ?? 0)) {
+            // ponytail: coal only; a fuel-priority list when packs demand it.
+            if (!await obtainItem(bot, 'coal', Math.max(1, Math.ceil(need() / 8)), depth + 1)) {
+                log(bot, `No fuel to smelt ${smelt_source} into ${name}.`);
+                return false;
+            }
+        }
+        return await smeltItem(bot, smelt_source, need());
+    }
+
+    // Mineable, directly or via ore aliasing (collectBlock maps raw_iron to
+    // iron_ore and friends). Bootstrap the tool the block demands first.
+    const block_name = bot.registry?.blocksByName?.[name] ? name : _blockDropping(bot, name);
+    if (block_name || /(^raw_|_ore$)/.test(name)) {
+        const target = block_name ?? name;
+        const tool = mc.getBlockTool(bot.registry?.blocksByName?.[target] ? target : name);
+        if (tool && !(counts()[tool] ?? 0) && depth < OBTAIN_MAX_DEPTH) {
+            log(bot, `${target} needs a ${tool}; obtaining that first.`);
+            if (!await obtainItem(bot, tool, 1, depth + 1)) return false;
+        }
+        return await collectBlock(bot, target, need());
+    }
+
+    log(bot, `I do not know how to obtain ${name} automatically -- it may need hunting, farming, or looting. Get it manually or ask for a different goal.`);
+    return false;
+}
+
+// The raw item a furnace turns into `name`, if the registry knows one.
+function _smeltSourceFor(bot, name) {
+    const reg = bot.registry;
+    if (name.endsWith('_ingot')) {
+        const raw = 'raw_' + name.slice(0, -6);
+        if (reg?.itemsByName?.[raw]) return raw;
+    }
+    if (name === 'glass' && reg?.itemsByName?.['sand']) return 'sand';
+    if (name === 'charcoal') return null; // logs smelt into it, but coal is simpler
+    if (name.startsWith('cooked_')) {
+        const raw = name.slice(7);
+        if (reg?.itemsByName?.[raw]) return raw;
+    }
+    return null;
+}
+
+// A block whose drops include this item (stone -> cobblestone lives in
+// collectBlock's aliasing already; this catches modded drops the aliases miss).
+function _blockDropping(bot, itemName) {
+    const id = mc.getItemId(itemName);
+    if (id == null) return null;
+    for (const b of bot.registry?.blocksArray ?? []) {
+        if (b.drops?.includes(id) && b.diggable !== false) return b.name;
+    }
+    return null;
+}
+
 export async function craftRecipe(bot, itemName, num=1, expanding=new Set()) {
     /**
      * Attempt to craft the given item name from a recipe. May craft many items.
@@ -281,7 +406,7 @@ export async function craftRecipe(bot, itemName, num=1, expanding=new Set()) {
                 }
             }
             else {
-                log(bot, `Crafting ${itemName} requires a crafting table.`)
+                log(bot, `Crafting ${itemName} requires a crafting table.`);
                 return false;
             }
         }
@@ -504,7 +629,7 @@ export async function smeltItem(bot, itemName, num=1) {
         }
     }
     if (!furnaceBlock){
-        log(bot, `There is no furnace nearby and you have no furnace.`)
+        log(bot, `There is no furnace nearby and you have no furnace.`);
         return false;
     }
     if (bot.entity.position.distanceTo(furnaceBlock.position) > 4) {
@@ -555,7 +680,7 @@ export async function smeltItem(bot, itemName, num=1) {
         }
         await furnace.putFuel(fuel.type, null, put_fuel);
         log(bot, `Added ${put_fuel} ${mc.getItemName(fuel.type)} to furnace fuel.`);
-        console.log(`Added ${put_fuel} ${mc.getItemName(fuel.type)} to furnace fuel.`)
+        console.log(`Added ${put_fuel} ${mc.getItemName(fuel.type)} to furnace fuel.`);
     }
     // put the items in the furnace
     const inv_before_smelt = world.getInventoryCounts(bot);
@@ -634,7 +759,7 @@ export async function clearNearestFurnace(bot) {
 
     console.log('clearing furnace...');
     const furnace = await bot.openFurnace(furnaceBlock);
-    console.log('opened furnace...')
+    console.log('opened furnace...');
     // take the items out of the furnace
     let smelted_item, intput_item, fuel_item;
     if (furnace.outputItem())
@@ -643,7 +768,7 @@ export async function clearNearestFurnace(bot) {
         intput_item = await furnace.takeInput();
     if (furnace.fuelItem())
         fuel_item = await furnace.takeFuel();
-    console.log(smelted_item, intput_item, fuel_item)
+    console.log(smelted_item, intput_item, fuel_item);
     let smelted_name = smelted_item ? `${smelted_item.count} ${smelted_item.name}` : `0 smelted items`;
     let input_name = intput_item ? `${intput_item.count} ${intput_item.name}` : `0 input items`;
     let fuel_name = fuel_item ? `${fuel_item.count} ${fuel_item.name}` : `0 fuel items`;
@@ -692,7 +817,11 @@ export async function attackNearest(bot, mobType, kill=true) {
      * await skills.attackNearest(bot, "zombie", true);
      **/
     bot.modes.pause('cowardice');
-    if (mobType === 'drowned' || mobType === 'cod' || mobType === 'salmon' || mobType === 'tropical_fish' || mobType === 'squid')
+    // Aquatic prey means going underwater. Ask the registry what lives in
+    // water instead of naming five vanilla mobs -- modded fish arrive typed
+    // water_creature via the category mapping in mod_data.js.
+    const target_entity = bot.registry?.entitiesByName?.[mobType];
+    if (target_entity?.type === 'water_creature' || /drowned|guardian|squid|fish|cod|salmon/.test(mobType))
         bot.modes.pause('self_preservation'); // so it can go underwater. TODO: have an drowning mode so we don't turn off all self_preservation
     const mob = world.getNearbyEntities(bot, 24).find(entity => entity.name === mobType);
     if (mob) {
@@ -713,15 +842,19 @@ export async function attackEntity(bot, entity, kill=true) {
      **/
 
     let pos = entity.position;
-    await equipHighestAttack(bot)
+    await equipHighestAttack(bot);
 
     if (!kill) {
         if (bot.entity.position.distanceTo(pos) > 5) {
-            console.log('moving to mob...')
+            console.log('moving to mob...');
             await goToPosition(bot, pos.x, pos.y, pos.z);
         }
-        console.log('attacking mob...')
+        console.log('attacking mob...');
         await bot.attack(entity);
+        // Fell through with no return: undefined reads as success to the
+        // policy layer's `!== false` check, and as failure to callers that
+        // test truthiness. One swing landed is true.
+        return true;
     }
     else {
         bot.pvp.attack(entity);
@@ -804,9 +937,17 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
         return false;
     }
     let blocktypes = [blockType];
-    if (blockType === 'coal' || blockType === 'diamond' || blockType === 'emerald' || blockType === 'iron' || blockType === 'gold' || blockType === 'lapis_lazuli' || blockType === 'redstone')
-        blocktypes.push(blockType+'_ore');
-    if (blockType.endsWith('ore'))
+    // Registry-wide ore aliasing, not a seven-name vanilla list: asking for
+    // "iron" matches iron_ore, deepslate_iron_ore, and whatever the pack
+    // calls its own iron-bearing rock, as long as it names the material and
+    // ends in _ore. Token-boundary match so "stone" does not claim redstone_ore.
+    if (!blockType.endsWith('_ore')) {
+        for (const name in bot.registry?.blocksByName ?? {}) {
+            if (name.endsWith('_ore') && ('_' + name.slice(0, -4) + '_').includes('_' + blockType + '_'))
+                blocktypes.push(name);
+        }
+    }
+    if (blockType.endsWith('ore') && bot.registry?.blocksByName?.['deepslate_' + blockType])
         blocktypes.push('deepslate_'+blockType);
     if (blockType === 'dirt')
         blocktypes.push('grass_block');
@@ -872,7 +1013,7 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
             }
             await bot.equip(bucket, 'hand');
         }
-        const itemId = bot.heldItem ? bot.heldItem.type : null
+        const itemId = bot.heldItem ? bot.heldItem.type : null;
         if (!block.canHarvest(itemId)) {
             log(bot, `Don't have right tools to harvest ${blockType}.`);
             return false;
@@ -1278,7 +1419,7 @@ export async function breakBlockAt(bot, x, y, z, allowNoDrop = false) {
         }
         if (bot.game.gameMode !== 'creative') {
             await bot.tool.equipForBlock(block);
-            const itemId = bot.heldItem ? bot.heldItem.type : null
+            const itemId = bot.heldItem ? bot.heldItem.type : null;
             if (!block.canHarvest(itemId)) {
                 // canHarvest answers "will it drop", not "can it be cleared".
                 // For descent and shelter digging the drop is irrelevant -- a
@@ -1424,7 +1565,7 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
         'south': Vec3(0, 0, 1),
         'east': Vec3(1, 0, 0),
         'west': Vec3(-1, 0, 0),
-    }
+    };
     let dirs = [];
     if (placeOn === 'side') {
         dirs.push(dir_map['north'], dir_map['south'], dir_map['east'], dir_map['west']);
@@ -1749,7 +1890,7 @@ export async function giveToPlayer(bot, itemType, username, num=1) {
         log(bot, `You cannot give items to yourself.`);
         return false;
     }
-    let player = bot.players[username].entity
+    let player = bot.players[username].entity;
     if (!player) {
         log(bot, `Could not find ${username}.`);
         return false;
@@ -1909,7 +2050,7 @@ function startDoorInterval(bot) {
                 bot.entity.position.offset(0, 0, -1), 
                 bot.entity.position.offset(1, 0, 0),
                 bot.entity.position.offset(-1, 0, 0),
-            ]
+            ];
             let elevated_positions = positions.map(position => position.offset(0, 1, 0));
             positions.push(...elevated_positions);
             positions.push(bot.entity.position.offset(0, 2, 0)); // above head
@@ -2279,7 +2420,7 @@ export async function goToPlayer(bot, username, distance=3) {
 
     bot.modes.pause('self_defense');
     bot.modes.pause('cowardice');
-    let player = bot.players[username].entity
+    let player = bot.players[username].entity;
     if (!player) {
         log(bot, `Could not find ${username}.`);
         return false;
@@ -2303,7 +2444,7 @@ export async function followPlayer(bot, username, distance=4) {
      * @example
      * await skills.followPlayer(bot, "player");
      **/
-    let player = bot.players[username].entity
+    let player = bot.players[username].entity;
     if (!player)
         return false;
 
@@ -3005,8 +3146,8 @@ export async function tillAndSow(bot, x, y, z, seedType=null) {
                 seedType = seedType.replace(remove, '');
             }
         }
-        placeBlock(bot, 'farmland', x, y, z);
-        placeBlock(bot, seedType, x, y+1, z);
+        await placeBlock(bot, 'farmland', x, y, z);
+        await placeBlock(bot, seedType, x, y+1, z);
         return true;
     }
 
@@ -3335,7 +3476,7 @@ export async function digDown(bot, distance = 10) {
         // Check for lava, water
         if (targetBlock.name === 'lava' || targetBlock.name === 'water' || 
             belowBlock.name === 'lava' || belowBlock.name === 'water') {
-            log(bot, `Dug down ${i-1} blocks, but reached ${belowBlock ? belowBlock.name : '(lava/water)'}`)
+            log(bot, `Dug down ${i-1} blocks, but reached ${belowBlock ? belowBlock.name : '(lava/water)'}`);
             return false;
         }
 
@@ -3385,11 +3526,15 @@ const ESCAPE_TIMEOUT_MS = 10000;
 // A solid block two or three above the feet: a capped dig_in foxhole, a house,
 // a cave roof. Shared with the is_sheltered policy condition so the rules and
 // the action they call cannot disagree about what shelter means.
+// Foliage is not a roof: a tree canopy passed the solid-block test, so dig_in
+// reported "sheltered" while the bot stood under a pine in the open with the
+// skeletons. Substring, not a list -- modded leaves all call themselves leaves.
+const FOLIAGE = /leaves|leaf|wart_block|shroomlight|mushroom_block/;
 export function isSheltered(bot) {
     const p = bot.entity.position.floored();
     for (const dy of [2, 3]) {
         const b = bot.blockAt(p.offset(0, dy, 0));
-        if (b && b.boundingBox === 'block') return true;
+        if (b && b.boundingBox === 'block' && !FOLIAGE.test(b.name)) return true;
     }
     return false;
 }
@@ -3663,7 +3808,7 @@ export async function useToolOn(bot, toolName, targetName) {
         return blockInView && 
             !blockInView.position.equals(block.position) && 
             blockInView.position.distanceTo(headPos) < block.position.distanceTo(headPos);
-    }
+    };
     const blockInView = bot.blockAtCursor(5);
     if (viewBlocked()) {
         log(bot, `Block ${blockInView.name} is in the way, moving closer...`);

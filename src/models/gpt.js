@@ -2,6 +2,16 @@ import OpenAIApi from 'openai';
 import { getKey, hasKey } from '../utils/keys.js';
 import { strictFormat } from '../utils/text.js';
 
+// getToolDefs speaks the Anthropic shape ({name, description, input_schema});
+// OpenAI wants the same JSON schema wrapped in a function envelope. Exported
+// so the shape can be pinned by a test instead of by an API rejection.
+export function toOpenAITools(tools) {
+    return tools.map(t => ({
+        type: 'function',
+        function: { name: t.name, description: t.description, parameters: t.input_schema },
+    }));
+}
+
 export class GPT {
     static prefix = 'openai';
     constructor(model_name, url, params) {
@@ -19,6 +29,49 @@ export class GPT {
         config.apiKey = getKey('OPENAI_API_KEY');
 
         this.openai = new OpenAIApi(config);
+    }
+
+    // Native tool calling. See the note in claude.js for why this is its own
+    // method and not another argument to sendRequest -- here the third
+    // parameter is stop_seq, which is exactly the collision that would cause.
+    //
+    // Always chat.completions, even when no custom url would otherwise send us
+    // to the responses endpoint: the two APIs disagree about where a tool's
+    // name and parameters live, and one code path that works everywhere beats
+    // two that each work half the time.
+    async sendToolRequest(turns, systemMessage, tools) {
+        const messages = strictFormat([{ role: 'system', content: systemMessage }].concat(turns));
+        const model = this.model_name || "gpt-5.4-mini";
+        const openai_tools = toOpenAITools(tools);
+        try {
+            console.log('Awaiting openai api response from model', model, `(${tools.length} tools)`);
+            const completion = await this.openai.chat.completions.create({
+                model,
+                messages,
+                tools: openai_tools,
+                ...(this.params || {}),
+            });
+            if (completion.choices[0].finish_reason == 'length')
+                throw new Error('Context length exceeded');
+            console.log('Received.');
+            const choice = completion.choices[0].message;
+            const call = choice.tool_calls?.[0];
+            if (!call) return choice.content ?? '';
+            // Back into the `!name(...)` text the parser already speaks, so
+            // nothing downstream of the model has to know tools happened.
+            const { serializeToolCall } = await import('../agent/commands/index.js');
+            let args = {};
+            try { args = JSON.parse(call.function.arguments || '{}'); }
+            catch (err) { console.warn('tool arguments were not valid JSON:', call.function.arguments); }
+            return `${choice.content ?? ''} ${serializeToolCall(call.function.name, args)}`.trim();
+        } catch (err) {
+            if ((err.message == 'Context length exceeded' || err.code == 'context_length_exceeded') && turns.length > 1) {
+                console.log('Context length exceeded, trying again with shorter context.');
+                return await this.sendToolRequest(turns.slice(1), systemMessage, tools);
+            }
+            console.log(err);
+            return 'My brain disconnected, try again.';
+        }
     }
 
     // extra_params is per-call, for the one caller that needs the reply in a

@@ -26,11 +26,15 @@ export function blacklistCommands(commands) {
             continue;
         }
         delete commandMap[command_name];
-        delete commandList.find(command => command.name === command_name);
+        // `delete find(...)` deleted the returned reference, not the array
+        // entry, so blacklisted commands stayed in getCommandDocs and the
+        // model kept being taught commands it was not allowed to use.
+        const idx = commandList.findIndex(command => command.name === command_name);
+        if (idx !== -1) commandList.splice(idx, 1);
     }
 }
 
-const commandRegex = /!(\w+)(?:\(((?:-?\d+(?:\.\d+)?|true|false|"[^"]*")(?:\s*,\s*(?:-?\d+(?:\.\d+)?|true|false|"[^"]*"))*)\))?/
+const commandRegex = /!(\w+)(?:\(((?:-?\d+(?:\.\d+)?|true|false|"[^"]*")(?:\s*,\s*(?:-?\d+(?:\.\d+)?|true|false|"[^"]*"))*)\))?/;
 const argRegex = /-?\d+(?:\.\d+)?|true|false|"[^"]*"/g;
 
 export function containsCommand(message) {
@@ -85,7 +89,7 @@ function checkInInterval(number, lowerBound, upperBound, endpointType) {
         case '[]':
             return lowerBound <= number && number <= upperBound;
         default:
-            throw new Error('Unknown endpoint type:', endpointType)
+            throw new Error('Unknown endpoint type:', endpointType);
     }
 }
 
@@ -109,7 +113,7 @@ export function parseCommandMessage(message) {
     else args = [];
 
     const command = getCommand(commandName);
-    if(!command) return `${commandName} is not a command.`
+    if(!command) return `${commandName} is not a command.`;
 
     const params = commandParams(command);
     const paramNames = commandParamNames(command);
@@ -148,7 +152,7 @@ export function parseCommandMessage(message) {
                 throw new Error(`Command '${commandName}' parameter '${paramNames[i]}' has an unknown type: ${param.type}`);
         }
         if(arg === null || Number.isNaN(arg))
-            return `Error: Param '${paramNames[i]}' must be of type ${param.type}.`
+            return `Error: Param '${paramNames[i]}' must be of type ${param.type}.`;
 
         if(typeof arg === 'number') { //Check the domain of numbers
             const domain = param.domain;
@@ -164,15 +168,15 @@ export function parseCommandMessage(message) {
                     //Alternatively arg could be set to the nearest value in the domain.
                 }
             } else if (!suppressNoDomainWarning) {
-                console.warn(`Command '${commandName}' parameter '${paramNames[i]}' has no domain set. Expect any value [-Infinity, Infinity].`)
+                console.warn(`Command '${commandName}' parameter '${paramNames[i]}' has no domain set. Expect any value [-Infinity, Infinity].`);
                 suppressNoDomainWarning = true; //Don't spam console. Only give the warning once.
             }
         } else if(param.type === 'BlockName') { //Check that there is a block with this name
-            if(!isKnownBlockName(arg)) return  `Invalid block type: ${arg}.` + suggestNames(arg, 'block')
+            if(!isKnownBlockName(arg)) return  `Invalid block type: ${arg}.` + suggestNames(arg, 'block');
         } else if(param.type === 'ItemName') { //Check that there is an item with this name
-            if(getItemId(arg) == null) return `Invalid item type: ${arg}.` + suggestNames(arg)
+            if(getItemId(arg) == null) return `Invalid item type: ${arg}.` + suggestNames(arg);
         } else if(param.type === 'BlockOrItemName') {
-            if(!isKnownBlockName(arg) && getItemId(arg) == null) return  `Invalid block or item type: ${arg}.` + (suggestNames(arg) || suggestNames(arg, 'block'))
+            if(!isKnownBlockName(arg) && getItemId(arg) == null) return  `Invalid block or item type: ${arg}.` + (suggestNames(arg) || suggestNames(arg, 'block'));
         }
         args[i] = arg;
     }
@@ -275,6 +279,59 @@ export async function executeCommand(agent, message, self_issued = false) {
     }
 }
 
+// The same command registry as Anthropic tool definitions, for models that do
+// native tool calling. The regex protocol takes one command per turn, cannot
+// express structure, and mis-quotes cost a whole paid turn each; typed tool
+// schemas remove that failure class. The adapter serializes the model's tool
+// call back into `!name(...)` text, so everything downstream of the model --
+// parsing, execution, history -- is unchanged.
+export function getToolDefs(agent) {
+    const json_types = {
+        'float': 'number', 'int': 'integer', 'boolean': 'boolean',
+        'BlockName': 'string', 'ItemName': 'string', 'BlockOrItemName': 'string', 'string': 'string',
+    };
+    const alone = convoManager.getInGameAgents().filter(n => n !== agent.name).length === 0;
+    const tools = [];
+    for (const command of commandList) {
+        if (agent.blocked_actions.includes(command.name)) continue;
+        if (alone && BOT_TO_BOT_COMMANDS.includes(command.name)) continue;
+        const properties = {};
+        for (const [pname, p] of Object.entries(command.params ?? {})) {
+            properties[pname] = { type: json_types[p.type] ?? 'string', description: p.description ?? '' };
+            // Only finite bounds survive into the schema. Many domains are
+            // [0, Infinity] or [-Infinity, Infinity], and JSON.stringify turns
+            // Infinity into null -- which llama.cpp rejects outright with
+            // "type must be number, but is null", failing every generation.
+            // MAX_SAFE_INTEGER is the same "no real ceiling" idiom spelled
+            // differently, and is equally noise in a schema.
+            if (Array.isArray(p.domain)) {
+                const [lo, hi] = p.domain;
+                if (Number.isFinite(lo)) properties[pname].minimum = lo;
+                if (Number.isFinite(hi) && hi !== Number.MAX_SAFE_INTEGER) properties[pname].maximum = hi;
+            }
+        }
+        tools.push({
+            name: command.name.substring(1),
+            description: command.description,
+            input_schema: { type: 'object', properties, required: Object.keys(properties) },
+        });
+    }
+    return tools;
+}
+
+// Turn a tool call back into the text form the parser already speaks. Param
+// order comes from the command definition, not the model's object key order.
+export function serializeToolCall(name, input) {
+    const command = commandMap['!' + name] ?? commandMap[name];
+    if (!command) return `!${name}`;
+    const args = Object.keys(command.params ?? {}).map(pname => {
+        const v = input?.[pname];
+        if (typeof v === 'string') return `"${v.replaceAll('"', "'")}"`; // parser cannot escape quotes
+        return String(v);
+    });
+    return args.length ? `!${command.name.substring(1)}(${args.join(', ')})` : `!${command.name.substring(1)}`;
+}
+
 export function getCommandDocs(agent) {
     const typeTranslations = {
         //This was added to keep the prompt the same as before type checks were implemented.
@@ -285,7 +342,7 @@ export function getCommandDocs(agent) {
         'ItemName':          'string',
         'BlockOrItemName':   'string',
         'boolean':           'bool'
-    }
+    };
     let docs = `\n*COMMAND DOCS\n You can use the following commands to perform actions and get information about the world. 
     Use the commands with the syntax: !commandName or !commandName("arg1", 1.2, ...) if the command takes arguments.\n
     Do not use codeblocks. Use double quotes for strings. Only use one command in each response, trailing commands and comments will be ignored.\n`;

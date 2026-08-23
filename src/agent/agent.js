@@ -341,7 +341,7 @@ export class Agent {
                 console.log(this.name, 'received message from', username, ':', message);
 
                 if (convoManager.isOtherAgent(username)) {
-                    console.warn('received whisper from other bot??')
+                    console.warn('received whisper from other bot??');
                 }
                 else {
                     let translation = await handleEnglishTranslation(message);
@@ -350,7 +350,7 @@ export class Agent {
             } catch (error) {
                 console.error('Error handling message:', error);
             }
-        }
+        };
 
 		this.respondFunc = respondFunc;
 
@@ -380,7 +380,11 @@ export class Agent {
             if (init_message) {
                 this.history.add('system', init_message);
             }
+            // Plan restored after handleLoad: start() clears the plan on a
+            // prompt change, and it always looks like one on a fresh process.
             await this.self_prompter.handleLoad(save_data.self_prompt, save_data.self_prompting_state);
+            if (Array.isArray(save_data.plan))
+                this.self_prompter.plan = save_data.plan;
             // The restored goal may be a detour; the policy goal is still what to
             // return to when it is done, so re-establish it without starting it.
             this.self_prompter.standing_prompt = policyGoal(loadPolicyState(this.name)) ?? '';
@@ -485,6 +489,14 @@ export class Agent {
             return false;
         }
         return true;
+    }
+
+    // A deliberate relog (e.g. the furnace inventory refresh) rides the same
+    // teardown/reconnect path as a dropped socket, but does not spend the
+    // blip budget: it is not evidence the connection is unhealthy.
+    async softRelog(reason) {
+        this._reconnects--;
+        await this._reconnect(reason);
     }
 
     async _reconnect(reason) {
@@ -645,7 +657,7 @@ export class Agent {
             console.log(`${this.name} full response to ${source}: ""${res}""`);
 
             if (res.trim().length === 0) {
-                console.warn('no response')
+                console.warn('no response');
                 break; // empty response ends loop
             }
 
@@ -657,7 +669,7 @@ export class Agent {
                 
                 if (!commandExists(command_name)) {
                     this.history.add('system', `Command ${command_name} does not exist.`);
-                    console.warn('Agent hallucinated command:', command_name)
+                    console.warn('Agent hallucinated command:', command_name);
                     continue;
                 }
 

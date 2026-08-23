@@ -1,6 +1,6 @@
 import { readFileSync, mkdirSync, writeFileSync} from 'fs';
 import { Examples } from '../utils/examples.js';
-import { getCommandDocs } from '../agent/commands/index.js';
+import { getCommandDocs, getToolDefs } from '../agent/commands/index.js';
 import { SkillLibrary } from "../agent/library/skill_library.js";
 import { stringifyTurns } from '../utils/text.js';
 import { getCommand } from '../agent/commands/index.js';
@@ -150,6 +150,11 @@ export class Prompter {
         if (prompt.includes('$ACTION')) {
             prompt = prompt.replaceAll('$ACTION', this.agent.actions.currentActionLabel);
         }
+        if (prompt.includes('$POLICY')) {
+            let policy = '';
+            try { policy = this.agent.bot?.modes?.getPromptSummary() ?? ''; } catch (_) {}
+            prompt = prompt.replaceAll('$POLICY', policy);
+        }
         if (prompt.includes('$COMMAND_DOCS'))
             prompt = prompt.replaceAll('$COMMAND_DOCS', getCommandDocs(this.agent));
         if (prompt.includes('$CODE_DOCS')) {
@@ -165,7 +170,7 @@ export class Prompter {
         if (prompt.includes('$EXAMPLES') && examples !== null)
             prompt = prompt.replaceAll('$EXAMPLES', await examples.createExampleMessage(messages));
         if (prompt.includes('$MEMORY'))
-            prompt = prompt.replaceAll('$MEMORY', this.agent.history.memory);
+            prompt = prompt.replaceAll('$MEMORY', this.agent.history.memory + this.agent.history.getNotesPrompt());
         if (prompt.includes('$TO_SUMMARIZE'))
             prompt = prompt.replaceAll('$TO_SUMMARIZE', stringifyTurns(to_summarize));
         if (prompt.includes('$CONVO'))
@@ -179,9 +184,9 @@ export class Prompter {
             let goal_text = '';
             for (let goal in last_goals) {
                 if (last_goals[goal])
-                    goal_text += `You recently successfully completed the goal ${goal}.\n`
+                    goal_text += `You recently successfully completed the goal ${goal}.\n`;
                 else
-                    goal_text += `You recently failed to complete the goal ${goal}.\n`
+                    goal_text += `You recently failed to complete the goal ${goal}.\n`;
             }
             prompt = prompt.replaceAll('$LAST_GOALS', goal_text.trim());
         }
@@ -253,7 +258,19 @@ export class Prompter {
             let generation;
 
             try {
-                const req = this.chat_model.sendRequest(messages, prompt);
+                // Native tool calling, where the adapter implements it and the
+                // profile opts in: the command registry rides along as typed
+                // tool schemas, and the adapter serializes the model's call
+                // back into `!name(...)` text. Flipping use_tool_calling
+                // changes only how the model states the command, never what
+                // happens downstream of the parser.
+                let tools = null;
+                if (this.profile.use_tool_calling && typeof this.chat_model.sendToolRequest === 'function') {
+                    try { tools = getToolDefs(this.agent); } catch (e) { console.warn('tool defs unavailable:', e.message); }
+                }
+                const req = tools?.length
+                    ? this.chat_model.sendToolRequest(messages, prompt, tools)
+                    : this.chat_model.sendRequest(messages, prompt);
                 this._convo_inflight = req.catch(() => {}); // never rejects for the waiters above
                 generation = await req;
                 if (typeof generation !== 'string') {
@@ -282,8 +299,8 @@ export class Prompter {
             }
 
             if (generation?.includes('</think>')) {
-                const [_, afterThink] = generation.split('</think>')
-                generation = afterThink
+                const [_, afterThink] = generation.split('</think>');
+                generation = afterThink;
             }
 
             return generation;
@@ -331,7 +348,7 @@ export class Prompter {
         let resp = await this.chat_model.sendRequest([], prompt);
         await this._saveLog(prompt, to_summarize, resp, 'memSaving');
         if (resp?.includes('</think>')) {
-            const [_, afterThink] = resp.split('</think>')
+            const [_, afterThink] = resp.split('</think>');
             resp = afterThink;
         }
         return resp;
@@ -360,7 +377,7 @@ export class Prompter {
         system_message = await this.replaceStrings(system_message, messages);
 
         let user_message = 'Use the below info to determine what goal to target next\n\n';
-        user_message += '$LAST_GOALS\n$STATS\n$INVENTORY\n$CONVO'
+        user_message += '$LAST_GOALS\n$STATS\n$INVENTORY\n$CONVO';
         user_message = await this.replaceStrings(user_message, messages, null, null, last_goals);
         let user_messages = [{role: 'user', content: user_message}];
 

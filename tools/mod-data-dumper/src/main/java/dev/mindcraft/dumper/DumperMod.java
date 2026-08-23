@@ -266,6 +266,16 @@ public class DumperMod implements ModInitializer {
             if (item.canBeDepleted()) {
                 json.addProperty("maxDurability", item.getMaxDamage());
             }
+            // What the bot can eat. Without this the registry's food table is
+            // vanilla-only, so hunger reflexes are blind to every modded meal
+            // the pack expects players to live on.
+            var food = item.getFoodProperties();
+            if (food != null) {
+                JsonObject f = new JsonObject();
+                f.addProperty("foodPoints", food.getNutrition());
+                f.addProperty("saturationModifier", food.getSaturationModifier());
+                json.add("food", f);
+            }
             items.add(json);
         }
         return items;

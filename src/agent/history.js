@@ -37,6 +37,14 @@ export class History {
         // Natural language memory as a summary of recent messages + previous memory
         this.memory = '';
 
+        // Durable facts, deliberately saved via !remember. The rolling summary
+        // above is a rewrite of a rewrite: anything older than the last
+        // compression survives only as whatever outlived the previous 500-char
+        // squeeze. Facts worth keeping ("moobloom is passive", "base is at
+        // 120,64,-40", "creeper cave south of spawn") go here instead --
+        // appended, never re-summarized, newest last.
+        this.notes = [];
+
         // Maximum number of messages to keep in context before saving chunk to memory
         this.max_messages = settings.max_messages;
 
@@ -50,6 +58,33 @@ export class History {
 
     getHistory() { // expects an Examples object
         return JSON.parse(JSON.stringify(this.turns));
+    }
+
+    // Cap is on what reaches the prompt, not on what is kept: the file holds
+    // everything, the prompt gets the newest MAX_PROMPT_NOTES.
+    // ponytail: newest-N selection; embedding retrieval if the list outgrows it.
+    static MAX_PROMPT_NOTES = 30;
+    addNote(fact) {
+        fact = (fact ?? '').trim();
+        if (!fact) return 'Cannot remember an empty fact.';
+        if (this.notes.includes(fact)) return 'Already remembered.';
+        this.notes.push(fact);
+        this.save();
+        return `Remembered: "${fact}"`;
+    }
+
+    forgetNote(fact) {
+        const before = this.notes.length;
+        this.notes = this.notes.filter(n => n !== fact);
+        if (this.notes.length === before) return 'No such note.';
+        this.save();
+        return `Forgot: "${fact}"`;
+    }
+
+    getNotesPrompt() {
+        if (!this.notes.length) return '';
+        return '\nSaved facts (use !remember/!forget to manage):\n- '
+            + this.notes.slice(-History.MAX_PROMPT_NOTES).join('\n- ');
     }
 
     async summarizeMemories(turns) {
@@ -114,9 +149,11 @@ export class History {
         try {
             const data = {
                 memory: this.memory,
+                notes: this.notes,
                 turns: this.turns,
                 self_prompting_state: this.agent.self_prompter.state,
                 self_prompt: this.agent.self_prompter.isStopped() ? null : this.agent.self_prompter.prompt,
+                plan: this.agent.self_prompter.plan,
                 taskStart: this.agent.task.taskStartTime,
                 last_sender: this.agent.last_sender,
                 last_death_time: this.agent.last_death_time,
@@ -146,6 +183,7 @@ export class History {
             }
             const data = JSON.parse(readFileSync(this.memory_fp, 'utf8'));
             this.memory = data.memory || '';
+            this.notes = data.notes || [];
             this.turns = data.turns || [];
             if (data.places) this.agent.memory_bank.loadJson(data.places);
             console.log('Loaded memory:', this.memory);

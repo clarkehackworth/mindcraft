@@ -17,7 +17,16 @@ export class Claude {
         this.anthropic = new Anthropic(config);
     }
 
-    async sendRequest(turns, systemMessage) {
+    // Tool calling lives behind its own method rather than an extra argument to
+    // sendRequest: every adapter gives that third parameter a different meaning
+    // (gpt.js calls it stop_seq), so a positional `tools` would be a live
+    // landmine for the next adapter. Prompter feature-detects this method, so
+    // an adapter without it simply keeps the text protocol.
+    async sendToolRequest(turns, systemMessage, tools) {
+        return this.sendRequest(turns, systemMessage, tools);
+    }
+
+    async sendRequest(turns, systemMessage, tools = null) {
         const messages = strictFormat(turns);
         let res = null;
         try {
@@ -34,13 +43,22 @@ export class Claude {
                 model: this.model_name || "claude-sonnet-4-6",
                 system: systemMessage,
                 messages: messages,
+                ...(tools?.length ? { tools } : {}),
                 ...(this.params || {})
             });
 
             console.log('Received.')
-            // get first content of type text
+            // Reassemble the text protocol: prose stays prose, and the first
+            // tool call is serialized back into `!name(...)` so everything
+            // downstream (parser, executor, history) is unchanged. The typed
+            // schema is what buys correctness -- the model can no longer
+            // misquote an arg or invent a command name.
             const textContent = resp.content.find(content => content.type === 'text');
-            if (textContent) {
+            const toolUse = resp.content.find(content => content.type === 'tool_use');
+            if (toolUse) {
+                const { serializeToolCall } = await import('../agent/commands/index.js');
+                res = `${textContent?.text ?? ''} ${serializeToolCall(toolUse.name, toolUse.input)}`.trim();
+            } else if (textContent) {
                 res = textContent.text;
             } else {
                 console.warn('No text content found in the response.');

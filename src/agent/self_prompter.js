@@ -4,11 +4,13 @@
 // leave the agent with no goal driver for the rest of the process's life.
 const STOP_WAIT_MS = 30 * 1000;
 const TURN_TIMEOUT_MS = 5 * 60 * 1000;
+// How long the no-command strike-out pauses the loop before update() resumes it.
+const STRIKE_RESUME_MS = 5 * 60 * 1000;
 const TURN_ABANDONED = Symbol('turn abandoned');
 
-const STOPPED = 0
-const ACTIVE = 1
-const PAUSED = 2
+const STOPPED = 0;
+const ACTIVE = 1;
+const PAUSED = 2;
 export class SelfPrompter {
     constructor(agent) {
         this.agent = agent;
@@ -24,6 +26,33 @@ export class SelfPrompter {
         this.standing_prompt = '';
         this.idle_time = 0;
         this.cooldown = 2000;
+        // The written-down plan for the current goal: [{step, done}]. The goal
+        // used to be a single string and the only working memory a 15-turn
+        // window, so a multi-step goal lost its own thread the moment anything
+        // interrupted it. The plan is re-shown on every loop turn; the model
+        // edits it with !setPlan / !completeStep.
+        this.plan = [];
+        // When the no-command strike-out paused the loop; see startLoop/update.
+        this.strike_paused_at = 0;
+    }
+
+    setPlan(steps_text) {
+        this.plan = (steps_text ?? '').split(';').map(s => s.trim()).filter(Boolean)
+            .map(step => ({ step, done: false }));
+        if (!this.plan.length) return 'Empty plan. Give steps separated by ";".';
+        return 'Plan set:\n' + this.describePlan();
+    }
+
+    completeStep() {
+        const next = this.plan.find(s => !s.done);
+        if (!next) return 'No pending plan steps.';
+        next.done = true;
+        const left = this.plan.filter(s => !s.done).length;
+        return `Completed: "${next.step}". ${left ? left + ' step(s) left.' : 'Plan finished -- use !endGoal if the goal is done.'}`;
+    }
+
+    describePlan() {
+        return this.plan.map((s, i) => `${i + 1}. [${s.done ? 'x' : ' '}] ${s.step}`).join('\n');
     }
 
     async start(prompt, standing=false) {
@@ -34,8 +63,10 @@ export class SelfPrompter {
             prompt = this.prompt;
         }
         if (standing) this.standing_prompt = prompt;
+        if (prompt !== this.prompt) this.plan = []; // a new goal's plan is its own to write
         this.state = ACTIVE;
         this.prompt = prompt;
+        this.strike_paused_at = 0;
         // Interrupt any long-running action (e.g. !stay) so a parked loop
         // iteration returns and the loop re-prompts with the new goal.
         // Without this, setting a new goal mid-action is silently ignored.
@@ -77,7 +108,7 @@ export class SelfPrompter {
             console.warn('Self-prompt loop is already active. Ignoring request.');
             return;
         }
-        console.log('starting self-prompt loop')
+        console.log('starting self-prompt loop');
         this.loop_active = true;
         let no_command_count = 0;
         const MAX_NO_COMMAND = 3;
@@ -85,7 +116,10 @@ export class SelfPrompter {
             const done = this.standing_prompt && this.standing_prompt !== this.prompt
                 ? ` If you have already accomplished it, use !endGoal -- you will go back to your standing goal, not stop working.`
                 : ` If you have already accomplished it, use !endGoal rather than inventing more work.`;
-            const msg = `You are self-prompting with the goal: '${this.prompt}'.${done} Your next response MUST contain a command with this syntax: !commandName. Respond:`;
+            const plan_txt = this.plan.length
+                ? `\nYour plan:\n${this.describePlan()}\nWork the first unchecked step. Use !completeStep when a step is done, !setPlan to revise the plan.`
+                : `\nIf this goal takes more than a couple of actions, first write the steps down with !setPlan("step 1; step 2; ...") -- the plan is re-shown every turn, so it survives interruptions that the conversation history does not.`;
+            const msg = `You are self-prompting with the goal: '${this.prompt}'.${done}${plan_txt} Your next response MUST contain a command with this syntax: !commandName. Respond:`;
             
             // One turn must not be able to end the loop permanently. Whatever
             // it is waiting on, the goal loop is the only thing that makes the
@@ -108,10 +142,16 @@ export class SelfPrompter {
             if (!used_command) {
                 no_command_count++;
                 if (no_command_count >= MAX_NO_COMMAND) {
-                    let out = `Agent did not use command in the last ${MAX_NO_COMMAND} auto-prompts. Stopping auto-prompting.`;
+                    // Pause, not stop. STOPPED here was permanent: three chatty
+                    // turns and the only autonomous driver the agent has was
+                    // gone for the life of the process, leaving a purely
+                    // reactive bot. The pause still bounds spend; update()
+                    // resumes the loop after STRIKE_RESUME_MS.
+                    let out = `Agent did not use command in the last ${MAX_NO_COMMAND} auto-prompts. Pausing auto-prompting for ${STRIKE_RESUME_MS / 60000} minutes.`;
                     this.agent.openChat(out);
                     console.warn(out);
-                    this.state = STOPPED;
+                    this.state = PAUSED;
+                    this.strike_paused_at = Date.now();
                     break;
                 }
             }
@@ -120,12 +160,20 @@ export class SelfPrompter {
                 await new Promise(r => setTimeout(r, this.cooldown));
             }
         }
-        console.log('self prompt loop stopped')
+        console.log('self prompt loop stopped');
         this.loop_active = false;
         this.interrupt = false;
     }
 
     update(delta) {
+        // A strike-out pause (see startLoop) serves its sentence and resumes;
+        // only a person's !pause stays paused, marked by strike_paused_at = 0.
+        if (this.state === PAUSED && this.strike_paused_at &&
+            Date.now() - this.strike_paused_at > STRIKE_RESUME_MS) {
+            this.strike_paused_at = 0;
+            console.log('Resuming self-prompting after strike-out pause.');
+            this.state = ACTIVE;
+        }
         // automatically restarts loop
         if (this.state === ACTIVE && !this.loop_active && !this.interrupt) {
             if (this.agent.isIdle())
@@ -170,7 +218,7 @@ export class SelfPrompter {
                 await new Promise(r => setTimeout(r, 100));
             return;
         }
-        console.log('stopping self-prompt loop')
+        console.log('stopping self-prompt loop');
         this.discard_pending = discard_pending;
         this.interrupt = true;
         // Bounded. This used to wait for loop_active forever, and the loop can
@@ -214,6 +262,7 @@ export class SelfPrompter {
     }
 
     async pause() {
+        this.strike_paused_at = 0; // a person's pause is not served out by a timer
         this.interrupt = true;
         await this.agent.actions.stop();
         this.stopLoop();

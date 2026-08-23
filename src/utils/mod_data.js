@@ -61,6 +61,15 @@ function resolvePackFiles(source) {
  * in principle shift; if that has happened the ranges are corrected in place
  * rather than replacing minecraft-data's better vanilla data.
  */
+// Every stripped name the packs added, so "is this thing modded?" is answerable
+// after the merge -- the registry itself no longer remembers where a name came
+// from. Used by !searchWiki to refuse to look up modded content on the vanilla
+// wiki.
+export const modded_names = new Set();
+export function isModdedName(name) {
+    return modded_names.has(name);
+}
+
 export function applyModDataPacks(registry, packs) {
     let added_blocks = 0, added_items = 0, moved_vanilla = 0, added_recipes = 0;
     for (const pack of packs) {
@@ -80,6 +89,7 @@ export function applyModDataPacks(registry, packs) {
             addEntity(registry, entity);
         }
         added_recipes += addRecipes(registry, pack.recipes);
+        registerCollisionShapes(registry, pack);
     }
     // A pack dumped after the tag fix says outright what each slot accepts, so
     // expansion is exact. Older packs only ever named one item per slot, and
@@ -101,6 +111,48 @@ export function applyModDataPacks(registry, packs) {
         }
     }
     return { added_blocks, added_items, moved_vanilla, added_recipes };
+}
+
+/**
+ * Register modded blocks' collision shapes where prismarine-block actually
+ * looks. addBlock puts the dumped per-state shapes on the block entry, but
+ * prismarine-block REBUILDS every block's `shapes` from the
+ * blockCollisionShapes table when its provider is created (after login-time
+ * merging) -- a name missing from that table comes back shapes=undefined, so
+ * the physics and the pathfinder treated every modded block as shapeless: A*
+ * routed straight through modded walls, and the bot ground against blocks it
+ * did not believe were there. The dump has the true server shapes; this puts
+ * them in the table the rebuild reads.
+ */
+function registerCollisionShapes(registry, pack) {
+    const cs = registry.blockCollisionShapes;
+    if (!cs?.blocks || !cs?.shapes) return 0;
+    const shapes = pack.shapes || [];
+    let next_id = Math.max(...Object.keys(cs.shapes).map(Number)) + 1;
+    const id_map = new Map();
+    const mapId = (idx) => {
+        if (!id_map.has(idx)) {
+            cs.shapes[next_id] = shapes[idx] ?? FULL_CUBE;
+            id_map.set(idx, next_id++);
+        }
+        return id_map.get(idx);
+    };
+    // A shape id meaning "full cube" for blocks the pack dumped without
+    // per-state shapes; stone's entry is already exactly that.
+    const stone = cs.blocks['stone'];
+    const full_cube_id = Array.isArray(stone) ? stone[0] : stone;
+    let count = 0;
+    for (const dumped of pack.blocks) {
+        if (isVanilla(dumped.name)) continue;
+        const name = stripNamespace(dumped.name);
+        if (cs.blocks[name] !== undefined) continue;
+        cs.blocks[name] = dumped.stateShapeIds?.length
+            ? dumped.stateShapeIds.map(mapId)
+            : full_cube_id;
+        count++;
+    }
+    if (count) console.log(`registered collision shapes for ${count} modded blocks`);
+    return count;
 }
 
 /**
@@ -285,6 +337,7 @@ function expandShapes(dumped, shapes) {
 function addBlock(registry, dumped, shapes) {
     const name = stripNamespace(dumped.name);
     if (isVanilla(dumped.name)) return false;
+    modded_names.add(name);
 
     const state_shapes = expandShapes(dumped, shapes);
     const block = {
@@ -356,10 +409,24 @@ function addItem(registry, dumped) {
     if (isVanilla(dumped.name)) return false;
     const name = stripNamespace(dumped.name);
     const item = { ...dumped, name, mod: true, stackSize: dumped.stackSize ?? 64 };
+    modded_names.add(name);
     registry.items[item.id] = item;
     registry.itemsByName[dumped.name] = item;
     if (!(name in registry.itemsByName)) registry.itemsByName[name] = item;
     registry.itemsArray?.push(item);
+    // A dump made since the food fix carries food properties; register them so
+    // bot.registry.foods (what has_food and consume ask) knows modded meals.
+    // Shaped like minecraft-data's foods: saturation is the applied amount,
+    // nutrition * modifier * 2.
+    if (dumped.food && registry.foods) {
+        const saturation = dumped.food.foodPoints * (dumped.food.saturationModifier ?? 0.6) * 2;
+        const food = { id: item.id, name, displayName: item.displayName, stackSize: item.stackSize,
+            foodPoints: dumped.food.foodPoints, saturation,
+            effectiveQuality: dumped.food.foodPoints + saturation, saturationRatio: dumped.food.foodPoints ? saturation / dumped.food.foodPoints : 0 };
+        registry.foods[item.id] = food;
+        if (registry.foodsByName) registry.foodsByName[name] = food;
+        registry.foodsArray?.push(food);
+    }
     return true;
 }
 
@@ -374,10 +441,29 @@ function addItem(registry, dumped) {
  * Packs generated before that flag existed leave every modded entity 'other':
  * a bot that ignores modded mobs is better than one that gets kicked.
  */
+// MobCategory → the minecraft-data `type` vocabulary the predicates in
+// mcdata.js speak (isHostile: mob/hostile, isHuntable: animal). Collapsing
+// every attackable entity to 'mob' made all 91 modded creatures read as
+// hostile and none as huntable: the bot fled its food supply. The pack's own
+// category is the answer. 'misc' (and mod-registered custom categories) stay
+// 'mob': projectiles and oddballs live there, and flee-not-hunt is the safe
+// wrong answer for a stranger.
+const CATEGORY_TYPE = {
+    monster: 'hostile',
+    creature: 'animal',
+    water_creature: 'animal',
+    axolotls: 'animal',
+    underground_water_creature: 'animal',
+    water_ambient: 'water_creature',
+    ambient: 'ambient',
+};
+
 function addEntity(registry, dumped) {
     if (isVanilla(dumped.name)) return false;
     const name = stripNamespace(dumped.name);
-    const entity = { ...dumped, name, type: dumped.attackable ? 'mob' : 'other' };
+    modded_names.add(name);
+    const type = dumped.attackable ? (CATEGORY_TYPE[dumped.category] ?? 'mob') : 'other';
+    const entity = { ...dumped, name, type };
     registry.entities[entity.id] = entity;
     registry.entitiesByName[dumped.name] = entity;
     if (!(name in registry.entitiesByName)) registry.entitiesByName[name] = entity;

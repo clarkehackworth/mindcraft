@@ -8,7 +8,7 @@ import { formatDuration } from '../../utils/text.js';
 
 const pad = (str) => {
     return '\n' + str + '\n';
-}
+};
 
 // queries are commands that just return strings and don't affect anything in the world
 export const queryList = [
@@ -23,7 +23,11 @@ export const queryList = [
             res += `\n- Position: x: ${pos.x.toFixed(2)}, y: ${pos.y.toFixed(2)}, z: ${pos.z.toFixed(2)}`;
             // Gameplay
             res += `\n- Gamemode: ${bot.game.gameMode}`;
-            res += `\n- Health: ${Math.round(bot.health)} / 20`;
+            // Real max from server attributes (52 here, not 20) plus a
+            // percentage, so the model's danger judgment matches the rule
+            // layer's -- see world.getMaxHealth.
+            const max_health = world.getMaxHealth(bot);
+            res += `\n- Health: ${Math.round(bot.health)} / ${max_health} (${Math.round(100 * bot.health / max_health)}%)`;
             res += `\n- Hunger: ${Math.round(bot.food)} / 20`;
             res += `\n- Biome: ${world.getBiomeName(bot)}`;
             let weather = "Clear";
@@ -123,17 +127,28 @@ export const queryList = [
             let bot = agent.bot;
             let res = 'NEARBY_BLOCKS';
             let blocks = world.getNearestBlocks(bot);
-            let block_details = new Set();
-            
+            // Name + count + nearest distance, not a bare deduped name set.
+            // On a modpack full of unfamiliar blocks this list is the model's
+            // only view of terrain; "one grimstone somewhere" vs "40 grimstone
+            // starting 2m away" is the difference between a curiosity and the
+            // ground it is standing on.
+            let block_details = new Map();
             for (let block of blocks) {
                 let details = block.name;
                 if (block.name === 'water' || block.name === 'lava') {
                     details += block.metadata === 0 ? ' (source)' : ' (flowing)';
                 }
-                block_details.add(details);
+                let cur = block_details.get(details);
+                if (!cur) {
+                    const d = block.position?.distanceTo(bot.entity.position);
+                    block_details.set(details, { count: 1, nearest: d === undefined ? null : Math.round(d) });
+                } else {
+                    cur.count++;
+                }
             }
-            for (let details of block_details) {
-                res += `\n- ${details}`;
+            for (const [details, info] of block_details) {
+                const dist = info.nearest === null ? '' : `, nearest ${info.nearest}m`;
+                res += `\n- ${details} (x${info.count}${dist})`;
             }
             if (block_details.size === 0) {
                 res += ': none';
@@ -183,15 +198,22 @@ export const queryList = [
             let babyVillagerIds = [];
             let villagerDetails = []; // Store detailed villager info including profession
             
+            // Count alone hid the thing that matters: "3 zombie(s)" reads the
+            // same at 1 block and at 15. Track nearest distance and label
+            // threat/food, the two judgments the model actually has to make.
+            let entityDist = {};
             for (const entity of nearbyEntities) {
                 if (entity.type === 'player' || entity.name === 'item')
                     continue;
-                    
+
                 if (!entityCounts[entity.name]) {
                     entityCounts[entity.name] = 0;
                 }
                 entityCounts[entity.name]++;
-                
+                const d = entity.position?.distanceTo(bot.entity.position);
+                if (d !== undefined && (entityDist[entity.name] === undefined || d < entityDist[entity.name]))
+                    entityDist[entity.name] = d;
+
                 if (entity.name === 'villager') {
                     if (entity.metadata && entity.metadata[16] === 1) {
                         babyVillagerIds.push(entity.id);
@@ -218,7 +240,12 @@ export const queryList = [
                     }
                     res += `\n- entities: ${villagerInfo}`;
                 } else {
-                    res += `\n- entities: ${count} ${entityType}(s)`;
+                    const sample = nearbyEntities.find(e => e.name === entityType);
+                    let label = '';
+                    if (sample && mc.isHostile(sample)) label = ', hostile';
+                    else if (sample && mc.isHuntable(sample)) label = ', huntable';
+                    const dist = entityDist[entityType] !== undefined ? `, nearest ${Math.round(entityDist[entityType])}m` : '';
+                    res += `\n- entities: ${count} ${entityType}(s)${label}${dist}`;
                 }
             }
             
@@ -326,12 +353,18 @@ export const queryList = [
     },
     {
         name: '!searchWiki',
-        description: 'Search the Minecraft Wiki for the given query.',
+        description: 'Search the Minecraft Wiki for the given query. Vanilla content only -- it knows nothing about modded items.',
         params: {
             'query': { type: 'string', description: 'The query to search for.' }
         },
         perform: async function (agent, query) {
-            const url = `https://minecraft.wiki/w/${query}`
+            // minecraft.wiki is vanilla-only. For a modded name an honest "no
+            // data" beats a confident 404 or, worse, the page for a vanilla
+            // item that happens to share the name.
+            if (mc.isModdedName(query.toLowerCase().replaceAll(' ', '_'))) {
+                return `"${query}" is from a mod; the Minecraft Wiki only covers vanilla. Use !craftable, !getCraftingPlan, or experiment.`;
+            }
+            const url = `https://minecraft.wiki/w/${query}`;
             try {
                 const response = await fetch(url);
                 if (response.status === 404) {
@@ -349,7 +382,7 @@ export const queryList = [
                 return divContent.trim();
               } catch (error) {
                 console.error("Error fetching or parsing HTML:", error);
-                return `The following error occurred: ${error}`
+                return `The following error occurred: ${error}`;
               }
         }
     },

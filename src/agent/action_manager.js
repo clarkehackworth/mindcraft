@@ -1,3 +1,14 @@
+import { AsyncLocalStorage } from 'async_hooks';
+
+// Which action generation the currently-running async chain belongs to. An
+// abandoned action keeps running (see stop() below) and keeps calling
+// skills.log into bot.output -- which its REPLACEMENT then reads as its own
+// output in getBotOutputSummary. bot.output cannot be split by caller, but the
+// async chain can: everything the orphan does descends from its actionFn call,
+// so a context carrying its generation lets skills.log drop writes from any
+// chain whose generation is no longer current.
+export const action_context = new AsyncLocalStorage();
+
 // How long an action gets to notice the interrupt before it is abandoned.
 const STOP_GRACE_MS = 10000;
 
@@ -157,10 +168,20 @@ export class ActionManager {
                     this.cancelResume(); // likely cause of repetition
                 }
                 if (this.recent_action_counter > 5) {
-                    console.error('Infinite action loop detected, shutting down.');
-                    this.agent.cleanKill('Infinite action loop detected, shutting down.');
-                    return { success: false, message: 'Infinite action loop detected, shutting down.', interrupted: false, timedout: false };
+                    // This used to cleanKill the whole process, which turned a
+                    // runaway label into a death sentence for everything else
+                    // the agent had going. Quarantine the one label instead:
+                    // refuse it for a minute and tell the caller why.
+                    console.error(`Infinite action loop detected for "${actionLabel}", blocking it for 60s.`);
+                    this._loop_block = { label: actionLabel, until: Date.now() + 60000 };
+                    this.recent_action_counter = 0;
+                    return { success: false, message: `Action "${actionLabel}" was repeating in a tight loop and has been blocked for 60 seconds. Do something else.`, interrupted: false, timedout: false };
                 }
+            }
+            if (this._loop_block && this._loop_block.label === actionLabel) {
+                if (Date.now() < this._loop_block.until)
+                    return { success: false, message: `Action "${actionLabel}" is blocked for looping; try again later or do something else.`, interrupted: false, timedout: false };
+                this._loop_block = null;
             }
             this.last_action_time = Date.now();
             console.log('executing code...\n');
@@ -205,7 +226,10 @@ export class ActionManager {
             // the orphan keeps running and can still touch the bot. We stop
             // listening, we do not stop it.
             const outcome = await Promise.race([
-                actionFn().then(() => 'finished'),
+                // Run inside a context carrying this generation, so writes to
+                // bot.output from an abandoned chain can be told apart from the
+                // replacement's -- see action_context above and skills.log.
+                action_context.run({ gen, manager: this }, () => actionFn()).then(() => 'finished'),
                 this._abandonment(gen),
             ]);
             if (outcome === 'abandoned') {

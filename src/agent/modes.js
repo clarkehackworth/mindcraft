@@ -453,6 +453,15 @@ function logEvt(agentName, line) {
 
 async function execute(mode, agent, func, timeout=2) {
     logEvt(agent.name, `EVT mode:fire:${mode.name}`);
+    // Pause whoever was mid-fire the moment a real fire preempts it, here
+    // where every fire passes -- the arbiter loop AND the reflex tick. Letting
+    // the loser fire again the moment the winner finishes just re-triggers the
+    // same preemption 300ms later (self_preservation vs self_defense, 157
+    // consecutive times, next to one zombie).
+    try {
+        const losing = agent.bot.modes?._entries?.().find(e => e.active && e !== mode);
+        if (losing) { losing.paused = true; losing.paused_at = Date.now(); }
+    } catch (_) {}
     if (agent.self_prompter.isActive())
         // Only a mode that preempts everything gets to throw away a command the
         // model already committed to. An idle-only mode runs *because* nothing
@@ -497,7 +506,7 @@ for (let mode of modes_list) {
     modes_map[mode.name] = mode;
 }
 
-import { Rule, loadPolicyState, composePolicy, describePolicyState, validatePolicy, LAYERS } from './behavior/policy.js';
+import { Rule, loadPolicyState, composePolicy, describePolicyState, validatePolicy, summarizeRules, LAYERS } from './behavior/policy.js';
 
 // Safety reflexes that always outrank user policy rules.
 const PRIORITY_ABOVE_POLICY = ['self_preservation', 'unstuck'];
@@ -587,6 +596,17 @@ class ModeController {
             res += `\n- ${entry.name}(${on})`;
         }
         return res;
+    }
+
+    // One line per installed policy rule, for the system prompt ($POLICY in
+    // prompter.js). The reasoning layer shares a body with these reflexes;
+    // until this existed it could not see them, so it duplicated them,
+    // fought them, and reasoned as if rules it had just installed did not
+    // exist. Summary form, not getDocs(): docs are written for humans.
+    getPromptSummary() {
+        if (!this.rules.length) return '';
+        return 'Installed policy rules (these fire automatically; do not duplicate them with commands):\n'
+            + summarizeRules({ rules: this.rules.map(r => r.spec) });
     }
 
     getDocs() {
@@ -706,6 +726,45 @@ class ModeController {
 // reprompt suppression that every other mode fire has. execute() clears
 // interrupt_code as part of starting its action, which calling surface()
 // directly would not -- the rescue would abort on the interrupt it just raised.
+// The same lesson as drowningTick below, applied to every urgent entry. The
+// agent loop awaits the running action, so during any blocking action -- a
+// stay-until-dawn, a long collect, an API call -- ModeController.update()
+// simply does not run, and neither do the reflexes that live in it. Drowning
+// got its own tick after eleven deaths with full evidence and zero fires; low
+// health, burning, unstuck, cowardice, self_defense and pinned policy rules
+// had the identical disease and no such patch.
+//
+// Evaluation runs here on the physics tick at its own cadence; dispatch still
+// goes through entry.update -> execute(), so cooldowns, backoff, interrupt
+// semantics, the active flag and reprompt suppression are all unchanged. One
+// dispatch per pass, walked in priority order; entries at or below an active
+// one wait, exactly like the arbiter loop.
+const REFLEX_INTERVAL_MS = 500;
+let reflex_last = 0;
+export function reflexTick(agent) { // exported for tests; wired to physicsTick below
+    const now = Date.now();
+    if (now - reflex_last < REFLEX_INTERVAL_MS) return;
+    reflex_last = now;
+    const controller = agent.bot.modes;
+    if (!controller?._entries) return;
+    for (const entry of controller._entries()) {
+        // Same as the arbiter: an active entry blocks everything below it.
+        if (entry.active || entry._reflex_pending) break;
+        if (!isUrgentMode(entry) || !entry.on) continue;
+        // Same stance as drowningTick: a pause is another rule saying "I have
+        // the wheel", which is never a reasonable thing to say to
+        // self_preservation. Everything else keeps its pause.
+        if (entry.paused && entry.name !== 'self_preservation') continue;
+        const interruptible = entry.interrupts.some(i => i === 'all') || entry.interrupts.some(i => i === agent.actions.currentActionLabel);
+        if (!agent.isIdle() && !interruptible) continue;
+        entry._reflex_pending = true;
+        entry.update(agent, execute)
+            .catch(err => console.error(`reflex ${entry.name} failed:`, err))
+            .finally(() => { entry._reflex_pending = false; });
+        break;
+    }
+}
+
 let drowning_rescue = null;
 function drowningTick(agent) {
     const mode = modes_map.self_preservation;
@@ -745,6 +804,7 @@ export function initModes(agent) {
     agent.bot.on('physicsTick', () => {
         skills.recordAir(agent.bot);
         drowningTick(agent);
+        reflexTick(agent);
     });
     // the mode controller is added to the bot object so it is accessible from anywhere the bot is used
     agent.bot.modes = new ModeController();

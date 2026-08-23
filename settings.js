@@ -32,7 +32,11 @@ const settings = {
         // individual profiles override values from the base profile
     ],
 
-    "load_memory": false, // load memory from previous session
+    // Memory, remembered places, and goal state are saved on every turn and
+    // were never read back with this off: every restart was total amnesia,
+    // and the only thing that survived was the policy file. On a pack where
+    // dying is routine, the restart is exactly when memory matters most.
+    "load_memory": true, // load memory from previous session
     "init_message": "Respond with hello world and your name", // sends to all on spawn
     "only_chat_with": [], // users that the bots listen to and send general messages to. if empty it will chat publicly
 

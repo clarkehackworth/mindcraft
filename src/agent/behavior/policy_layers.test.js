@@ -67,12 +67,14 @@ test('a pinned rule outranks an unpinned rule from either layer', () => {
     assert.deepEqual(names, ['active:surface', 'self:eat', 'active:gather']);
 });
 
-test('among pinned rules the layers still decide, so self now leads', () => {
+test('among pinned rules the person leads: an active pin outranks a self pin', () => {
+    // A pin is the person saying "not negotiable". Self stays on top of the
+    // unpinned contest, but a self-written pin must never bury a human one.
     const state = layered();
     state.layers.self.policy.rules = [{ ...rule('self_pin', 'drowning'), pinned: true }];
     state.layers.active.policy.rules = [{ ...rule('active_pin', 'is_idle'), pinned: true }, rule('gather', 'is_idle')];
     const names = composePolicy(state).rules.map(r => r.name);
-    assert.deepEqual(names, ['self:self_pin', 'active:active_pin', 'active:gather']);
+    assert.deepEqual(names, ['active:active_pin', 'self:self_pin', 'active:gather']);
 });
 
 test('rules keep their authored order within a layer', () => {

@@ -1,5 +1,6 @@
 import settings from '../agent/settings.js';
-import { loadModDataPacks, applyModDataPacks } from './mod_data.js';
+import { loadModDataPacks, applyModDataPacks, isModdedName } from './mod_data.js';
+export { isModdedName };
 import { createBot } from 'mineflayer';
 import prismarine_items from 'prismarine-item';
 import { pathfinder } from 'mineflayer-pathfinder';
@@ -101,7 +102,7 @@ export const MATCHING_WOOD_BLOCKS = [
     'button',
     'pressure_plate',
     'trapdoor'
-]
+];
 // A policy that says "log" should work in a birch forest, and "coal_ore"
 // should still match below y=0. Family names expand to every variant; exact
 // names ("oak_log") stay exact so stated intent is preserved.
@@ -178,7 +179,7 @@ export const WOOL_COLORS = [
     'green',
     'red',
     'black'
-]
+];
 
 
 /**
@@ -319,7 +320,7 @@ export function initBot(username) {
         auth: settings.auth,
         version: mc_version,
         checkTimeoutInterval: 60000,  // 60s keep-alive check (default 30s) — reduces disconnects on slow servers
-    }
+    };
     if (!mc_version || mc_version === "auto") {
         delete options.version;
     }
@@ -857,8 +858,14 @@ export function patchUnknownBlocks(registry) {
 
 // Animals that hunt back. Wolves come in packs and polar bears are worth about
 // half the bot's health, so neither is dinner at the moment either one is
-// findable.
-const FIGHTS_BACK = new Set(['wolf', 'polar_bear']);
+// findable. Substrings, not exact names, for the same reason as
+// RANGED_HOSTILE below: the pack ships its own wolves and bears
+// (direwolf, dark_wolf, glacian_ram...) and an exact-match list has never
+// heard of any of them.
+// 'boar' is deliberately absent: it would swallow every unknown modded boar,
+// and an unknown animal is worth a try (see huntable.test.js). These are the
+// substrings whose owners reliably win.
+const FIGHTS_BACK = ['wolf', 'bear', 'hoglin'];
 
 /**
  * Does this animal drop anything edible?
@@ -877,7 +884,7 @@ export function isHuntable(mob) {
     if (!mob || !mob.name) return false;
     if (mob.metadata?.[16]) return false; // metadata 16 is baby
     const name = mob.name.toLowerCase();
-    if (FIGHTS_BACK.has(name)) return false;
+    if (FIGHTS_BACK.some(f => name.includes(f))) return false;
     // This was a hardcoded list of seven vanilla animals -- chicken, cow, llama,
     // mooshroom, pig, rabbit, sheep -- and none of them live in a Frozen Pine
     // Taiga. Andy sat there at 13/60 health with one crafting table to his name,
@@ -944,9 +951,17 @@ export function mustCollectManually(blockName) {
     // all crops (that aren't normal blocks), torches, buttons, levers, redstone,
     const full_names = ['wheat', 'carrots', 'potatoes', 'beetroots', 'nether_wart', 'cocoa', 'sugar_cane', 'kelp', 'short_grass', 'fern', 'tall_grass', 'bamboo',
         'poppy', 'dandelion', 'blue_orchid', 'allium', 'azure_bluet', 'oxeye_daisy', 'cornflower', 'lilac', 'wither_rose', 'lily_of_the_valley', 'wither_rose',
-        'lever', 'redstone_wire', 'lantern']
-    const partial_names = ['sapling', 'torch', 'button', 'carpet', 'pressure_plate', 'mushroom', 'tulip', 'bush', 'vines', 'fern']
-    return full_names.includes(blockName.toLowerCase()) || partial_names.some(partial => blockName.toLowerCase().includes(partial));
+        'lever', 'redstone_wire', 'lantern'];
+    const partial_names = ['sapling', 'torch', 'button', 'carpet', 'pressure_plate', 'mushroom', 'tulip', 'bush', 'vines', 'fern'];
+    const name = blockName.toLowerCase();
+    if (full_names.includes(name) || partial_names.some(partial => name.includes(partial)))
+        return true;
+    // The lists above only know vanilla. A block with no collision box (crops,
+    // flowers, modded plants) breaks instantly and drops at your feet --
+    // collectBlock's pathfind-to-it model is the wrong shape for all of them,
+    // so ask the registry instead of the list.
+    const block = mcdata?.blocksByName?.[name];
+    return !!block && block.boundingBox === 'empty' && block.diggable !== false;
 }
 
 // Does this name mean anything in this world? A rule naming something the
@@ -974,7 +989,7 @@ export function getItemId(itemName) {
 }
 
 export function getItemName(itemId) {
-    let item = mcdata.items[itemId]
+    let item = mcdata.items[itemId];
     if (item) {
         return item.name;
     }
@@ -990,7 +1005,7 @@ export function getBlockId(blockName) {
 }
 
 export function getBlockName(blockId) {
-    let block = mcdata.blocks[blockId]
+    let block = mcdata.blocks[blockId];
     if (block) {
         return block.name;
     }
@@ -1009,7 +1024,7 @@ export function getAllItems(ignore) {
     if (!ignore) {
         ignore = [];
     }
-    let items = []
+    let items = [];
     for (const itemId in mcdata.items) {
         const item = mcdata.items[itemId];
         // A modpack adds tens of thousands of items; the ones with no recipe are
@@ -1061,7 +1076,7 @@ export function getAllBlocks(ignore) {
     if (!ignore) {
         ignore = [];
     }
-    let blocks = []
+    let blocks = [];
     for (const blockId in mcdata.blocks) {
         const block = mcdata.blocks[blockId];
         if (!ignore.includes(block.name)) {
@@ -1231,10 +1246,10 @@ export function isSmeltable(itemName) {
 }
 
 export function getSmeltingFuel(bot) {
-    let fuel = bot.inventory.items().find(i => i.name === 'coal' || i.name === 'charcoal' || i.name === 'blaze_rod')
+    let fuel = bot.inventory.items().find(i => i.name === 'coal' || i.name === 'charcoal' || i.name === 'blaze_rod');
     if (fuel)
         return fuel;
-    fuel = bot.inventory.items().find(i => i.name.includes('log') || i.name.includes('planks'))
+    fuel = bot.inventory.items().find(i => i.name.includes('log') || i.name.includes('planks'));
     if (fuel)
         return fuel;
     return bot.inventory.items().find(i => i.name === 'coal_block' || i.name === 'lava_bucket');
@@ -1246,7 +1261,7 @@ export function getFuelSmeltOutput(fuelName) {
     if (fuelName === 'blaze_rod')
         return 12;
     if (fuelName.includes('log') || fuelName.includes('planks'))
-        return 1.5
+        return 1.5;
     if (fuelName === 'coal_block')
         return 80;
     if (fuelName === 'lava_bucket')
@@ -1297,12 +1312,23 @@ export function getItemAnimalSource(itemName) {
     }[itemName];
 }
 
+// Cheapest tier first. "First harvestTools key is simplest" is only true for
+// vanilla's id ordering; a modded block's tool list is in whatever order the
+// mod registered, so rank by name instead. Unknown (modded) tools sort last:
+// a valid answer, but never preferred over a tier we can actually craft.
+const TOOL_TIER_ORDER = ['wooden_', 'stone_', 'golden_', 'iron_', 'diamond_', 'netherite_'];
 export function getBlockTool(blockName) {
     let block = mcdata.blocksByName[blockName];
     if (!block || !block.harvestTools) {
         return null;
     }
-    return getItemName(Object.keys(block.harvestTools)[0]);  // Double check first tool is always simplest
+    const names = Object.keys(block.harvestTools).map(id => getItemName(id)).filter(Boolean);
+    const rank = n => {
+        const i = TOOL_TIER_ORDER.findIndex(t => n.startsWith(t));
+        return i === -1 ? TOOL_TIER_ORDER.length : i;
+    };
+    names.sort((a, b) => rank(a) - rank(b));
+    return names[0] ?? null;
 }
 
 export function makeItem(name, amount=1) {
@@ -1355,7 +1381,7 @@ export function calculateLimitingResource(availableItems, requiredItems, discret
         }
     }
     if(discrete) num = Math.floor(num);
-    return {num, limitingResource}
+    return {num, limitingResource};
 }
 
 let loopingItems = new Set();
