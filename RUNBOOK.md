@@ -184,11 +184,14 @@ death count dropping over the next day.
   ```
   `policy.json` = base + active rules + self layer + lock flag. If a regen goes
   sideways, this is what you restore.
-- **Check the MC server healthcheck.** `minecraft-prominence2` is reporting
-  `unhealthy` (ping i/o timeout, FailingStreak ~1709) even though the bot is
-  alive and playing — almost certainly a healthcheck artifact, not a dead
-  server. Confirm before a run so you are not chasing a ghost:
-  `ssh $MC_HOST 'docker inspect -f {{json .State.Health}} minecraft-prominence2'`.
+- **Check the MC server healthcheck.** `minecraft-prominence2` used to report
+  `unhealthy` (ping i/o timeout, FailingStreak ~1709) while the bot was alive and
+  playing — a healthcheck ghost, not a dead server. **Fixed 2026-08-23** with a
+  zero-restart one-liner: `mc-health` pings `--host localhost`, which resolves to
+  the IPv6 `::1` loopback that the modded server never completes; writing
+  `SERVER_HOST=127.0.0.1` to `/data/.mc-health.env` (inside the container's
+  persistent `/data` volume) points it at IPv4 and it goes green on the next 30s
+  cycle. If the ghost ever returns, see the gotcha in §10.
 - **Re-check Andy's inventory ~6h after a gear change** to confirm it reached
   stone gear by the next night (it starts each new cycle near empty).
 
@@ -215,6 +218,22 @@ death count dropping over the next day.
   copies are what runs. `deploy` / `docker cp` bridge them — there is no auto-sync.
 - **Deliberate shortcuts are marked `ponytail:`** in the code with a named
   ceiling. Leave the marker when you touch that spot; do not silently expand it.
+- **An A0 container rebuild loses the SSH wiring to the host.** The key survives
+  on the persisted volume at `/a0/usr/.ssh/id_ed25519`; restore in three steps:
+  `cp` it to `~/.ssh/`, `chmod 600`, and re-accept the host key
+  (`ssh-keyscan docker.lan >> ~/.ssh/known_hosts`). Until then every `tools/live_*.sh`
+  command fails on the SSH hop, not on the bot.
+- **The MC healthcheck ghost is an IPv6 problem, fixable without a restart.**
+  `mc-health` runs `mc-monitor status --host localhost --port 25565`; `localhost`
+  resolves to the IPv6 `::1` loopback, which the modded server never completes, so
+  `minecraft-prominence2` reports `unhealthy` (ping i/o timeout, huge
+  FailingStreak) while the bot is alive and playing. The flag is NOT `--address`
+  (that times out too) — the real knob is the `SERVER_HOST` env var the `mc-health`
+  shim reads. It sources `/data/.mc-health.env` on every 30s cycle, so the
+  zero-restart fix is: `docker exec -i minecraft-prominence2 sh -c 'cat >
+  /data/.mc-health.env'` with one line `SERVER_HOST=127.0.0.1`. `/data` is a
+  named volume so it survives; the health flips green on the next cycle with no
+  world restart and no Andy disconnect.
 
 ---
 
