@@ -788,7 +788,7 @@
       },
       {
         "name": "arm_yourself_from_the_chest",
-        "description": "Arm yourself if no weapon and a chest is nearby (you are at base): self-source wood from a nearby tree (collect log) so the craft cannot starve, craft a wooden sword, and equip it. The 2026-08-24 24h audit proved the mod chest GUI never opens ('The chest never opened' 778x), so the stored-withdraw path only churns the bot unarmed in the open for ~30s/rule and was removed; the chest-nearby gate is kept as the at-base trigger.",
+        "description": "Arm yourself if no weapon and a chest is nearby (you are at base) and the area is clear: self-source wood from a nearby tree (collect log) so the craft cannot starve, craft a wooden sword, and equip it. The 2026-08-24 24h audit proved the mod chest GUI never opens ('The chest never opened' 778x), so the stored-withdraw path only churns the bot unarmed in the open for ~30s/rule and was removed; the chest-nearby gate is kept as the at-base trigger. The hostile_nearby 24 gate (2026-08-24) prevents starting the blocking collect while a raider or zombie is in range -- the 79x GoalChanged pre-emption proved arming mid-raid is the exact death pattern. The water gate prevents the collect goto from pathing through water where keep_out_of_water would interrupt it (61x).",
         "when": {
           "all": [
             {
@@ -802,6 +802,19 @@
               "cond": "block_nearby",
               "name": "chest",
               "range": 32
+            },
+            {
+              "not": {
+                "cond": "hostile_nearby",
+                "range": 24
+              }
+            },
+            {
+              "not": {
+                "cond": "block_nearby",
+                "name": "water",
+                "range": 8
+              }
             }
           ]
         },

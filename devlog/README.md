@@ -36,6 +36,7 @@ below started as "the bot died again" on that server.
 | 2026-08-23 | [Arming fix: chest fallback crafts and equips a starter sword](2026-08-23-arming-fix.md) | shipped |
 | 2026-08-23 | [Arm self-sufficiently: `collect log` before the craft](2026-08-23-arming-collect-wood.md) | shipped |
 | 2026-08-24 | [Trim the three dead chest-withdraw steps from arming](2026-08-24-arming-trim-dead-withdraw.md) | shipped |
+| 2026-08-24 | [Arm gate against mid-raid pre-emption + a check that means it](2026-08-24-arming-gate-and-check.md) | shipped |
 
 `ARCHITECTURE.md` at the repo root was written alongside the behavior policy
 layer — the arbiter needed a written model of where it sits before it could be

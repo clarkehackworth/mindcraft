@@ -1,28 +1,14 @@
 // tools/arming_fix_check.js
-// Runnable check for the 2026-08-23 arming fixes (devlog/2026-08-23-arming-fix.md,
-// devlog/2026-08-23-arming-collect-wood.md).
+// Runnable check for the 2026-08-23/24 arming fixes.
 //
-// Fix 1 (09:49): 26/46 deaths were daytime modded-chillager arrows, 41/46 while
-// Andy was unarmed; the chest fallback withdrew planks/sticks to craft a starter
-// sword, and craft_a_weapon left the crafted sword in the bag (has_item counts
-// inventory, not the hand).
+// Shape mode (default, fast): pins the policy do-list and when-gates.
+//   node tools/arming_fix_check.js
 //
-// Fix 2 (14:47): the 6h audit showed arm_yourself_from_the_chest fired 29x and
-// got stuck 40x, and 11/14 fresh deaths were empty-handed. The live log proved
-// the do-list starves: the mod's chest GUI will not open ("The chest never
-// opened") and the chest is empty or out of range ("Could not find any
-// pine_planks in the 4 nearest chests"), so the bot reaches
-// craft wooden_sword empty-handed ("no resources to craft a wooden_sword") and
-// every step no-ops. The fix makes the rule self-sufficient: collect log from a
-// nearby tree before the craft. collect is a blocking action (resets the stuck
-// counter), the "log" family name reaches the modpack's pine_log, and it
-// degrades to a logged false if no tree is within 64 -- no regression. With a
-// log in hand, craftRecipe walks log -> planks -> stick -> sword, including the
-// modded raw-recipe path that substitutes same-suffix wood (proven live:
-// "Crafted 1 wooden_sword" from a world-sourced log).
+// Live mode (--live): also SSHes to the host and asserts on live tallies.
+//   MC_HOST='jeff@docker.lan' node tools/arming_fix_check.js --live
 //
-// This check pins both fixes. No new framework - assert-based.
-// Usage: node tools/arming_fix_check.js
+// Live mode is SLOW (agent log is large over SSH); use timeout 180.
+// Per AGENTS.md: one runnable check, no new frameworks.
 import assert from 'node:assert';
 import fs from 'node:fs';
 
@@ -31,10 +17,7 @@ const rules = base.policy.rules;
 const byName = Object.fromEntries(rules.map((r) => [r.name, r]));
 const step = (s) => `${s.act}${s.item ? ':' + s.item : s.type ? ':' + s.type : ''}${s.num ? '#' + s.num : ''}`;
 
-// 1. arm_yourself_from_the_chest: withdraw a stored weapon/planks/stick if the
-//    chest will open, otherwise self-source wood, then craft + equip a starter
-//    sword. The collect step is the self-sufficient fallback for a broken or
-//    empty chest.
+// ── 1. arm_yourself_from_the_chest shape ──────────────────────────────────
 const arm = byName['arm_yourself_from_the_chest'];
 assert(arm, 'rule arm_yourself_from_the_chest missing');
 assert.deepStrictEqual(
@@ -44,12 +27,21 @@ assert.deepStrictEqual(
 );
 assert.strictEqual(arm.pinned, true, 'arm must stay pinned');
 assert.strictEqual(arm.interrupts, 'all', 'arm must keep interrupts:all');
-// trigger unchanged: fires only when unarmed with a chest in range
-assert.strictEqual(arm.when.all.length, 2, 'arm when-gates changed');
+
+// trigger: unarmed + chest in range + no hostile within 24 + no water within 8
+assert.strictEqual(arm.when.all.length, 4, 'arm when-gates changed (expected 4)');
 assert.strictEqual(arm.when.all[0].not.cond, 'has_item');
 assert.strictEqual(arm.when.all[0].not.item, 'weapon');
 assert.strictEqual(arm.when.all[1].cond, 'block_nearby');
 assert.strictEqual(arm.when.all[1].name, 'chest');
+// P1 gate (2026-08-24): no hostile within 24 (matches flee_ranged_raiders reach)
+assert.strictEqual(arm.when.all[2].not.cond, 'hostile_nearby');
+assert.strictEqual(arm.when.all[2].not.range, 24);
+// P1 gate: no water within 8 (matches keep_out_of_water's block_nearby range)
+assert.strictEqual(arm.when.all[3].not.cond, 'block_nearby');
+assert.strictEqual(arm.when.all[3].not.name, 'water');
+assert.strictEqual(arm.when.all[3].not.range, 8);
+
 // the collect step is the wood source: family name, enough logs for planks +
 // stick, and placed immediately before the craft so the wood is fresh in hand
 const collectIdx = arm.do.findIndex(s => s.act === 'collect');
@@ -58,7 +50,7 @@ assert.strictEqual(arm.do[collectIdx].type, 'log', 'collect must use the log fam
 assert.ok(arm.do[collectIdx].num >= 3, 'collect must fetch enough logs for planks + stick');
 assert.strictEqual(arm.do[collectIdx + 1].act, 'craft', 'collect must immediately precede the craft');
 
-// 2. craft_a_weapon: the crafted sword must be equipped (has_item counts the bag, not the hand).
+// ── 2. craft_a_weapon shape ──────────────────────────────────────────────
 const craft = byName['craft_a_weapon'];
 assert(craft, 'rule craft_a_weapon missing');
 assert.deepStrictEqual(
@@ -68,6 +60,51 @@ assert.deepStrictEqual(
 );
 assert.strictEqual(craft.interrupts, 'all', 'craft must keep interrupts:all');
 
-console.log('arming_fix_check: all assertions passed');
+console.log('arming_fix_check: shape assertions passed');
 console.log('  arm_yourself_from_the_chest:', arm.do.map(step).join(' -> '));
+console.log('  when-gates:', arm.when.all.map(g => g.cond ? `${g.cond}:${g.name ?? g.item ?? ''}${g.range ? '#' + g.range : ''}` : `not ${g.not.cond}:${g.not.name ?? g.not.item ?? ''}${g.not.range ? '#' + g.not.range : ''}`).join(' + '));
 console.log('  craft_a_weapon:            ', craft.do.map(step).join(' -> '));
+
+// ── 3. Live tally mode (--live) ──────────────────────────────────────────
+const live = process.argv.includes('--live');
+if (!live) {
+  console.log('  (use --live + MC_HOST to check live tallies)');
+  process.exit(0);
+}
+
+const { execSync } = await import('node:child_process');
+const host = process.env.MC_HOST;
+if (!host) {
+  console.error('MC_HOST not set (export MC_HOST=jeff@docker.lan)');
+  process.exit(1);
+}
+const BOT = process.env.BOT_CONTAINER || 'mindcraft';
+const WINDOW = process.env.SOAK_WINDOW || '24h';
+
+function tally(pattern) {
+  const cmd = `ssh ${host} "docker logs --since ${WINDOW} ${BOT} 2>&1 | grep -acE '${pattern}'" 2>/dev/null`;
+  const raw = execSync(cmd, { timeout: 180000, encoding: 'utf8' }).trim();
+  return parseInt(raw, 10) || 0;
+}
+
+console.log(`\nLive tallies (${WINDOW} window, host ${host}):`);
+const crafted = tally('Crafted 1 wooden_sword|Successfully crafted wooden_sword');
+const goalChanged = tally('GoalChanged');
+const chestChurn = tally('The chest never opened|Could not find any.*planks.*chests|Failed to withdraw');
+const uncaught = tally('Uncaught|FATAL');
+
+console.log(`  crafted wooden_sword: ${crafted}`);
+console.log(`  GoalChanged:          ${goalChanged}`);
+console.log(`  chest-withdraw churn: ${chestChurn}`);
+console.log(`  Uncaught|FATAL:       ${uncaught}`);
+
+// Assertions on live tallies
+// After the trim + gate: craft should succeed at least once per 24h window,
+// GoalChanged should be well below the pre-fix 79/6h (~316/24h) rate,
+// and chest-withdraw churn should be ~0 (the steps are removed).
+assert.ok(crafted > 0, `LIVE: expected >0 crafted wooden_sword in ${WINDOW}, got ${crafted} (arming still 0/0)`);
+assert.ok(goalChanged < 100, `LIVE: GoalChanged ${goalChanged} in ${WINDOW} exceeds post-fix expectation (<100; pre-fix was ~316/24h)`);
+assert.ok(chestChurn < 10, `LIVE: chest-withdraw churn ${chestChurn} in ${WINDOW} — the dead steps should be gone (was 778/6h pre-trim)`);
+assert.strictEqual(uncaught, 0, `LIVE: ${uncaught} Uncaught|FATAL lines in ${WINDOW} — contract violation`);
+
+console.log('\narming_fix_check: ALL assertions passed (shape + live)');
