@@ -299,7 +299,7 @@
           {
             "act": "stay",
             "until": "not hostile_nearby 12 and not is_night 1500",
-            "seconds": -1
+            "seconds": 600
           }
         ],
         "interrupts": "all",
@@ -373,7 +373,7 @@
       },
       {
         "name": "get_out_of_the_cold",
-        "description": "Get out of the cold when freezing and not sheltered.",
+        "description": "Get out of the cold when freezing, not sheltered, and cannot dig in (dig_in_out_of_the_cold handles the can-dig-down case).",
         "when": {
           "all": [
             {
@@ -383,20 +383,21 @@
               "not": {
                 "cond": "is_sheltered"
               }
+            },
+            {
+              "not": {
+                "cond": "can_dig_down"
+              }
             }
           ]
         },
         "do": [
           {
-            "act": "move_away",
-            "distance": 10
-          },
-          {
             "act": "prompt_self",
-            "message": "YOU ARE FREEZING. The freeze meter is nearly full and it will start taking your health, then kill you -- you have died this way before. This is not something to wait out; standing still is what fills the meter.\nDo one of these NOW, whichever is closest:\n- If you are standing in powder snow, get OUT of it first -- !moveAway 8. It looks like a normal snow block and it is the fastest way to freeze.\n- Get under cover and out of the weather: dig two blocks into the nearest hillside, or dig down two and put a block over your head. Being enclosed stops the snow reaching you.\n- Put a heat source next to you: !placeHere torch, or a campfire if you have one. Then stay beside it, not merely near it.\n- Leather armour stops freezing entirely. If you have leather, !craftRecipe leather_boots and the rest, and !equip them.\nIf none of that is possible where you stand, walk out of the snow: pick a direction and !moveAway 32, then look again. Any of these beats another second in the open."
+            "message": "YOU ARE FREEZING. The freeze meter is nearly full and it will start taking your health, then kill you -- you have died this way before. You CANNOT dig straight down where you stand (hard block, no tool), so do NOT just move away -- walking ten blocks does not stop the snow, and you will be freezing in a new spot in sixty seconds.\nFind cover you CAN reach:\n- Walk to a dirt bank, hillside, or grassy slope where you CAN dig in (soft ground, not stone or ore). Once there, dig two blocks in and cap the top. Being enclosed stops the snow reaching you.\n- Or find a natural overhang, cave entrance, or the lip of the hole you are in, and get under it.\n- If you have a torch, !placeHere it and stay beside it. A campfire if you have one.\n- Powder snow is the fastest way to freeze: if you are standing in it, get out of the block itself first.\nDo not wander the open. Do not stand still. Get under cover or into a diggable slope NOW."
           }
         ],
-        "interrupts": "all",
+        "interrupts": "idle",
         "cooldown": 60,
         "pinned": true
       },
@@ -2890,6 +2891,46 @@
           }
         ],
         "cooldown": 120
+      },
+      {
+        "name": "arm_gate_closed",
+        "description": "TELEMETRY (2026-08-25 P5). Fires when every arming precondition holds EXCEPT the 24-block hostile gate: no weapon + chest within 32 + hostile within 24. Complementary to arm_yourself_from_the_chest (same preconds, hostile gate flipped), so exactly one of the two can fire per tick and they do not compete. Count of 'EVT rule:fire:arm_gate_closed' over 24h vs the arm rule's own fires decides whether the hostile gate is the binding constraint on arming (high count) or the collect/craft/equip chain is broken (low count + arm stuck/unresolved).",
+        "when": {
+          "all": [
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "weapon",
+                "count": 1
+              }
+            },
+            {
+              "cond": "block_nearby",
+              "name": "chest",
+              "range": 32
+            },
+            {
+              "cond": "hostile_nearby",
+              "range": 24
+            },
+            {
+              "not": {
+                "cond": "block_nearby",
+                "name": "water",
+                "range": 8
+              }
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "log",
+            "message": "arm gate closed: no weapon, chest within 32, hostile within 24"
+          }
+        ],
+        "interrupts": "idle",
+        "cooldown": 300,
+        "pinned": true
       }
     ]
   }

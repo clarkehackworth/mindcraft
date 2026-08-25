@@ -699,6 +699,12 @@ export const ACTIONS = {
         desc: 'Say a message in chat.',
         fn: async (agent, a) => agent.openChat(a.message)
     },
+    log: {
+        cost: 'cheap', clears: [],
+        args: { message: 'string (optional), what to log' },
+        desc: 'Write a line to the agent log for measurement or telemetry; it changes nothing in the world. Use it to count how often a trigger fires without taking a physical action. The fire is also recorded as EVT rule:fire:<rule>, so the log line is a marker, not the measurement.',
+        fn: async (agent, a) => { console.log(`EVT policy:log:${a.message ?? ''}`); return true; }
+    },
     set_mode: {
         cost: 'cheap', clears: [],
         args: { mode: 'string mode name', on: 'boolean' },
@@ -732,7 +738,7 @@ export const ACTIONS = {
 // kept the arbiter executing something every tick. Sub-20ms actions
 // back-to-back look exactly like a runaway loop to the ActionManager, which
 // shut the agent down four times in twenty minutes.
-const AIMLESS_ACTIONS = ['move_away', 'prompt_self', 'say', 'set_mode'];
+const AIMLESS_ACTIONS = ['move_away', 'prompt_self', 'say', 'set_mode', 'log'];
 
 // Does the trigger say anything about the world, or does it just mean "nothing
 // is going on"? Idleness and the *absence* of something are the resting state,

@@ -28,6 +28,7 @@ below started as "the bot died again" on that server.
 | 2026-08-01 | [Compiled policy rules that retreat forever](2026-08-01-retreat-loop-in-policy.md) | uncommitted |
 | 2026-08-01 | [`!stayUntil` replaces guessing with `!stay(-1)`](2026-08-01-stay-until.md) | uncommitted |
 | 2026-08-01 | [Idle-only modes were discarding every self-prompted command](2026-08-01-modes-eating-commands.md) | uncommitted |
+| 2026-08-25 | [Cold-rule state gap, log spam, night-lock, gate telemetry](2026-08-25-P1-P5-cold-arming-gate.md) | shipped |
 | 2026-08-01 | [The bot drowned reaching for a command that didn't exist](2026-08-01-drowning-handling.md) | uncommitted |
 | 2026-08-01 | [`!stats` and the policy engine disagreed about night](2026-08-01-two-definitions-of-night.md) | uncommitted |
 | 2026-08-05 | [Code issues seen while tuning the survival policies](2026-08-05-observed-code-issues.md) | **open** |

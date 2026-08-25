@@ -1136,7 +1136,7 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
 // ground in front of the bot.
 function getNearestDrop(bot, distance) {
     return bot.nearestEntity(e =>
-        (e.name === 'item' || e.objectType === 'Item' || e.displayName === 'Item' || e.entityType === 'item')
+        (e.name === 'item' || e.displayName === 'Item' || e.entityType === 'item')
         && bot.entity.position.distanceTo(e.position) < distance);
 }
 
