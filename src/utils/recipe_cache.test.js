@@ -93,3 +93,21 @@ test('switching registries drops the cache', () => {
     const after = getItemCraftingRecipes('crafting_table', { oak_planks: 8 });
     assert.ok(after.length > 0, 'recipes must still resolve against the new registry');
 });
+
+// 2026-08-24 arming audit (0/0 sword crafts): the "no resources" line named
+// oak 26x / spruce 7x / pine 4x. That split is the ranking working as
+// designed -- oak only wins when the bot holds no log and sees none (it was
+// interrupted mid-collect), and the named wood tracks what it was holding.
+// This pins the exact arm path so a regression to oak-on-held-log is caught.
+test('wooden_sword plans through the held wood; oak is only the empty-hand tiebreak', () => {
+    const plan = getCraftingPlan('wooden_sword', 1, { spruce_log: 4 });
+    assert.deepEqual(plan.required, {}, `4 spruce_log suffices for a sword, got ${JSON.stringify(plan.required)}`);
+    assert.ok(plan.steps.some(s => s.item === 'spruce_planks'), 'must go through the held wood, not oak');
+    assert.ok(!plan.steps.some(s => s.item.startsWith('oak')), 'no oak anywhere in a spruce plan');
+    assert.ok(plan.steps.at(-1).item === 'wooden_sword', 'plan must end with the sword');
+
+    // Same question for the recipe ranking itself (what craftRecipe sees).
+    const ranked = getItemCraftingRecipes('wooden_sword', { spruce_log: 4 });
+    assert.deepEqual(Object.keys(ranked[0][0]), ['spruce_planks', 'stick'],
+        `held spruce_log must rank the spruce variant first, got ${Object.keys(ranked[0][0])}`);
+});
