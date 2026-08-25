@@ -788,7 +788,7 @@
       },
       {
         "name": "arm_yourself_from_the_chest",
-        "description": "Arm yourself from the chest if no weapon and chest nearby.",
+        "description": "Arm yourself if no weapon and a chest is nearby (you are at base): self-source wood from a nearby tree (collect log) so the craft cannot starve, craft a wooden sword, and equip it. The 2026-08-24 24h audit proved the mod chest GUI never opens ('The chest never opened' 778x), so the stored-withdraw path only churns the bot unarmed in the open for ~30s/rule and was removed; the chest-nearby gate is kept as the at-base trigger.",
         "when": {
           "all": [
             {
@@ -807,9 +807,13 @@
         },
         "do": [
           {
-            "act": "withdraw",
-            "item": "weapon",
-            "num": 1
+            "act": "collect",
+            "type": "log",
+            "num": 4
+          },
+          {
+            "act": "craft",
+            "item": "wooden_sword"
           },
           {
             "act": "equip_weapon"
@@ -849,7 +853,7 @@
       },
       {
         "name": "craft_a_weapon",
-        "description": "Craft a weapon if unarmed and wood available.",
+        "description": "Craft a weapon if unarmed and wood available, and equip it -- a sword in the bag is not a sword in the hand.",
         "when": {
           "all": [
             {
@@ -879,6 +883,9 @@
           {
             "act": "craft",
             "item": "wooden_sword"
+          },
+          {
+            "act": "equip_weapon"
           }
         ],
         "interrupts": "all",

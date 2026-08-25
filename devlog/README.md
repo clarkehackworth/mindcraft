@@ -32,6 +32,10 @@ below started as "the bot died again" on that server.
 | 2026-08-01 | [`!stats` and the policy engine disagreed about night](2026-08-01-two-definitions-of-night.md) | uncommitted |
 | 2026-08-05 | [Code issues seen while tuning the survival policies](2026-08-05-observed-code-issues.md) | **open** |
 | 2026-08-18 | [Arm, mine, and actually recover the grave](2026-08-18-gear-and-mining-activation.md) | shipped |
+| 2026-08-22 | [Self-layer clear unblocks the deep gear ladder](2026-08-22-self-layer-clear.md) | shipped |
+| 2026-08-23 | [Arming fix: chest fallback crafts and equips a starter sword](2026-08-23-arming-fix.md) | shipped |
+| 2026-08-23 | [Arm self-sufficiently: `collect log` before the craft](2026-08-23-arming-collect-wood.md) | shipped |
+| 2026-08-24 | [Trim the three dead chest-withdraw steps from arming](2026-08-24-arming-trim-dead-withdraw.md) | shipped |
 
 `ARCHITECTURE.md` at the repo root was written alongside the behavior policy
 layer — the arbiter needed a written model of where it sits before it could be
