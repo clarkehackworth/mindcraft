@@ -49,6 +49,23 @@ assert.equal(reset.discard_pending, true, 'discard_pending resets to the safe de
 // And a non-self-prompt message is never affected either way.
 assert.equal(urgent.shouldInterrupt(false), false, 'a user-sourced message is not discarded');
 
+// inventoryLine is the authoritative ground truth that stops the model keeping a
+// false belief in gear it never made (the 7h base soak: it reported "wood tools" while
+// its real inventory was two steaks). It surfaces the real items and must NEVER throw --
+// the self-prompt loop runs where nothing catches, so a throw here would take down the agent.
+const withBot = new SelfPrompter({ bot: { inventory: { slots: [{ name: 'cooked_beef', count: 2 }, { name: 'wooden_sword', count: 1 }, null] } }, actions: { stop: async () => {} }, isIdle: () => true });
+const inv = withBot.inventoryLine();
+assert.ok(inv.includes('wooden_sword x1'), 'inventoryLine surfaces the real items');
+assert.ok(inv.includes('cooked_beef x2'), 'inventoryLine surfaces the real items');
+assert.ok(inv.includes('ACTUAL inventory'), 'inventoryLine labels itself as ground truth');
+assert.ok(inv.includes('do not mark it done'), 'inventoryLine tells the model not to false-complete a step it cannot afford');
+
+// The mock agents in this file have no bot -- it degrades to '' so the turn proceeds as before.
+assert.equal(sp().inventoryLine(), '', 'no bot -> empty line, never throws');
+// A throwing inventory (malformed bot) must not propagate -- tick-path contract.
+const bad = new SelfPrompter({ bot: { get inventory() { throw new Error('nope'); } }, actions: { stop: async () => {} }, isIdle: () => true });
+assert.equal(bad.inventoryLine(), '', 'a throwing inventory degrades to empty instead of crashing');
+
 // Let the still-parked stopLoop() drains finish so node can exit.
 for (const p of [routine, urgent, taken_over]) p.loop_active = false;
 await new Promise(r => setTimeout(r, 600));

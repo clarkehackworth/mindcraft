@@ -28,19 +28,37 @@ assert.deepStrictEqual(
 assert.strictEqual(arm.pinned, true, 'arm must stay pinned');
 assert.strictEqual(arm.interrupts, 'all', 'arm must keep interrupts:all');
 
-// trigger: unarmed + chest in range + no hostile within 24 + no water within 8
-assert.strictEqual(arm.when.all.length, 4, 'arm when-gates changed (expected 4)');
+// trigger (2026-08-25: water#8 gate removed): unarmed + chest in range + no hostile within 24.
+// The 7h base soak proved the not-water#8 gate was permanently false at the one place arming
+// should happen (he lives in a base water pocket), so the rule could never fire; drowning
+// mid-arming is already covered by surface_when_drowning (air:12, interrupts:all), so the
+// collect goto either completes in shallow water or is nudged out by keep_out_of_water and
+// retries on the 60s cooldown.
+assert.strictEqual(arm.when.all.length, 3, 'arm when-gates changed (expected 3 after water-gate removal)');
 assert.strictEqual(arm.when.all[0].not.cond, 'has_item');
 assert.strictEqual(arm.when.all[0].not.item, 'weapon');
 assert.strictEqual(arm.when.all[1].cond, 'block_nearby');
 assert.strictEqual(arm.when.all[1].name, 'chest');
+assert.strictEqual(arm.when.all[1].range, 32);
 // P1 gate (2026-08-24): no hostile within 24 (matches flee_ranged_raiders reach)
 assert.strictEqual(arm.when.all[2].not.cond, 'hostile_nearby');
 assert.strictEqual(arm.when.all[2].not.range, 24);
-// P1 gate: no water within 8 (matches keep_out_of_water's block_nearby range)
-assert.strictEqual(arm.when.all[3].not.cond, 'block_nearby');
-assert.strictEqual(arm.when.all[3].not.name, 'water');
-assert.strictEqual(arm.when.all[3].not.range, 8);
+
+// arm_gate_closed (P5 telemetry, 2026-08-25): the mirror of the arm rule with the hostile
+// gate FLIPPED -- same weapon/chest preconds, hostile WITHIN 24 instead of not-within-24, and
+// no water gate (kept in lockstep with the arm rule so the 24h readout stays valid). Count of
+// 'EVT rule:fire:arm_gate_closed' vs the arm rule's own fires decides gate vs downstream chain.
+const gate = byName['arm_gate_closed'];
+assert(gate, 'rule arm_gate_closed missing (telemetry mirror of the arm rule)');
+assert.strictEqual(gate.when.all.length, 3, 'gate when-gates changed (expected 3, mirror of arm)');
+assert.strictEqual(gate.when.all[0].not.cond, 'has_item');
+assert.strictEqual(gate.when.all[0].not.item, 'weapon');
+assert.strictEqual(gate.when.all[1].cond, 'block_nearby');
+assert.strictEqual(gate.when.all[1].name, 'chest');
+assert.strictEqual(gate.when.all[1].range, 32);
+assert.strictEqual(gate.when.all[2].cond, 'hostile_nearby');   // FLIPPED: within, not not-within
+assert.strictEqual(gate.when.all[2].range, 24);
+assert.strictEqual(gate.interrupts, 'idle', 'telemetry must not disrupt the arming chain (interrupts:idle)');
 
 // the collect step is the wood source: family name, enough logs for planks +
 // stick, and placed immediately before the craft so the wood is fresh in hand

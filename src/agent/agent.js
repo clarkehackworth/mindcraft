@@ -37,6 +37,13 @@ const STUCK_SAME_SPOT = 8;
 // catch the zombie already swinging, near enough that an archer across a valley
 // does not cancel every path the bot plans.
 const HOSTILE_PANIC_RANGE = 6;
+// How long a rule action stays protected from a stale self-prompt command
+// before it is considered stuck and fresh commands are let through (see P8 in
+// handleMessage). One self-prompt turn: long enough that the command the model
+// committed to before the rule fired is still suppressed, short enough that a
+// move_away wedged in a pit starts yielding to the model's own escape attempts
+// instead of swallowing them for the action's full 120s timeout.
+const STALE_COMMAND_WINDOW_MS = 60000;
 
 /**
  * Is this connection error upstream weather rather than a broken agent?
@@ -148,6 +155,12 @@ export class Agent {
         // and every piece of this agent that asks where it is reads
         // bot.entity.position. See _awaitReady.
         this._ready = false;
+        // P10: the liveness watchdog below must stay out of the way while the bot is
+        // still authenticating. A MSA device-code login produces no server time
+        // packets until it is approved, so "silence" there is normal, not a dead
+        // connection. The 300s spawn_timeout owns that window; _logged_in flips in
+        // the 'login' handler and re-arms the watchdog for real (post-login) drops.
+        this._logged_in = false;
 
         console.log(this.name, 'logging into minecraft...');
         this.bot = initBot(this.name);
@@ -183,6 +196,11 @@ export class Agent {
         this.bot.on('login', () => {
             console.log(this.name, 'logged in!');
             this.login_time = Date.now();
+            // P10: we are now authenticated. Silence from here on is suspicious, so
+            // re-arm the liveness watchdog and start its clock from this moment -- not
+            // from _connect, which can be 300s earlier in the interactive auth flow.
+            this._logged_in = true;
+            this._livenessLastUpdate = Date.now();
             this.alive_mark = Date.now(); // resume accumulating connected time
             serverProxy.login();
             
@@ -212,10 +230,15 @@ export class Agent {
         // socket thinks. It routes through the disconnect handler like any
         // other drop, so a half-open socket is now a reconnect rather than a
         // guaranteed process death.
-        let last_time_update = Date.now();
-        this.bot.on('time', () => { last_time_update = Date.now(); });
+        this._livenessLastUpdate = Date.now();
+        this.bot.on('time', () => { this._livenessLastUpdate = Date.now(); });
         this._liveness = setInterval(() => {
-            const silent_ms = Date.now() - last_time_update;
+            // P10: during the pre-login auth phase there are no server time packets
+            // by design, so silence is not a dead connection. Let the 300s
+            // spawn_timeout handle an unapproved device code instead of killing the
+            // login ~188s in and forcing a rotating new code no one can race.
+            if (!this._logged_in) return;
+            const silent_ms = Date.now() - this._livenessLastUpdate;
             if (silent_ms <= 180000) return;
             // The watchdog used to clearInterval itself here, before calling the
             // thing it guards. _handleDisconnect early-returns once
@@ -684,8 +707,21 @@ export class Agent {
                 // loop's own !collectBlocks. The call can only be made here,
                 // where we know the rule is still working. The turn is already
                 // paid for either way; this only decides who wins.
-                if (self_prompt && this.actions.executing && this.actions.currentActionLabel.startsWith('mode:')) {
-                    console.log(`self-prompt command ${command_name} dropped: "${this.actions.currentActionLabel}" is still running`);
+                //
+                // P8: bound that protection to the action's YOUTH. The stale
+                // command it guards against lands within one self-prompt turn, so
+                // once the mode:action has run longer than
+                // STALE_COMMAND_WINDOW_MS it is stuck, not working -- e.g.
+                // give_up_on_a_stuck_path's move_away with no route in a pit --
+                // and the model's FRESH escape/collect commands are what can break
+                // it out. The old unbounded drop swallowed 705 commands and froze
+                // the bot for the action's whole 120s lifetime. Past the window a
+                // fresh command runs executeCommand -> runAction -> stop(), taking
+                // over from the stuck action.
+                const mode_age_ms = Date.now() - this.actions.last_action_time;
+                if (self_prompt && this.actions.executing && this.actions.currentActionLabel.startsWith('mode:')
+                        && mode_age_ms < STALE_COMMAND_WINDOW_MS) {
+                    console.log(`self-prompt command ${command_name} dropped: "${this.actions.currentActionLabel}" is still running (${mode_age_ms}ms < ${STALE_COMMAND_WINDOW_MS}ms)`);
                     used_command = true; // a command WAS produced; don't count a no-command strike
                     break;
                 }

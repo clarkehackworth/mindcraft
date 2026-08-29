@@ -2,6 +2,7 @@
 // and releasing the flag anyway, and how long one self-prompt turn may take
 // before the loop stops waiting on it. Both exist so a single stuck turn cannot
 // leave the agent with no goal driver for the rest of the process's life.
+import * as world from './library/world.js';
 const STOP_WAIT_MS = 30 * 1000;
 const TURN_TIMEOUT_MS = 5 * 60 * 1000;
 // How long the no-command strike-out pauses the loop before update() resumes it.
@@ -53,6 +54,32 @@ export class SelfPrompter {
 
     describePlan() {
         return this.plan.map((s, i) => `${i + 1}. [${s.done ? 'x' : ' '}] ${s.step}`).join('\n');
+    }
+
+    // Authoritative inventory for the self-prompt turn. The model's own memory
+    // keeps it believing it has gear it never actually made -- the 7h base soak
+    // had it report "wood tools" while its real inventory was two steaks and an
+    // empty hand, and it false-completed the "craft tools" plan step. Re-stating
+    // the real counts every turn is the only thing that beats a persistent
+    // false belief, so this is ground truth, not a hint. Must never throw: the
+    // self-prompt loop runs where nothing catches, and a throw here takes down
+    // the agent. On any error, or an empty/absent inventory, return '' so the
+    // turn proceeds exactly as before.
+    inventoryLine() {
+        try {
+            const bot = this.agent && this.agent.bot;
+            if (!bot || !bot.inventory || !bot.inventory.slots) return '';
+            const counts = world.getInventoryCounts(bot);
+            const entries = Object.entries(counts)
+                .filter(([, n]) => n > 0)
+                .sort((a, b) => b[1] - a[1]);
+            if (!entries.length) return '';
+            const shown = entries.slice(0, 12).map(([name, n]) => `${name} x${n}`).join(', ');
+            const more = entries.length > 12 ? `, +${entries.length - 12} more` : '';
+            return `\nYour ACTUAL inventory (from the game, not memory): ${shown}${more}. If a plan step needs an item you do not have, get it first -- do not mark it done.`;
+        } catch {
+            return '';
+        }
     }
 
     async start(prompt, standing=false) {
@@ -119,7 +146,8 @@ export class SelfPrompter {
             const plan_txt = this.plan.length
                 ? `\nYour plan:\n${this.describePlan()}\nWork the first unchecked step. Use !completeStep when a step is done, !setPlan to revise the plan.`
                 : `\nIf this goal takes more than a couple of actions, first write the steps down with !setPlan("step 1; step 2; ...") -- the plan is re-shown every turn, so it survives interruptions that the conversation history does not.`;
-            const msg = `You are self-prompting with the goal: '${this.prompt}'.${done}${plan_txt} Your next response MUST contain a command with this syntax: !commandName. Respond:`;
+            const inventory_txt = this.inventoryLine();
+            const msg = `You are self-prompting with the goal: '${this.prompt}'.${done}${plan_txt}${inventory_txt} Your next response MUST contain a command with this syntax: !commandName. Respond:`;
             
             // One turn must not be able to end the loop permanently. Whatever
             // it is waiting on, the goal loop is the only thing that makes the

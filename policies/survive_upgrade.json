@@ -789,7 +789,7 @@
       },
       {
         "name": "arm_yourself_from_the_chest",
-        "description": "Arm yourself if no weapon and a chest is nearby (you are at base) and the area is clear: self-source wood from a nearby tree (collect log) so the craft cannot starve, craft a wooden sword, and equip it. The 2026-08-24 24h audit proved the mod chest GUI never opens ('The chest never opened' 778x), so the stored-withdraw path only churns the bot unarmed in the open for ~30s/rule and was removed; the chest-nearby gate is kept as the at-base trigger. The hostile_nearby 24 gate (2026-08-24) prevents starting the blocking collect while a raider or zombie is in range -- the 79x GoalChanged pre-emption proved arming mid-raid is the exact death pattern. The water gate prevents the collect goto from pathing through water where keep_out_of_water would interrupt it (61x).",
+        "description": "Arm yourself if no weapon and a chest is nearby (you are at base) and the area is clear: self-source wood from a nearby tree (collect log) so the craft cannot starve, craft a wooden sword, and equip it. The 2026-08-24 24h audit proved the mod chest GUI never opens ('The chest never opened' 778x), so the stored-withdraw path only churns the bot unarmed in the open for ~30s/rule and was removed; the chest-nearby gate is kept as the at-base trigger. The hostile_nearby 24 gate (2026-08-24) prevents starting the blocking collect while a raider or zombie is in range -- the 79x GoalChanged pre-emption proved arming mid-raid is the exact death pattern. The water gate prevents the collect goto from pathing through water where keep_out_of_water would interrupt it (61x). (2026-08-25: water#8 gate removed -- the 7h base soak proved the rule fired 0 because he lives in a base water pocket, so not-water#8 was permanently false at the one place arming should happen; drowning mid-arming is already covered by surface_when_drowning, air:12 interrupts:all, so the collect goto either completes in shallow water or is nudged out by keep_out_of_water and retries on the 60s cooldown.)",
         "when": {
           "all": [
             {
@@ -808,13 +808,6 @@
               "not": {
                 "cond": "hostile_nearby",
                 "range": 24
-              }
-            },
-            {
-              "not": {
-                "cond": "block_nearby",
-                "name": "water",
-                "range": 8
               }
             }
           ]
@@ -2894,7 +2887,7 @@
       },
       {
         "name": "arm_gate_closed",
-        "description": "TELEMETRY (2026-08-25 P5). Fires when every arming precondition holds EXCEPT the 24-block hostile gate: no weapon + chest within 32 + hostile within 24. Complementary to arm_yourself_from_the_chest (same preconds, hostile gate flipped), so exactly one of the two can fire per tick and they do not compete. Count of 'EVT rule:fire:arm_gate_closed' over 24h vs the arm rule's own fires decides whether the hostile gate is the binding constraint on arming (high count) or the collect/craft/equip chain is broken (low count + arm stuck/unresolved).",
+        "description": "TELEMETRY (2026-08-25 P5). Fires when every arming precondition holds EXCEPT the 24-block hostile gate: no weapon + chest within 32 + hostile within 24. Complementary to arm_yourself_from_the_chest (same preconds, hostile gate flipped), so exactly one of the two can fire per tick and they do not compete. Count of 'EVT rule:fire:arm_gate_closed' over 24h vs the arm rule's own fires decides whether the hostile gate is the binding constraint on arming (high count) or the collect/craft/equip chain is broken (low count + arm stuck/unresolved). (2026-08-25: water#8 gate removed to mirror the arm rule exactly -- see arm_yourself_from_the_chest; the mirror must keep the same preconds, hostile gate flipped, or the 24h readout is invalid.)",
         "when": {
           "all": [
             {
@@ -2912,13 +2905,6 @@
             {
               "cond": "hostile_nearby",
               "range": 24
-            },
-            {
-              "not": {
-                "cond": "block_nearby",
-                "name": "water",
-                "range": 8
-              }
             }
           ]
         },
