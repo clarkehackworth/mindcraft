@@ -88,6 +88,10 @@ recovery.
 
 ## 5. Regen (make policy changes take effect)
 
+> What a policy *is* — rules, bases vs attributes, the `active`/`self` layers —
+> is in [README: Behavior Policies](README.md#behavior-policies) and
+> [ARCHITECTURE.md §3.7](ARCHITECTURE.md#37-modes-and-policies--srcagentmodesjs-srcagentbehaviorpolicyjs).
+
 Regen is **the** way policy changes go live. `tools/live_test.sh regen` wraps
 the whole ceremony — it sends `!stop`, **locks** the agent (quiesce), runs the
 regen, unlocks — so **always use it, not raw `drive`.**

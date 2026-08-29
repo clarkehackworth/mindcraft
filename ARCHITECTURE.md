@@ -257,13 +257,24 @@ mineflayer tick, independent of the LLM.
 Modes declare `interrupts` and are paused/unpaused around actions so a reflex
 doesn't fight a deliberate plan. `!setMode` toggles them at runtime.
 
-**Policies** are a declarative, user-authored layer on top of modes: a list of
-`{condition, action}` rules validated against the `CONDITIONS` and `ACTIONS`
-tables in `policy.js`. Conditions must be fast and side-effect free
-(`hostile_nearby`, `health_below`, `has_item`, `at_position`, `is_night`,
-`is_idle`, …). A policy can be set by the model (`!policy`), edited in the web
-UI (`set-policy`), and persists per agent on disk. Installing one calls
-`modes.installPolicy(...)` so it is evaluated on the same tick loop.
+**Policies** are declarative rules ticked by the same arbiter as the modes: a
+`{when, do, interrupts, cooldown, pinned}` tree validated against the
+`CONDITIONS` and `ACTIONS` tables in `policy.js`. Conditions must be fast and
+side-effect free (`hostile_nearby`, `health_below`, `has_item`, `at_position`,
+`is_night`, `is_idle`, …). Installing one calls `modes.installPolicy(...)`.
+
+The running policy is composed from two layers — `active` (what a person set)
+and `self` (the agent's own `!policy` rules) — and persists per agent in
+`bots/<name>/policy.json`. Reusable profiles live in `policies/`, either a
+`base` stance or an `attribute` layered onto one; `generatePolicy` merges a base
+with its attributes into the `active` layer (the `generate-policy` socket call,
+"regen"). The LLM only ever *compiles* a policy; nothing in the tick loop calls
+a model.
+
+→ **[README: Behavior Policies](README.md#behavior-policies)** for the authoring
+model (rules, bases and attributes, layer precedence, commands), and
+**[RUNBOOK §5](RUNBOOK.md#5-regen-make-policy-changes-take-effect)** for how a
+regen is actually run against the live agent.
 
 ### 3.8 Self-prompting — `src/agent/self_prompter.js`
 
@@ -443,7 +454,8 @@ bots/<name>/
   histories/*.json      full timestamped conversation logs
   action-code/*.js      generated !newAction code
   screenshots/*.png     vision captures
-  policy.json           saved behavior policy
+  policy.json           saved behavior policy (both layers + compose recipe)
+  policy_archive.txt    self-layer instructions evicted past the 8 cap
 ```
 
 `--load_memory` on restart restores `memory.json`, which is what makes an

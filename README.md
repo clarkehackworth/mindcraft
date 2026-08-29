@@ -222,6 +222,128 @@ Voice synthesis models are used to narrate bot responses and specified with `spe
 By default, the program will use the profiles specified in `settings.js`. You can specify one or more agent profiles using the `--profiles` argument: `node main.js --profiles ./profiles/andy.json ./profiles/jill.json`
 
 
+# Behavior Policies
+
+*See also: [ARCHITECTURE.md §3.7](ARCHITECTURE.md#37-modes-and-policies--srcagentmodesjs-srcagentbehaviorpolicyjs)
+for where this sits in the agent, and [RUNBOOK.md §5](RUNBOOK.md#5-regen-make-policy-changes-take-effect)
+for running a regen against a live bot.*
+
+Chatting with an LLM every time something happens is slow and expensive. A
+**policy** is standing behavior compiled *once* into rules that run every tick
+with no model in the loop: the LLM is a compiler here, not a runtime.
+
+## Rules
+
+A rule is a tiny behavior tree — a condition gating a list of actions:
+
+```json
+{
+  "name": "flee_when_hurt",
+  "description": "run from a fight that is going badly",
+  "when": {"all": [{"cond": "health_below", "percent": 40},
+                   {"cond": "hostile_nearby", "range": 12}]},
+  "do": [{"act": "flee", "distance": 24}],
+  "interrupts": "all",
+  "cooldown": 10,
+  "pinned": true
+}
+```
+
+- `when` is built from the `CONDITIONS` table in `src/agent/behavior/policy.js`
+  (`hostile_nearby`, `health_below`, `hunger_below`, `is_night`, `drowning`,
+  `has_item`, `block_nearby`, `is_idle`, …), combined with `all` / `any` / `not`.
+  Conditions are polled, so they must be fast and side-effect free.
+- `do` is a list from the `ACTIONS` table (`flee`, `goto`, `stay`, `consume`,
+  `equip_weapon`, `dig_in`, `collect`, `craft`, `deposit`, `set_mode`,
+  `prompt_self`, …), run in order.
+- `interrupts: "all"` makes the rule a reflex — it cancels whatever the agent is
+  doing. `"idle"` means it only fires when the agent has nothing else to do.
+- `pinned: true` lifts a rule above every unpinned rule from any layer. It is
+  for rules that prevent death, only.
+
+Rules are ticked by the same arbiter as the built-in **modes** (`modes.js`:
+`self_preservation`, `cowardice`, `hunting`, `torch_placing`, …). A policy can
+also flip modes on or off through its `modes` object, so a "never fight" policy
+can turn `self_defense` off rather than fighting it rule-by-rule.
+
+Anything written into a policy is validated before it installs
+(`validatePolicy`). The validator rejects the mistakes that actually bit this
+bot: an `interrupts: "all"` rule with a cooldown under 5s (nothing else ever
+finishes), a reflex whose trigger its own actions cannot clear (fires forever), a
+`stay` with no exit condition, rules gated only on `is_idle`, unknown condition
+or action names, and near-duplicate rules.
+
+## Profiles: bases and attributes
+
+Compiled policies are stored in `policies/*.json` as reusable profiles. Each has
+a `source` (the natural-language instructions), the compiled `policy`, an
+optional `goal`, and a `kind`:
+
+- **base** — a whole stance the agent can run on its own (`stayin_alive.json`,
+  `mining.json`).
+- **attribute** — something layered on top of a base ("never dig straight down").
+  An attribute may be nothing but a sentence; the merge is what turns it into
+  rules, so it does not need a compiled policy of its own.
+
+Note this is a different thing from the *bot profiles* above (`andy.json`), which
+configure models. Policy profiles live in `policies/`, model profiles in
+`profiles/`.
+
+**Regen** merges one base with any number of attributes into a single policy —
+one LLM call, in the web UI or over the MindServer socket (`generate-policy`).
+Merging is where conflicts get resolved, once, rather than being refereed on
+every tick: later attributes beat earlier ones, attributes beat the base, and
+duplicate rules collapse into one. A base with no attributes is copied
+deterministically with no LLM call at all. The recipe (`{base, attributes}`) is
+saved, so "regenerate with one more attribute" does not mean retyping it.
+
+## The two layers
+
+The running policy is composed from two layers, kept separately in
+`bots/<name>/policy.json`:
+
+| Layer | Written by | How |
+|---|---|---|
+| `active` | a person | Regen from a base + attributes, or `!policy` from chat |
+| `self` | the agent | its own `!policy` calls, capped at 8 standing instructions |
+
+Composition order, highest priority first: **pinned rules**, then `self`, then
+`active`. So the agent's own rules win an ordinary conflict — it is the one
+watching itself die — but a person can still outrank it by pinning. The agent
+can only ever write to and clear `self`, never the layer a person set. Past the
+8-instruction cap the oldest is evicted to `bots/<name>/policy_archive.txt`
+rather than deleted.
+
+Adding an instruction recompiles that whole layer from its accumulated source in
+one call, with the *other* layer's rules shown to the compiler so it stops
+re-deriving what is already installed.
+
+The policy `goal` — the objective the self-prompting loop pursues — is taken
+from the `active` layer only. An agent that can rewrite its own objective will.
+
+Rules only react; they fire when the world pokes them. The goal is the half that
+goes looking. A policy of nothing but rules leaves the agent standing in an
+empty field with every gathering rule waiting for a resource within 24 blocks.
+
+## Commands
+
+| Command | Effect |
+|---|---|
+| `!policy(instructions)` | Add a standing instruction and recompile its layer |
+| `!clearPolicy(layer)` | Clear `active`, `self`, or `all` |
+| `!listProfiles()` | List the shared policy library |
+| `!loadProfile(name)` | Load a base profile into the `active` layer |
+| `!saveProfile(name, kind)` | Save the running policy to the library |
+| `!updateProfile(name, instructions)` | Extend a library profile (does not change the running policy) |
+
+A policy can be **locked** from the web UI, which blocks every change until it is
+unlocked — used to quiesce an agent while regenerating it.
+
+Runtime telemetry closes the loop: a rule that fires repeatedly without making
+progress tells the agent so, by name and with its JSON, and the agent can revise
+or drop it with `!policy`.
+
+
 # Contributing
 
 We welcome contributions to the project! We are generally less responsive to github issues, and more responsive to pull requests. Join the [discord](https://discord.gg/mp73p35dzC) for more active support and direction.
