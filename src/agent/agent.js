@@ -1149,6 +1149,7 @@ export class Agent {
                     const seen = this.bot._air_history ?? [];
                     console.log(`EVT death:drown:trace:samples${seen.length}` +
                         `:wet${seen.filter(s => s.submerged).length}` +
+                        `:inwater${seen.filter(s => s.inwater).length}` +
                         `:oxy=${seen.map(s => s.oxygen).join(',') || 'none'}`);
                 }
                 try { sendOutputToServer(this.name, evt); } catch (_) {}

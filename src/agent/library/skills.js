@@ -2578,6 +2578,30 @@ export function isBreathing(bot) {
     // stick means `oxygen >= 20` can be false forever on a bot standing in a
     // field, and surface() would then never take its early return.
     if (headSubmerged(bot)) return false;
+    // The head block says air, but the block has a known false negative: a bot
+    // floating at the waterline with its head just above the surface, or in an
+    // unloaded chunk, reads 'air' while the body is still losing air. That is
+    // the fatal trace `samples14: wet0: oxy=0,...` -- the head dry on every
+    // sample, the bar empty on every sample, and a real drowning. The physics
+    // engine does not have that failure: it says the body is in water whether
+    // or not the chunk loaded. So when it AFFIRMATIVELY says isInWater and the
+    // head block says air, the block is the liar and the bar decides.
+    // On dry land (isInWater false or absent) the bar is NOT consulted at all:
+    // it was measured stuck at 0 for the rest of a session after one drowning,
+    // and that is exactly the regression this function exists to avoid.
+    if (bot.entity?.isInWater === true) {
+        const oxygen = bot.oxygenLevel;
+        // No bar to read (server never sent one): fall back to the block answer
+        // -- the head says air, so answer breathing.
+        if (oxygen === undefined) return true;
+        // A negative reading is a broken packet, not an empty bar: no
+        // information, fall back to the block answer.
+        if (oxygen < 0) return true;
+        // Low now = still losing air = not breathing. Refilled (above the
+        // 'low air' line) = breathing. Same 12 line lowAirPersists uses, so the
+        // two channels agree on what counts as an emergency.
+        return oxygen > 12;
+    }
     return true;
 }
 
@@ -2609,7 +2633,14 @@ export function recordAir(bot, window_ms=AIR_WINDOW_MS) {
         // submerged rides along in the same sample so the two channels share one
         // clock. A separate history would drift, and drift is what made the
         // 4-second window mean two different things to two callers once already.
-        seen.push({ t: now, oxygen: bot.oxygenLevel, submerged: headSubmerged(bot) });
+        // inwater rides along too: whether the physics engine AFFIRMATIVELY
+        // said the body was in water at that moment. It is the split the
+        // surface-drown veto below needs -- a head-block reading of air is a
+        // liar when the body is provably in water, and an honest veto when it
+        // is not. Storing it (rather than re-deriving it at read time) means the
+        // death trace can show which side each sample was on.
+        seen.push({ t: now, oxygen: bot.oxygenLevel, submerged: headSubmerged(bot),
+            inwater: bot.entity?.isInWater === true });
     while (seen.length && now - seen[0].t > window_ms) seen.shift();
 }
 
@@ -2657,7 +2688,20 @@ export function lowAirPersists(bot, air=12, min_samples=AIR_MIN_SAMPLES) {
     // wet=0/32 is the whole argument. Thirty-two consecutive samples say the
     // head is in air while the number says empty; one of them is wrong, and the
     // one that tracked the real drowning at 12/12 is not it.
-    if (!headSubmerged(bot)) return false;
+    //
+    // The veto is absolute over the head BLOCK, but the block has a known
+    // false negative: an unloaded chunk, or a bot floating at the waterline
+    // with its head just above the surface, reads 'air' while the body is
+    // still losing air. That is the fatal trace `samples14: wet0: oxy=0,...` --
+    // fourteen samples, the head block dry on all of them, the bar empty on all
+    // of them, and a real drowning death. The physics engine's own entity
+    // status does not have that failure: it says the body is in water whether
+    // or not the chunk loaded. So the veto is lifted, and only lifted, when the
+    // engine AFFIRMATIVELY says isInWater === true. Absent or false keeps the
+    // veto exactly as before -- that is the dry-land phantom case above, and it
+    // must stay vetoed.
+    const inWater = bot.entity?.isInWater === true;
+    if (!inWater && !headSubmerged(bot)) return false;
     const oxygen = bot.oxygenLevel;
     // No air bar to consult -- the honest state for a bot that has not been
     // losing air, since nothing is sent while the value holds steady. The head
