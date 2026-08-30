@@ -3022,7 +3022,11 @@ export async function avoidEnemies(bot, distance=16, timeout_ms=FLEE_TIMEOUT_MS)
         if (bot.interrupt_code) {
             break;
         }
-        if (enemy && bot.entity.position.distanceTo(enemy.position) < 3) {
+        // A boss is not worth trading a hit with while running: the whole point
+        // of fleeing it is to get away, so skip the reflex swing when the thing
+        // in the bot's face is boss-tier. It reads as an animal, so isHostile is
+        // blind to it and this is the one swing a boss could still collect.
+        if (enemy && bot.entity.position.distanceTo(enemy.position) < 3 && !mc.isBossTier(enemy)) {
             await attackEntity(bot, enemy, false);
         }
     }

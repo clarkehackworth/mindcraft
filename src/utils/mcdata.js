@@ -880,11 +880,38 @@ export function dropsFood(loot, foods) {
     return (loot.drops ?? []).some(d => !!foods?.[d.item]);
 }
 
+// Boss-tier mobs: the one thing that can kill the bot at ANY gear level. Mod
+// packs file their boss-class mounts as ordinary animals -- mythicmounts:dragon
+// is category 'creature' -> registry type 'animal' -- so isHostile is blind to
+// it and the 'animal' check in isHuntable would happily pass it: without a boss
+// gate the hunting mode charges a dragon for a meal. The only server-sent
+// "this is a boss" signal is collision size: the dumper records width/height and
+// mineflayer copies them onto every entity. Real livestock tops out at a llama
+// (1.87); the medium mounts (griffon 2.31, gecko 2.38, direwolf 2.69) and the
+// enderman (2.9) sit at 2.0-2.9 -- a threat when weak but survivable with gear;
+// everything at/above 3.0 is boss-class (dragon 3.69, archelon 3.94,
+// adventurez dragon 4.8, ender_dragon 16) and the answer is to run, not fight.
+// Size, not a name list: a name list is the anti-pattern this file documents
+// twice (RANGED_HOSTILE, FIGHTS_BACK).
+const BOSS_TIER_MIN_SIZE = 3.0;
+export function isBossTier(mob) {
+    if (!mob) return false;
+    const w = Number(mob.width) || 0;
+    const h = Number(mob.height) || 0;
+    if (!w && !h) return false; // no size (degenerate/unknown) -> not a boss
+    return Math.max(w, h) >= BOSS_TIER_MIN_SIZE;
+}
+
 export function isHuntable(mob) {
     if (!mob || !mob.name) return false;
     if (mob.metadata?.[16]) return false; // metadata 16 is baby
     const name = mob.name.toLowerCase();
     if (FIGHTS_BACK.some(f => name.includes(f))) return false;
+    // A boss reads as an animal but is not dinner: without this the hunting
+    // mode would charge a dragon for a meal and trade a hit with something that
+    // can kill the bot at any gear level. Size-based, so it catches every mod
+    // boss the pack ships, not just the ones named here.
+    if (isBossTier(mob)) return false;
     // This was a hardcoded list of seven vanilla animals -- chicken, cow, llama,
     // mooshroom, pig, rabbit, sheep -- and none of them live in a Frozen Pine
     // Taiga. Andy sat there at 13/60 health with one crafting table to his name,

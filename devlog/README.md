@@ -43,6 +43,7 @@ below started as "the bot died again" on that server.
 | 2026-08-25 | [Arming: remove the water gate + inject inventory ground truth](2026-08-25-arming-water-gate-and-inventory-truth.md) | shipped |
 | 2026-08-29 | [Auth-race fix, spawn pocket solidified, stuck-command deadlock](2026-08-29-p8-p9-p10-auth-pocket-deadlock.md) | shipped |
 | 2026-08-30 | [Surface-drown: the wet-sensor veto now trusts the air bar in water](2026-08-30-surface-drown-veto.md) | shipped |
+| 2026-08-30 | [Boss-tier mobs are not dinner, and you flee them](2026-08-30-boss-tier-flee.md) | shipped |
 
 `ARCHITECTURE.md` at the repo root was written alongside the behavior policy
 layer — the arbiter needed a written model of where it sits before it could be
