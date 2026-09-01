@@ -485,6 +485,24 @@ export const ACTIONS = {
         desc: 'Climb up out of a hole or cave by pillaring and digging upward. This is the one for being stuck underground; go_to_surface is for drowning and does nothing when the bot has air.',
         fn: async (agent, a) => await skills.climbOut(agent.bot, a.blocks ?? 8)
     },
+    surface_then_climb: {
+        cost: 'blocking', clears: ['drowning', 'at_position', 'block_nearby', 'y_below', 'can_dig_down'],
+        args: { blocks: 'number (default 8), how many blocks the climb_out fallback gains at most' },
+        // go_to_surface (skills.surface) is the DROWNING reflex: hold jump, dig the
+        // ceiling, one step, must stay fast. It now correctly returns false in an
+        // enclosed pocket with no path up (devlog #7), but a rule that only did
+        // go_to_surface then just logged the failure and moved on -- the bot sat
+        // where it was, still underground at night. surface_then_climb is the
+        // escalation for that case: try surface, and only when it reports no path
+        // up, pillar-and-dig upward. A vanilla player cannot teleport itself, so
+        // the self-dig-out IS the tp-rescue. Kept as one action (not a do-chain)
+        // so it does not depend on how a false step interacts with the next one.
+        desc: 'Escape a hole the slow way: surface() first, and if it cannot reach air (an enclosed pocket, no path up) escalate to pillar-and-dig upward. The in-bot analog of a tp-rescue -- a vanilla player cannot teleport itself, so the fallback is the self-dig-out. Use for the night-found-you-underground case, not the fast drowning reflex (that is go_to_surface, kept a single step).',
+        fn: async (agent, a) => {
+            if (await skills.surface(agent.bot)) return true;
+            return await skills.climbOut(agent.bot, a.blocks ?? 8);
+        }
+    },
     search_block: {
         cost: 'blocking', clears: ['block_nearby', 'at_position', 'at_death_position'],
         args: { type: 'string block name', range: 'number (default 64, max 512)' },

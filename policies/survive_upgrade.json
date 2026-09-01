@@ -102,7 +102,7 @@
       },
       {
         "name": "surface_when_night_finds_you_underground",
-        "description": "Climb out of the deep when it is night and you are underground.",
+        "description": "Climb out of the deep when it is night and you are underground. Surface() first; if it cannot reach air (enclosed pocket, no path up) escalate to pillar-and-dig upward.",
         "when": {
           "all": [
             {
@@ -121,7 +121,8 @@
         },
         "do": [
           {
-            "act": "go_to_surface"
+            "act": "surface_then_climb",
+            "blocks": 8
           }
         ],
         "interrupts": "all",
