@@ -4,6 +4,7 @@ export { isModdedName };
 import { createBot } from 'mineflayer';
 import prismarine_items from 'prismarine-item';
 import { pathfinder } from 'mineflayer-pathfinder';
+import { installWaterAvoidance } from './water_aware_path.js';
 import { plugin as pvp } from 'mineflayer-pvp';
 import { plugin as collectblock } from 'mineflayer-collectblock';
 import { plugin as autoEat } from 'mineflayer-auto-eat';
@@ -750,6 +751,23 @@ export function tameMovements(bot, scanDoors = null) {
     if (originalGetPathTo) bot.pathfinder.getPathTo = function (movements, goal, ...rest) {
         if (!isGoal(goal)) throw new Error(notAGoal('getPathTo'));
         return originalGetPathTo(movements, goal, ...rest);
+    };
+
+    // Water-aware pathing: the pathfinder treats water as a free block, which is
+    // how Andy kept getting sent into deep pools to reach a goal (or to flee) and
+    // then stuck bobbing with no dry landing in range and no blocks to pillar. Wrap
+    // getPathTo again (outermost) so the soft, state-aware water cost is installed
+    // on the Movements every path computes over. installWaterAvoidance is
+    // idempotent and self-heals on a fresh Movements after a reconnect. The cost
+    // hook is itself defensive (see water_aware_path.js), but the install is
+    // wrapped anyway -- this runs in the pathfinder, where nothing catches.
+    const guardedGetPathTo = bot.pathfinder.getPathTo;
+    if (guardedGetPathTo) bot.pathfinder.getPathTo = function (movements, goal, ...rest) {
+        if (movements) {
+            try { installWaterAvoidance(movements, bot); }
+            catch { /* never let cost-install break pathfinding */ }
+        }
+        return guardedGetPathTo(movements, goal, ...rest);
     };
 
     // setGoal is the worse half of the same hazard: goto at least returns a

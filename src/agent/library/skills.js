@@ -2747,11 +2747,25 @@ export async function surface(bot, timeout_seconds=20) {
     // bot that was already breathing reads as a phantom detection, and it sent
     // me chasing one twice: the readings that triggered this were real, the bot
     // just bobbed up on its own before the action got its turn to run.
+    // Breathing AND out of water: nothing to surface from. Breathing but still
+    // in water (head above the waterline in an enclosed pocket) is NOT surfaced
+    // -- the body is submerged and there is no path out. Fall through to the
+    // swim/dig loop, which can punch through a ceiling.
     if (isBreathing(bot)) {
-        log(bot, 'Already breathing by the time I got here; nothing to surface from.');
-        return true;
+        if (bot.entity?.isInWater !== true) {
+            log(bot, 'Already breathing by the time I got here; nothing to surface from.');
+            return true;
+        }
+        log(bot, 'Breathing but still in water -- enclosed pocket, not surfaced.');
     }
     let blocked_by = null, could_dig = false, dig_error = null;
+    // Tracked separately from blocked_by: the bot's head cleared the waterline
+    // (oxygen refilled, isBreathing true) but the body is still submerged. In
+    // open water the bot swims to shore and isInWater clears on its own; in an
+    // enclosed pocket it never does, and the old code reported "Surfaced with
+    // 20/20 air left" while the bot sat at y=50 in a cave. The failure message
+    // needs to name this case so the log stops lying.
+    let ever_breathed_in_water = false;
     // setGoal(null), not just stop(). stop() is cooperative -- it raises a flag
     // that lands when the bot reaches its next node, and a bot pinned underwater
     // may never reach one, so the goal outlives the emergency and every watchdog
@@ -2772,8 +2786,16 @@ export async function surface(bot, timeout_seconds=20) {
             // died in a kelp forest. Oxygen is the server's own answer to the
             // only question being asked, and it costs nothing to read.
             if (isBreathing(bot)) {
-                log(bot, `Surfaced with ${bot.oxygenLevel}/20 air left.`);
-                return true;
+                // Head above the waterline, but body still submerged: enclosed
+                // pocket. The old code logged "Surfaced with 20/20 air left" and
+                // returned true while the bot sat at y=50 in a cave. Track it
+                // and keep trying -- the bot might dig through a ceiling.
+                if (bot.entity?.isInWater === true) {
+                    ever_breathed_in_water = true;
+                } else {
+                    log(bot, `Surfaced with ${bot.oxygenLevel}/20 air left.`);
+                    return true;
+                }
             }
             // Pinned under a solid ceiling: swimming up does nothing, dig it out.
             const ceiling = bot.blockAt(bot.entity.position.offset(0, eye + 1, 0));
@@ -2808,7 +2830,9 @@ export async function surface(bot, timeout_seconds=20) {
     // failures it was -- pinned under something undiggable, or swimming up
     // through open water that never ends. Those need opposite fixes.
     let why;
-    if (!blocked_by) {
+    if (ever_breathed_in_water && !blocked_by) {
+        why = 'head above water but body still submerged -- enclosed pocket, no path up';
+    } else if (!blocked_by) {
         why = 'nothing overhead to break; swimming up did not reach air';
     } else if (!could_dig) {
         why = `pinned under ${blocked_by}, and nothing in hand can break it`;
@@ -3055,6 +3079,9 @@ export async function stay(bot, seconds=30, until=null, until_desc='') {
     bot.modes.pause('hunting');
     bot.modes.pause('torch_placing');
     bot.modes.pause('item_collecting');
+    // Whether a real condition was handed in, captured BEFORE the night-derive
+    // below (which synthesises one for the no-condition night-wait case).
+    const explicitCondition = !!until;
     // ponytail: with no condition given, the only reason to park a bot
     // indefinitely is to wait out the night, so -1 means "until morning" rather
     // than "until heat death". Andy parked at dusk with !stay(-1) and was still
@@ -3063,10 +3090,34 @@ export async function stay(bot, seconds=30, until=null, until_desc='') {
         until = () => !world.isNight(bot);
         until_desc = 'day broke';
     }
+    // devlog #7: an explicit "until" with no time limit that never becomes true
+    // parks the bot forever -- the do never returns, so the rule's own backoff
+    // never escalates and every other rule stays blocked. (Seen live: a
+    // stay-until-the-hostile-gone behind a ghost in an enclosed pocket re-fired
+    // ten times without un-parking him.) Cap an explicit indefinite wait to one
+    // Minecraft day (1200 s = 24000 ticks at 20 tps) so the bot un-parks and the
+    // rule's existing unresolved/backoff machinery (policy.js) can escalate. A
+    // night-wait (no condition) is intentionally left unbounded: "day broke" is
+    // real and reachable, so it resolves on its own.
     // A condition already true when we arrive means there is nothing to wait for.
     if (until && until()) {
         log(bot, `Not staying, ${until_desc || 'the condition'} already.`);
         return true;
+    }
+    // devlog #7: an explicit "until" with no time limit that never becomes true
+    // parks the bot forever -- the do never returns, so the rule's own backoff
+    // never escalates and every other rule stays blocked. (Seen live: a
+    // stay-until-the-hostile-gone behind a ghost in an enclosed pocket re-fired
+    // ten times without un-parking him.) Cap an explicit indefinite wait to one
+    // Minecraft day (1200 s = 24000 ticks at 20 tps) so the bot un-parks and the
+    // rule's existing unresolved/backoff machinery (policy.js) can escalate. A
+    // night-wait (no condition) is intentionally left unbounded: "day broke" is
+    // real and reachable, so it resolves on its own. (Checked after the
+    // already-true return above so a met condition never logs a spurious bound.)
+    if (explicitCondition && seconds === -1) {
+        seconds = 1200;
+        log(bot, `Bounded an indefinite wait for ${until_desc || 'the condition'} to one day (1200s).`);
+        console.log(`EVT stay:capped`);
     }
     let start = Date.now();
     while (!bot.interrupt_code && (seconds === -1 || Date.now() - start < seconds*1000)) {
@@ -3598,10 +3649,14 @@ function isFreeSpace(block) {
     return !!block && block.boundingBox === 'empty' && !LIQUIDS.includes(block.name);
 }
 
-function nearestDryLanding(bot) {
+// Collect the nearest dry standing spots, closest first, so a blocked first
+// choice does not end the search. A capped dig-in foxhole, a cave ledge, and
+// the far shore of a pool all pass the same two-block scan; trying them in
+// order of distance is the difference between escaping and bobbing.
+const ESCAPE_CANDIDATES = 3;
+function dryLandings(bot) {
     const feet = bot.entity.position.floored();
-    let best = null;
-    let best_dist = Infinity;
+    const found = [];
     for (let dx = -ESCAPE_RADIUS; dx <= ESCAPE_RADIUS; dx++) {
         for (let dz = -ESCAPE_RADIUS; dz <= ESCAPE_RADIUS; dz++) {
             for (let dy = -2; dy <= 4; dy++) {
@@ -3609,46 +3664,57 @@ function nearestDryLanding(bot) {
                 if (bot.blockAt(p.offset(0, -1, 0))?.boundingBox !== 'block') continue;
                 if (!isFreeSpace(bot.blockAt(p))) continue;
                 if (!isFreeSpace(bot.blockAt(p.offset(0, 1, 0)))) continue;
-                const dist = p.distanceTo(feet);
-                if (dist < best_dist) { best_dist = dist; best = p; }
+                found.push({ p, d: p.distanceTo(feet) });
             }
         }
     }
-    return best;
+    found.sort((a, b) => a.d - b.d);
+    return found.slice(0, ESCAPE_CANDIDATES).map(c => c.p);
 }
 
 export async function escapeLiquid(bot) {
     /**
-     * Swim to the nearest dry standing spot. Pathfinder cannot do this.
+     * Swim to a dry standing spot, trying several candidates if the nearest
+     * is blocked. Pathfinder cannot do this.
      * @param {MinecraftBot} bot, reference to the minecraft bot.
      * @returns {Promise<boolean>} true if the bot reached dry land, false if it
      * was never in liquid or could not get clear.
      **/
     if (!isInLiquid(bot)) return false;
-    const target = nearestDryLanding(bot);
-    if (!target) {
-        log(bot, `You are in liquid and there is no dry ground within ${ESCAPE_RADIUS} blocks. Break the blocks around you or place blocks to climb out.`);
+    const candidates = dryLandings(bot);
+    if (candidates.length === 0) {
+        const at = bot.entity.position.floored();
+        log(bot, `TRAPPED in liquid at ${at}: no dry ground within ${ESCAPE_RADIUS} blocks.`);
+        console.log(`EVT selfpres:trapped:liquid:${at.x},${at.y},${at.z}`);
         return false;
     }
-    const aim = target.offset(0.5, 0, 0.5);
-    const deadline = Date.now() + ESCAPE_TIMEOUT_MS;
+    const perAttempt = Math.floor(ESCAPE_TIMEOUT_MS / candidates.length);
     bot.setControlState('jump', true);  // swim up instead of sinking
     bot.setControlState('forward', true);
     try {
-        while (Date.now() < deadline && !bot.interrupt_code) {
-            await bot.lookAt(aim, true);
-            if (!isInLiquid(bot) && bot.entity.position.distanceTo(aim) < 1.5) break;
-            await new Promise(resolve => setTimeout(resolve, 200));
+        for (const target of candidates) {
+            if (!isInLiquid(bot)) break;
+            const aim = target.offset(0.5, 0, 0.5);
+            const deadline = Date.now() + perAttempt;
+            while (Date.now() < deadline && !bot.interrupt_code) {
+                await bot.lookAt(aim, true);
+                if (!isInLiquid(bot) && bot.entity.position.distanceTo(aim) < 1.5) break;
+                await new Promise(resolve => setTimeout(resolve, 200));
+            }
+            if (!isInLiquid(bot)) {
+                log(bot, `Swam out of the liquid onto ${target}.`);
+                return true;
+            }
         }
     } finally {
         bot.setControlState('jump', false);
         bot.setControlState('forward', false);
     }
-    const escaped = !isInLiquid(bot);
-    log(bot, escaped
-        ? `Swam out of the liquid onto ${target}.`
-        : `Could not swim clear of the liquid; still at ${bot.entity.position.floored()}.`);
-    return escaped;
+    if (!isInLiquid(bot)) return true;
+    const at = bot.entity.position.floored();
+    log(bot, `TRAPPED in liquid at ${at}: tried ${candidates.length} landing(s), none worked.`);
+    console.log(`EVT selfpres:trapped:liquid:${at.x},${at.y},${at.z}`);
+    return false;
 }
 
 // Things that sit on top of the ground rather than being it. Taking the first

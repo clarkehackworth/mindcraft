@@ -135,3 +135,22 @@ assert.match(await untilCmd.perform(badCond, 'nonsense', 10) ?? '', /Bad conditi
     'an unparseable condition is reported back');
 
 console.log('ok: an unwakeable park is refused only where nothing could wake it');
+
+// --- devlog #7: an explicit indefinite wait that can never resolve is capped ---
+// Before the cap, !stay(-1, () => false) parked the bot forever (the do never
+// returns), so the rule's own backoff never escalated. The bound is applied the
+// moment we commit to waiting -- observable as the 'Bounded' log without waiting
+// the full 1200 s -- and a night-wait (no condition) must stay unbounded.
+const capped = fakeBot(1000);
+const cappedStay = skills.stay(capped, -1, () => false, 'a ghost that never leaves');
+setTimeout(() => { capped.interrupt_code = true; }, 600);
+assert.equal(await cappedStay, true);
+assert.match(capped.output, /Bounded an indefinite wait/, 'an explicit indefinite wait is capped to one day');
+
+const nightUncapped = fakeBot(14000);
+const nightUncappedStay = skills.stay(nightUncapped, -1);
+setTimeout(() => { nightUncapped.time.timeOfDay = 1000; }, 600);
+assert.equal(await nightUncappedStay, true);
+assert.doesNotMatch(nightUncapped.output, /Bounded an indefinite wait/, 'a night wait (no condition) is not capped');
+
+console.log('ok: an explicit indefinite stay(-1, cond) is capped to one day; a night wait is not');

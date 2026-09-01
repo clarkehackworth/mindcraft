@@ -125,3 +125,53 @@ await skills.surface(open, 0.3);
 assert.match(open.output, /nothing overhead to break/, 'open water is the other failure');
 
 console.log('ok: a failed surface says which failure it was');
+
+// Andy sat at (-8.3, 50.0, 9.7) in an enclosed water pocket at y=50. The
+// surface_when_night_finds_you_underground policy fired, isBreathing returned
+// true (head above the waterline, oxygen refilled to 20), and the log reported
+// "Surfaced with 20/20 air left" -- while the body was still submerged and the
+// bot could not get out. isBreathing answers "is the head above water?" (the
+// right question for drowning detection); surface() was using it to answer
+// "did the bot get out of the water?" (a different question). The fix guards
+// the success check with bot.entity.isInWater so the head-above-water state in
+// an enclosed pocket is not reported as a successful rescue.
+//
+// fakeBot with head='air' and oxygen=20 gives exactly that state: isBreathing
+// is true, isInWater is true. The old code returned true on the first loop
+// tick; the fix must run the full timeout and report the enclosed pocket.
+const pocket = fakeBot({ head: 'air', ceiling: 'water', oxygen: 20 });
+pocket.entity.isInWater = true;
+const pocket_start = Date.now();
+assert.equal(await skills.surface(pocket, 1), false,
+    'breathing but still in water is NOT surfaced -- the body is submerged');
+assert.ok(Date.now() - pocket_start >= 900,
+    'it keeps trying for the full timeout instead of returning early');
+assert.match(pocket.output, /enclosed pocket/, 'the failure names the enclosed pocket');
+assert.match(pocket.output, /Could not reach the surface/, 'still a failed surface, not a success');
+assert.doesNotMatch(pocket.output, /Surfaced with/, 'the false success line is not emitted');
+
+// A bot that is breathing AND out of water (dry land) still takes the early
+// return -- the guard must not make the no-op case swim for 20 seconds.
+const dry = fakeBot({ head: 'air', ceiling: 'air', oxygen: 20 });
+const dry_start = Date.now();
+assert.equal(await skills.surface(dry), true, 'a breathing bot on dry land is trivially surfaced');
+assert.ok(Date.now() - dry_start < 200, 'the early return still fires on dry land');
+assert.match(dry.output, /nothing to surface from/i, 'and it says it did nothing');
+
+// An enclosed pocket with a diggable ceiling: the bot breathes at the
+// waterline (head above, body in), but there is stone overhead it can dig
+// through. The fix must not just time out -- it must dig the ceiling and
+// escape.
+const pocketCeiling = fakeBot({ head: 'air', ceiling: 'stone', oxygen: 20 });
+pocketCeiling.entity.isInWater = true;
+pocketCeiling.dig = async (block) => {
+    pocketCeiling.dug.push(block.name);
+    pocketCeiling.ceiling = 'air';
+    pocketCeiling.entity.isInWater = false; // dug out of the pocket
+};
+assert.equal(await skills.surface(pocketCeiling, 5), true,
+    'a pocket with a diggable ceiling is escaped by digging, not timed out');
+assert.deepEqual(pocketCeiling.dug, ['stone'], 'the stone ceiling is dug through');
+assert.match(pocketCeiling.output, /Surfaced with/, 'and the real rescue is reported once out');
+
+console.log('ok: breathing-but-still-in-water is an enclosed pocket, not a rescue');
