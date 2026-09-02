@@ -380,6 +380,39 @@ export const CONDITIONS = {
 // ---------- action leaves ----------
 // async (agent, args).  Run inside the ActionManager like any mode action.
 
+// Bounded retry for collect steps that die on transient pathfinder interrupts.
+//
+// The arm rule's collect(log, num=1) goto paths from the base water pocket.
+// keep_out_of_water (interrupts:all, 32 fires in a 7h window) or
+// self_preservation (PRIORITY_ABOVE_POLICY) changes the pathfinder goal
+// mid-walk, collectBlock's catch breaks the loop on interrupt_code, and the
+// single-iteration collect returns false. The 60s rule cooldown then pushes
+// the next retry far away, and the do-chain's craft step starves.
+//
+// This helper retries up to maxAttempts total. The discriminator:
+// after collectBlock returns false, interrupt_code SET means a transient
+// pathfinder GoalChanged (retryable — the fresh scan may find a closer tree
+// on a drier path); interrupt_code NOT SET means a genuine failure (no blocks,
+// no tools) — bail immediately. The settle delay gives the interrupter time
+// to clear before the re-scan.
+//
+// ponytail: 3 attempts total — the graveyard's ambient interrupts keep the
+// bot moving, so we cannot retry forever without masking a genuinely stuck
+// rule; the 60s cooldown handles the next real shot.
+export async function collectWithRetry(bot, collect, maxAttempts = 3, settleMs = 2000) {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        const ok = await collect();
+        if (ok) return true;
+        // Genuine failure (no blocks nearby, no tools): collectBlock returned
+        // false without an active interrupt. Retrying cannot help.
+        if (!bot.interrupt_code) return false;
+        // Transient interrupt: wait for the interrupter to settle, then the
+        // next iteration re-scans for the nearest collectable block.
+        if (attempt < maxAttempts - 1) await new Promise(r => setTimeout(r, settleMs));
+    }
+    return false;
+}
+
 export const ACTIONS = {
     flee: {
         cost: 'blocking', clears: ['hostile_nearby', 'entity_nearby', 'animal_nearby', 'player_nearby', 'at_position', 'at_death_position', 'ranged_hostile_nearby'],
@@ -523,8 +556,8 @@ export const ACTIONS = {
     collect: {
         cost: 'blocking', clears: ['has_item', 'block_nearby'],
         args: { type: 'string block name', num: 'number (default 1)' },
-        desc: 'Collect blocks of a type within 64 blocks. Family names ("log", "<x>_ore") collect any variant. If none are that close, the rule simply collects nothing -- gate it on block_nearby so it does not retry forever.',
-        fn: async (agent, a) => await skills.collectBlock(agent.bot, a.type, a.num ?? 1)
+        desc: 'Collect blocks of a type within 64 blocks. Family names ("log", "<x>_ore") collect any variant. If none are that close, the rule simply collects nothing -- gate it on block_nearby so it does not retry forever. Retries transient pathfinder interrupts (GoalChanged) up to 2 more times so a keep_out_of_water nudge or a self_preservation hit mid-walk does not abandon the whole collect.',
+        fn: async (agent, a) => await collectWithRetry(agent.bot, () => skills.collectBlock(agent.bot, a.type, a.num ?? 1))
     },
     hunt: {
         cost: 'blocking', clears: ['animal_nearby', 'has_food'],
