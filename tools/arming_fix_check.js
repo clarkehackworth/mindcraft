@@ -40,9 +40,12 @@ assert.strictEqual(arm.when.all[0].not.item, 'weapon');
 assert.strictEqual(arm.when.all[1].cond, 'block_nearby');
 assert.strictEqual(arm.when.all[1].name, 'chest');
 assert.strictEqual(arm.when.all[1].range, 32);
-// P1 gate (2026-08-24): no hostile within 24 (matches flee_ranged_raiders reach)
-assert.strictEqual(arm.when.all[2].not.cond, 'hostile_nearby');
-assert.strictEqual(arm.when.all[2].not.range, 24);
+// Threat-level gate (2026-09-01, was P1 hostile_nearby 24): bot not actively being hit in last 10s.
+// The graveyard base has permanent ambient revenants that keep hostile_nearby true forever,
+// permanently blocking the arm rule. recently_attacked uses lastDamageTime so the gate only
+// closes while the bot is actively being hit (devlog #11).
+assert.strictEqual(arm.when.all[2].not.cond, 'recently_attacked');
+assert.strictEqual(arm.when.all[2].not.seconds, 10);
 
 // arm_gate_closed (P5 telemetry, 2026-08-25): the mirror of the arm rule with the hostile
 // gate FLIPPED -- same weapon/chest preconds, hostile WITHIN 24 instead of not-within-24, and
@@ -56,8 +59,8 @@ assert.strictEqual(gate.when.all[0].not.item, 'weapon');
 assert.strictEqual(gate.when.all[1].cond, 'block_nearby');
 assert.strictEqual(gate.when.all[1].name, 'chest');
 assert.strictEqual(gate.when.all[1].range, 32);
-assert.strictEqual(gate.when.all[2].cond, 'hostile_nearby');   // FLIPPED: within, not not-within
-assert.strictEqual(gate.when.all[2].range, 24);
+assert.strictEqual(gate.when.all[2].cond, 'recently_attacked');   // FLIPPED: was hit in last 10s, not not-hit
+assert.strictEqual(gate.when.all[2].seconds, 10);
 assert.strictEqual(gate.interrupts, 'idle', 'telemetry must not disrupt the arming chain (interrupts:idle)');
 
 // the collect step is the wood source: family name, exactly enough logs for the
@@ -84,7 +87,8 @@ assert.strictEqual(craft.interrupts, 'all', 'craft must keep interrupts:all');
 
 console.log('arming_fix_check: shape assertions passed');
 console.log('  arm_yourself_from_the_chest:', arm.do.map(step).join(' -> '));
-console.log('  when-gates:', arm.when.all.map(g => g.cond ? `${g.cond}:${g.name ?? g.item ?? ''}${g.range ? '#' + g.range : ''}` : `not ${g.not.cond}:${g.not.name ?? g.not.item ?? ''}${g.not.range ? '#' + g.not.range : ''}`).join(' + '));
+const gateStr = (g) => g.cond ? `${g.cond}:${g.name ?? g.item ?? ''}${g.range ? '#' + g.range : g.seconds ? '#' + g.seconds : ''}` : `not ${g.not.cond}:${g.not.name ?? g.not.item ?? ''}${g.not.range ? '#' + g.not.range : g.not.seconds ? '#' + g.not.seconds : ''}`;
+console.log('  when-gates:', arm.when.all.map(gateStr).join(' + '));
 console.log('  craft_a_weapon:            ', craft.do.map(step).join(' -> '));
 
 // ── 3. Live tally mode (--live) ──────────────────────────────────────────

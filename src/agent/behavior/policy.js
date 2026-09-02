@@ -127,6 +127,11 @@ export const CONDITIONS = {
         desc: 'A hostile mob is within range.',
         fn: (agent, a) => !!world.getNearestEntityWhere(agent.bot, e => mc.isHostile(e), a.range ?? 16)
     },
+    recently_attacked: {
+        args: { seconds: 'number, how recent the damage must be (default 10)' },
+        desc: 'Bot took damage within the last N seconds. Threat-level signal: true only while actively being hit, unlike hostile_nearby which is true for mere presence. Use this to gate blocking actions (craft, collect) so they pause during a raid without being permanently blocked at a base with ambient hostiles.',
+        fn: (agent, a) => agent.bot.lastDamageTime > 0 && (Date.now() - agent.bot.lastDamageTime) < (a.seconds ?? 10) * 1000
+    },
     entity_nearby: {
         args: { name: 'string entity name, e.g. "zombie"', range: 'number (default 16)' },
         desc: 'An entity of the given type is within range.',
