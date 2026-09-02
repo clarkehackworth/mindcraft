@@ -19,3 +19,7 @@
 - Dependency fixes go in `patches/` via patch-package, not a fork.
 - `npm start` runs it. Deliberate shortcuts are marked with a `ponytail:`
   comment naming the ceiling.
+- Git: commit to `develop` — never to other feature branches. For our
+  purposes `develop` **is** main/stable. `origin/stable` is the upstream
+  mindcraft line (tagged v0.1.x) — never force-overwrite it; a real
+  promotion is a merge/PR decided after the observation window holds.

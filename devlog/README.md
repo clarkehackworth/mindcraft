@@ -47,6 +47,7 @@ below started as "the bot died again" on that server.
 | 2026-08-31 | [Water-aware pathing + an explicit stay(-1) cap](2026-08-31-water-aware-pathing-and-stay-cap.md) | shipped |
 | 2026-08-31 | [Surface() reports "Surfaced" while the bot is still submerged](2026-08-31-surface-enclosed-pocket-false-success.md) | shipped |
 | 2026-08-31 | [Surface() escalation: pillar-and-dig when there's no path up](2026-08-31-surface-then-climb-escalation.md) | shipped |
+| 2026-09-01 | [Arming collect num 4→1: fix the step, not the trigger](2026-09-01-arming-collect-num1.md) | shipped, watching Crafted count |
 
 `ARCHITECTURE.md` at the repo root was written alongside the behavior policy
 layer — the arbiter needed a written model of where it sits before it could be

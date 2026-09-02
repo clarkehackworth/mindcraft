@@ -22,7 +22,7 @@ const arm = byName['arm_yourself_from_the_chest'];
 assert(arm, 'rule arm_yourself_from_the_chest missing');
 assert.deepStrictEqual(
   arm.do.map(step),
-  ['collect:log#4', 'craft:wooden_sword', 'equip_weapon'],
+  ['collect:log#1', 'craft:wooden_sword', 'equip_weapon'],
   'arm do-list must be the trimmed self-sufficient chain (no dead chest-withdraw steps)'
 );
 assert.strictEqual(arm.pinned, true, 'arm must stay pinned');
@@ -60,12 +60,16 @@ assert.strictEqual(gate.when.all[2].cond, 'hostile_nearby');   // FLIPPED: withi
 assert.strictEqual(gate.when.all[2].range, 24);
 assert.strictEqual(gate.interrupts, 'idle', 'telemetry must not disrupt the arming chain (interrupts:idle)');
 
-// the collect step is the wood source: family name, enough logs for planks +
-// stick, and placed immediately before the craft so the wood is fresh in hand
+// the collect step is the wood source: family name, exactly enough logs for the
+// craft, and placed immediately before the craft so the wood is fresh in hand.
+// A wooden_sword = 2 planks (blade) + 1 stick (handle); a stick = 2 planks; so the
+// whole sword needs 4 planks = exactly 1 log (1 log -> 4 planks). num:1 is the
+// correct minimum -- num:4 was 4x the recipe and 4x the blocking collect window,
+// which is what kept getting interrupted/abandoned before the craft (devlog #10).
 const collectIdx = arm.do.findIndex(s => s.act === 'collect');
 assert.ok(collectIdx >= 0, 'arm do-list must self-source wood (collect log)');
 assert.strictEqual(arm.do[collectIdx].type, 'log', 'collect must use the log family name');
-assert.ok(arm.do[collectIdx].num >= 3, 'collect must fetch enough logs for planks + stick');
+assert.strictEqual(arm.do[collectIdx].num, 1, 'collect must fetch exactly 1 log (= 4 planks = 1 wooden_sword; more only widens the blocking interrupt window)');
 assert.strictEqual(arm.do[collectIdx + 1].act, 'craft', 'collect must immediately precede the craft');
 
 // ── 2. craft_a_weapon shape ──────────────────────────────────────────────
