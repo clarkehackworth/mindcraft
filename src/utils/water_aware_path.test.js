@@ -73,11 +73,16 @@ console.log('ok: water-aware path cost (shallow cheap, deep expensive, free to e
     assert.equal(waterCost(nbBot, justNorth), DEEP_WATER_COST, 'water just outside the box keeps the soft deep cost');
 }
 
-// 10. In-water escape beats the box: a bot already inside keeps a cheap way out.
+// 10. The escape is keyed on being INSIDE the pocket, not on isInWater.
 {
     const p = { x: -23, y: 57, z: 112, offset: (dx, dy, dz) => ({ x: -23 + dx, y: 57 + dy, z: 112 + dz }) };
-    const inBot = { entity: { isInWater: true }, blockAt: (q) => ({ name: 'water', boundingBox: 'empty', position: q }) };
-    assert.equal(waterCost(inBot, p), 0, 'inside the pocket, water is free to path out');
+    // A bot physically inside the pocket keeps a free exit route.
+    const inPocket = { entity: { isInWater: true, position: { x: -23, y: 57, z: 112 } }, blockAt: (q) => ({ name: 'water', boundingBox: 'empty', position: q }) };
+    assert.equal(waterCost(inPocket, p), 0, 'inside the pocket, water is free to path out');
+    // The leak the two in-box drownings exposed: a bot merely wet (wading a
+    // stream OUTSIDE the pocket) no longer nullifies the pocket price.
+    const wetOutside = { entity: { isInWater: true, position: { x: -29, y: 57, z: 30 } }, blockAt: (q) => ({ name: 'water', boundingBox: 'empty', position: q }) };
+    assert.equal(waterCost(wetOutside, p), DEATH_WATER_COST, 'wet outside the pocket: the pocket still prices near the cap');
 }
 
 // 11. The pocket price leaves a route: it is never the pathfinder's 100 wall.

@@ -53,6 +53,7 @@ below started as "the bot died again" on that server.
 | 2026-09-02 | [Swim escape, listener cap, and dig-in-first at night](2026-09-02-swim-escape-listener-cap-dig-in-first.md) | shipped, watching drownings + night deaths |
 | 2026-09-02 | [Re-pin `base` to the verified Base + home-place sentinel](2026-09-02-home-repin-safe-base.md) | shipped, watching night deaths at Base |
 | 2026-09-03 | [Unbreakable-dig gate + water death-pocket no-go](2026-09-03-unbreakable-gate-water-pocket.md) | shipped, watching dig_in churn + cave-layer drownings |
+| 2026-09-03 | [Water pocket escape keyed on position, not wetness](2026-09-03-water-pocket-escape-position.md) | shipped, watching in-box drownings |
 
 `ARCHITECTURE.md` at the repo root was written alongside the behavior policy
 layer — the arbiter needed a written model of where it sits before it could be

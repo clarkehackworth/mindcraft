@@ -58,17 +58,22 @@ export function waterDepth(bot, pos) {
 // shallow, wadable stream.
 export function waterCost(bot, pos) {
     if (!bot || !pos) return 0;
-    // Never penalise the escape route: if the bot is in water, water is free so
-    // the pathfinder can route it back to the shore instead of around it. This
-    // wins over the death-pocket box too: a bot already inside the pocket must
-    // keep a cheap way out, even though the box is what keeps the rest of the
-    // bot away from it.
-    if (bot.entity && bot.entity.isInWater) return 0;
-    const depth = waterDepth(bot, pos);
-    if (depth === 0) return 0;
+    // A bot physically INSIDE the pocket keeps a free exit route (its own way
+    // out). This is the only escape that overrides the pocket price, and it is
+    // keyed on position -- not on isInWater. Keying it on isInWater was the leak:
+    // the moment he waded any stream outside the pocket, isInWater flipped true
+    // and the whole pocket went free, so the planner routed straight through it.
+    if (bot.entity && inDeathPocket(bot.entity.position)) return 0;
     // Documented drown pockets get near-unbreakable pricing while a plain deep
     // pool stays a soft cost. The box is the measured death ring, not a guess.
     if (inDeathPocket(pos)) return DEATH_WATER_COST;
+    // Legacy escape for NON-pocket water: if the bot is in water, water is free
+    // so the pathfinder can route it back to shore instead of around a river.
+    // It no longer wins over the pocket box -- that is what the two in-box
+    // drownings exposed.
+    if (bot.entity && bot.entity.isInWater) return 0;
+    const depth = waterDepth(bot, pos);
+    if (depth === 0) return 0;
     return depth >= 2 ? DEEP_WATER_COST : SHALLOW_WATER_COST;
 }
 
