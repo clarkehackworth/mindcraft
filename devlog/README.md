@@ -51,6 +51,7 @@ below started as "the bot died again" on that server.
 | 2026-09-01 | [Arm gate: threat level, not presence](2026-09-01-hostile-gate-threat-level.md) | shipped, watching arm fires + Crafted |
 | 2026-09-02 | [Collect retry for transient pathfinder interrupts](2026-09-02-collect-retry-transient-interrupt.md) | shipped, watching Crafted count |
 | 2026-09-02 | [Swim escape, listener cap, and dig-in-first at night](2026-09-02-swim-escape-listener-cap-dig-in-first.md) | shipped, watching drownings + night deaths |
+| 2026-09-02 | [Re-pin `base` to the verified Base + home-place sentinel](2026-09-02-home-repin-safe-base.md) | shipped, watching night deaths at Base |
 
 `ARCHITECTURE.md` at the repo root was written alongside the behavior policy
 layer — the arbiter needed a written model of where it sits before it could be
