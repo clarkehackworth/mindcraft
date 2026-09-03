@@ -1,0 +1,59 @@
+diff --git a/node_modules/mineflayer-collectblock/lib/CollectBlock.js b/node_modules/mineflayer-collectblock/lib/CollectBlock.js
+index 445df38..5fd456a 100644
+--- a/node_modules/mineflayer-collectblock/lib/CollectBlock.js
++++ b/node_modules/mineflayer-collectblock/lib/CollectBlock.js
+@@ -39,10 +39,23 @@ function collectAll(bot, options) {
+                         break;
+                     const tempEvents = new TemporarySubscriber_1.TemporarySubscriber(bot);
+                     const waitForPickup = new Promise(resolve => {
++                        let done = false;
++                        const finish = () => {
++                            if (done)
++                                return;
++                            done = true;
++                            tempEvents.cleanup();
++                            resolve();
++                        };
++                        // Cap the wait: a drop that never despawns (modded item,
++                        // out of reach) would otherwise hang this promise forever,
++                        // which is what keeps the finally-emit and every pending
++                        // cancelTask waiter alive.
++                        const pickupTimeout = setTimeout(finish, 8000);
+                         tempEvents.subscribeTo('entityGone', (entity) => {
+                             if (entity === closest) {
+-                                tempEvents.cleanup();
+-                                resolve();
++                                clearTimeout(pickupTimeout);
++                                finish();
+                             }
+                         });
+                     });
+@@ -247,7 +260,27 @@ class CollectBlock {
+                 // @ts-expect-error
+                 this.bot.once('collectBlock_finished', cb);
+             }
+-            yield (0, events_1.once)(this.bot, 'collectBlock_finished');
++            // Cap the wait: a collect that gets stuck and never reaches its
++            // finally-emit of 'collectBlock_finished' used to park here
++            // forever, holding a fresh once() listener on every call -- the
++            // MaxListenersExceededWarning (21 listeners) that showed up once
++            // collectWithRetry made collect() run up to 3x per arm-rule fire.
++            // Aborting removes the listener; clearing the targets makes the
++            // next collect start clean instead of re-queueing targets that
++            // will not complete.
++            const controller = new AbortController();
++            const timer = setTimeout(() => controller.abort(), 5000);
++            try {
++                yield (0, events_1.once)(this.bot, 'collectBlock_finished', { signal: controller.signal });
++            }
++            catch (err) {
++                if (err && err.name !== 'AbortError')
++                    throw err;
++                this.targets.clear();
++            }
++            finally {
++                clearTimeout(timer);
++            }
+         });
+     }
+ }

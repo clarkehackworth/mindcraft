@@ -2766,6 +2766,18 @@ export async function surface(bot, timeout_seconds=20) {
     // 20/20 air left" while the bot sat at y=50 in a cave. The failure message
     // needs to name this case so the log stops lying.
     let ever_breathed_in_water = false;
+    // Pinned under an undiggable ceiling over water: holding jump in place
+    // drowns the bot (the water-pocket deaths at y=54-56). Swim sideways out
+    // instead: one ~1.5s forward stroke per cardinal heading, all four per ~8s
+    // revolution. Jump is already held from loop entry, so each stroke also
+    // rises -- a pocket that slopes up in any direction is an exit. The stroke
+    // lingers in open water after the ceiling clears (the bot is still swimming
+    // up, which is what it wants) and is released in the finally block. Only
+    // engages while affirmatively in water -- a dry-land pinned bot keeps the
+    // dig-or-wait behavior, where sliding would just waste the timeout.
+    let slide_heading = -1;
+    let slide_until = 0;
+    const SLIDE_YAWS = [-Math.PI / 2, 0, Math.PI / 2, Math.PI];
     // setGoal(null), not just stop(). stop() is cooperative -- it raises a flag
     // that lands when the bot reaches its next node, and a bot pinned underwater
     // may never reach one, so the goal outlives the emergency and every watchdog
@@ -2817,12 +2829,28 @@ export async function surface(bot, timeout_seconds=20) {
                     try { await protectedDig(bot, ceiling); dig_error = null; }
                     catch (err) { dig_error = String(err).slice(0, 60); }
                     finally { bot.setControlState('jump', true); }
+                } else if (bot.entity?.isInWater === true) {
+                    // Undiggable AND underwater: holding jump in place drowns
+                    // the bot. Swim sideways out instead -- one ~1.5s forward
+                    // stroke per cardinal heading, cycled on the loop's 100ms
+                    // tick so interrupt_code still preempts between strokes.
+                    if (Date.now() >= slide_until) {
+                        slide_heading = (slide_heading + 1) % SLIDE_YAWS.length;
+                        bot.look(SLIDE_YAWS[slide_heading], 0, true);
+                        bot.setControlState('forward', true);
+                        slide_until = Date.now() + 1500;
+                    }
                 }
             }
             await new Promise(resolve => setTimeout(resolve, 100));
         }
     } finally {
         bot.setControlState('jump', false);
+        // The swim stroke lingers after the loop exits (ceiling cleared, or the
+        // timeout/interrupt fired mid-stroke). Without this release a bot that
+        // surfaced while swimming forward keeps walking off the surface it just
+        // reached. Runs on every path, including the early `return true`.
+        bot.setControlState('forward', false);
     }
     // "Could not reach the surface" on its own is the reason this bug outlived
     // four attempts at it: surface() fails 25 times for every 15 it succeeds,
@@ -2835,7 +2863,10 @@ export async function surface(bot, timeout_seconds=20) {
     } else if (!blocked_by) {
         why = 'nothing overhead to break; swimming up did not reach air';
     } else if (!could_dig) {
-        why = `pinned under ${blocked_by}, and nothing in hand can break it`;
+        why = `pinned under ${blocked_by}, and nothing in hand can break it` +
+            (bot.entity?.isInWater === true
+                ? ' -- swam sideways through all four headings for the full timeout and found no slope out'
+                : '');
     } else if (dig_error) {
         why = `pinned under ${blocked_by}, digging it failed: ${dig_error}`;
     } else {

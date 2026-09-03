@@ -50,6 +50,7 @@ below started as "the bot died again" on that server.
 | 2026-09-01 | [Arming collect num 4→1: fix the step, not the trigger](2026-09-01-arming-collect-num1.md) | shipped, watching Crafted count |
 | 2026-09-01 | [Arm gate: threat level, not presence](2026-09-01-hostile-gate-threat-level.md) | shipped, watching arm fires + Crafted |
 | 2026-09-02 | [Collect retry for transient pathfinder interrupts](2026-09-02-collect-retry-transient-interrupt.md) | shipped, watching Crafted count |
+| 2026-09-02 | [Swim escape, listener cap, and dig-in-first at night](2026-09-02-swim-escape-listener-cap-dig-in-first.md) | shipped, watching drownings + night deaths |
 
 `ARCHITECTURE.md` at the repo root was written alongside the behavior policy
 layer — the arbiter needed a written model of where it sits before it could be

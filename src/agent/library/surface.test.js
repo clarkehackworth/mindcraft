@@ -32,6 +32,7 @@ function fakeBot({ head = 'water', ceiling = 'water', oxygen = 5 } = {}) {
         pathfinder: { stop: () => { bot.stopped_pathfinder = true; } },
         clearControlStates: () => { bot.cleared = true; },
         setControlState: (c, v) => { bot.controls[c] = v; },
+        look: (yaw, pitch, immediate) => { (bot.looks ??= []).push(yaw); },
         emit: () => {},
     };
     return bot;
@@ -175,3 +176,27 @@ assert.deepEqual(pocketCeiling.dug, ['stone'], 'the stone ceiling is dug through
 assert.match(pocketCeiling.output, /Surfaced with/, 'and the real rescue is reported once out');
 
 console.log('ok: breathing-but-still-in-water is an enclosed pocket, not a rescue');
+
+// Pinned under an undiggable ceiling while affirmatively in water: the bot
+// cannot dig out and holding jump in place drowns it (the water-pocket deaths
+// at y=54-56). The new escape swims sideways out -- one forward stroke per
+// cardinal heading. It must actually look (turn) and hold forward, then
+// release forward in the finally block so a surfaced bot does not keep walking.
+const pinnedInWater = fakeBot({ head: 'water', ceiling: 'stone' });
+pinnedInWater.canDigBlock = () => false;           // nothing in hand can break the ceiling
+pinnedInWater.entity.isInWater = true;             // affirmatively submerged
+const swim_start = Date.now();
+assert.equal(await skills.surface(pinnedInWater, 1), false, 'an undiggable ceiling in water still fails the surface');
+assert.ok(Date.now() - swim_start >= 900, 'it tries for the full timeout');
+assert.ok(Array.isArray(pinnedInWater.looks) && pinnedInWater.looks.length >= 1, 'the bot turns to swim sideways out');
+assert.equal(pinnedInWater.controls.forward, false, 'the forward stroke is released when it gives up');
+assert.match(pinnedInWater.output, /swam sideways/, 'the failure names the sideways-swim attempt');
+assert.match(pinnedInWater.output, /pinned under stone/, 'and still names what is overhead');
+
+// The same undiggable ceiling on DRY land must NOT swim -- sliding a bot that
+// is not in water would just waste the timeout. The existing sealed case above
+// already pins under blue_ice with no isInWater, so it must have never looked.
+assert.ok(!Array.isArray(sealed.looks) || sealed.looks.length === 0,
+    'a dry-land pinned bot does not waste its timeout swimming');
+
+console.log('ok: an undiggable ceiling in water triggers a sideways-swim escape, dry land does not');

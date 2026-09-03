@@ -235,7 +235,7 @@
       },
       {
         "name": "flee_ranged_raiders",
-        "description": "Flee ranged raiders if not under cover.",
+        "description": "Dig in first (local, no pathfinder) so a ranged hostile cannot reach a bot frozen mid-flee, then flee and hold until dawn.",
         "when": {
           "all": [
             {
@@ -251,11 +251,11 @@
         },
         "do": [
           {
-            "act": "flee",
-            "distance": 40
+            "act": "dig_in"
           },
           {
-            "act": "dig_in"
+            "act": "flee",
+            "distance": 40
           },
           {
             "act": "stay",
@@ -269,7 +269,7 @@
       },
       {
         "name": "dig_in_when_hunted",
-        "description": "Dig in when hunted if not sheltered and not on respawn.",
+        "description": "Dig in first (local, no pathfinder) so a hunter cannot reach a bot frozen mid-flee, then flee and hold until the mob is gone or dawn.",
         "when": {
           "all": [
             {
@@ -291,11 +291,11 @@
         },
         "do": [
           {
-            "act": "flee",
-            "distance": 16
+            "act": "dig_in"
           },
           {
-            "act": "dig_in"
+            "act": "flee",
+            "distance": 16
           },
           {
             "act": "stay",
