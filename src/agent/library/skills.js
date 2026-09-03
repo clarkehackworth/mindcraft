@@ -1420,6 +1420,22 @@ export async function breakBlockAt(bot, x, y, z, allowNoDrop = false) {
         if (bot.game.gameMode !== 'creative') {
             await bot.tool.equipForBlock(block);
             const itemId = bot.heldItem ? bot.heldItem.type : null;
+            // canHarvest is about drops, and for some registry entries it lies
+            // about breakability too: barrier (hardness -1, diggable false) passes
+            // canHarvest for every tool, so the cap below never runs for it and
+            // the dig sails into mineflayer, which throws "dig time ... is
+            // Infinity". That throw walked straight up through digDown into the
+            // dig_in rule, which then re-fired on cooldown all night (10 failures
+            // in one window, never once sheltering the bot). A dig that can
+            // never finish is not a slow dig, so gate on the dig time itself.
+            // Wrapped so an exotic throw degrades to a clean refuse -- this runs
+            // in the rule/tick path where nothing catches.
+            let digMs;
+            try { digMs = bot.digTime(block); } catch (err) { digMs = Infinity; }
+            if (!Number.isFinite(digMs)) {
+                log(bot, `Refusing to break ${block.name} at x:${x.toFixed(1)}, y:${y.toFixed(1)}, z:${z.toFixed(1)}: it cannot be broken (${block.name} dig time is infinite).`);
+                return false;
+            }
             if (!block.canHarvest(itemId)) {
                 // canHarvest answers "will it drop", not "can it be cleared".
                 // For descent and shelter digging the drop is irrelevant -- a

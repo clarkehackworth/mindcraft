@@ -15,6 +15,25 @@
 const DEEP_WATER_COST = 40;
 const SHALLOW_WATER_COST = 4;
 
+// The flooded cave ring around the verified Base (-29, 63, 89). Every documented
+// drown in the last windows is inside it, at the cave layer y=53-58:
+//   (-23.5, 57.2, 65.5)  (-23.5, 57, 112.5)  (-27, 56, 91)  (-25, 58, 87)
+//   (-33, 54, 87)  (-39, 53, 87)  plus the stuck pocket (-41, 59, 85)
+// The soft DEEP_WATER_COST (40) was measured too weak against a goal pull -- he
+// was mid gather_wood_for_base when the planner routed him through. A box that
+// prices its water near the unbreakable cap makes A* route the long way around
+// instead. It stops at y=60: the Base itself and its surface approaches sit at
+// y=63 and must stay cheap. Never 100 -- the pathfinder treats 100 as an
+// absolute wall, and a bot that is already inside must keep a free way out.
+export const DEATH_WATER_COST = 99;
+export const DEATH_POCKET_BOX = { xMin: -45, xMax: -15, yMin: 48, yMax: 60, zMin: 60, zMax: 118 };
+export function inDeathPocket(pos) {
+    if (!pos) return false;
+    return pos.x >= DEATH_POCKET_BOX.xMin && pos.x <= DEATH_POCKET_BOX.xMax
+        && pos.y >= DEATH_POCKET_BOX.yMin && pos.y <= DEATH_POCKET_BOX.yMax
+        && pos.z >= DEATH_POCKET_BOX.zMin && pos.z <= DEATH_POCKET_BOX.zMax;
+}
+
 // Liquid names we treat as water for routing purposes (not lava -- lava has its
 // own, stronger avoidance in the pathfinder patch).
 function isWater(block) {
@@ -40,10 +59,16 @@ export function waterDepth(bot, pos) {
 export function waterCost(bot, pos) {
     if (!bot || !pos) return 0;
     // Never penalise the escape route: if the bot is in water, water is free so
-    // the pathfinder can route it back to the shore instead of around it.
+    // the pathfinder can route it back to the shore instead of around it. This
+    // wins over the death-pocket box too: a bot already inside the pocket must
+    // keep a cheap way out, even though the box is what keeps the rest of the
+    // bot away from it.
     if (bot.entity && bot.entity.isInWater) return 0;
     const depth = waterDepth(bot, pos);
     if (depth === 0) return 0;
+    // Documented drown pockets get near-unbreakable pricing while a plain deep
+    // pool stays a soft cost. The box is the measured death ring, not a guess.
+    if (inDeathPocket(pos)) return DEATH_WATER_COST;
     return depth >= 2 ? DEEP_WATER_COST : SHALLOW_WATER_COST;
 }
 

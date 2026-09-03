@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert';
-import { waterCost, waterDepth, DEEP_WATER_COST, SHALLOW_WATER_COST } from './water_aware_path.js';
+import { waterCost, waterDepth, DEEP_WATER_COST, SHALLOW_WATER_COST, inDeathPocket, DEATH_WATER_COST, DEATH_POCKET_BOX } from './water_aware_path.js';
 
 // Fake bot whose blockAt answers from a y->name map at one (x,z) column.
 function columnBot(names, { isInWater = false } = {}) {
@@ -45,6 +45,57 @@ assert.ok(DEEP_WATER_COST < 100, 'deep cost leaves a path (not an absolute avoid
 assert.ok(SHALLOW_WATER_COST < 100, 'shallow cost leaves a path');
 
 console.log('ok: water-aware path cost (shallow cheap, deep expensive, free to escape)');
+
+// 8. Documented death pockets get near-unbreakable pricing while dry.
+{
+    // The exact drown that motivated the box: (-23.5, 57.2, 112.5).
+    const p = { x: -23.5, y: 57.2, z: 112.5, offset: (dx, dy, dz) => ({ x: -23.5 + dx, y: 57.2 + dy, z: 112.5 + dz }) };
+    const pocketBot = { entity: { isInWater: false }, blockAt: (q) => { const y = Math.round(q.y); return { name: y === 57 ? 'water' : 'stone', boundingBox: 'empty', position: q }; } };
+    assert.ok(inDeathPocket(p), 'the z=112 drown is inside the box');
+    assert.equal(waterCost(pocketBot, p), DEATH_WATER_COST, 'documented pocket water prices near the unbreakable cap');
+    // The stuck pocket (-41, 59, 85) and the oldest documented one (-39, 53, 87) too.
+    assert.ok(inDeathPocket({ x: -41, y: 59, z: 85 }), 'stuck pocket in box');
+    assert.ok(inDeathPocket({ x: -39, y: 53, z: 87 }), 'oldest pocket in box');
+}
+
+// 9. The box is bounded: the Base itself, its surface approaches, and terrain
+//    well to the north/south stay on the soft cost, so he can still get home.
+{
+    assert.ok(!inDeathPocket({ x: -29, y: 63, z: 89 }), 'the Base at surface y=63 is outside the box');
+    assert.ok(!inDeathPocket({ x: -29, y: 62, z: 89 }), 'one below the Base surface is outside');
+    assert.ok(!inDeathPocket({ x: 50, y: 57, z: 89 }), 'east of the box is outside');
+    assert.ok(!inDeathPocket({ x: -29, y: 57, z: 30 }), 'north of the box is outside');
+    assert.ok(!inDeathPocket({ x: -29, y: 40, z: 89 }), 'below the box is outside');
+    // Water just outside the box still gets the soft deep cost, not the pocket price.
+    const justNorth = { x: -29, y: 57, z: 58, offset: (dx, dy, dz) => ({ x: -29 + dx, y: 57 + dy, z: 58 + dz }) };
+    const nbBot = { entity: { isInWater: false }, blockAt: (q) => ({ name: Math.round(q.y) >= 57 ? 'water' : 'stone', boundingBox: 'empty', position: q }) };
+    assert.equal(waterDepth(nbBot, justNorth), 2, 'fixture is a real pool, not a stream');
+    assert.equal(waterCost(nbBot, justNorth), DEEP_WATER_COST, 'water just outside the box keeps the soft deep cost');
+}
+
+// 10. In-water escape beats the box: a bot already inside keeps a cheap way out.
+{
+    const p = { x: -23, y: 57, z: 112, offset: (dx, dy, dz) => ({ x: -23 + dx, y: 57 + dy, z: 112 + dz }) };
+    const inBot = { entity: { isInWater: true }, blockAt: (q) => ({ name: 'water', boundingBox: 'empty', position: q }) };
+    assert.equal(waterCost(inBot, p), 0, 'inside the pocket, water is free to path out');
+}
+
+// 11. The pocket price leaves a route: it is never the pathfinder's 100 wall.
+{
+    assert.ok(DEATH_WATER_COST < 100, 'pocket price is under the unbreakable cap');
+    assert.ok(DEATH_WATER_COST > DEEP_WATER_COST, 'pocket price dominates the soft deep cost');
+    const m = installWaterAvoidance(fakeMovements(0), { entity: { isInWater: false }, blockAt: () => ({ name: 'water', boundingBox: 'empty', position: { x: -23, y: 57, z: 112 } }) });
+    const pblock = { position: { x: -23, y: 57, z: 112, offset: () => ({ x: -23, y: 58, z: 112 }) } };
+    assert.equal(m.safeOrBreak(pblock), DEATH_WATER_COST, 'the installed hook prices pocket water at the pocket cost');
+}
+
+// 12. Guards: inDeathPocket never throws on missing/odd input.
+{
+    assert.equal(inDeathPocket(null), false, 'null pos safe');
+    assert.equal(inDeathPocket({ x: 1, y: 2 }), false, 'missing z safe');
+}
+
+console.log('ok: documented death pockets price near the unbreakable cap, bounded at the Base, free to escape');
 
 // --- installWaterAvoidance: the installer that wires the cost onto Movements ---
 import { installWaterAvoidance } from './water_aware_path.js';
