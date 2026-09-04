@@ -56,6 +56,7 @@ below started as "the bot died again" on that server.
 | 2026-09-03 | [Water pocket escape keyed on position, not wetness](2026-09-03-water-pocket-escape-position.md) | shipped, watching in-box drownings |
 | 2026-09-04 | [Cave-layer descent veto + night shelter at the Base](2026-09-04-cave-veto-night-shelter.md) | shipped — **never live**: next entry's regression discarded the layer |
 | 2026-09-04 | [Policy syntax regression: one bad rule silently disabled the whole survival layer](2026-09-04-policy-syntax-regression.md) | fixed + `policy_file_check.js` guard; cave-veto/night-shelter window restarts |
+| 2026-09-04 | [East-ring waterbox widen (A+B as geometry)](2026-09-04-east-ring-waterbox-widen.md) | shipped; watching east-ring descents + in-box drownings |
 
 `ARCHITECTURE.md` at the repo root was written alongside the behavior policy
 layer — the arbiter needed a written model of where it sits before it could be

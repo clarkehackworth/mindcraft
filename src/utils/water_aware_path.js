@@ -16,17 +16,23 @@ const DEEP_WATER_COST = 40;
 const SHALLOW_WATER_COST = 4;
 
 // The flooded cave ring around the verified Base (-29, 63, 89). Every documented
-// drown in the last windows is inside it, at the cave layer y=53-58:
+// drown in the last windows is inside it, at the cave layer y=53-60:
 //   (-23.5, 57.2, 65.5)  (-23.5, 57, 112.5)  (-27, 56, 91)  (-25, 58, 87)
-//   (-33, 54, 87)  (-39, 53, 87)  plus the stuck pocket (-41, 59, 85)
+//   (-33, 54, 87)  (-39, 53, 87)  (-41, 59, 85)  (-26, 54, 82)
+//   plus the east ring extension: the drown at (-7.9, 58.2, 93.3) and the
+//   stuck waterline at (-11.7, 60.2, 91.8) -- both east of the original
+//   xMax=-15, where the box priced nothing and he bobbed to a death. The 2026-09-04
+//   widen covers the whole measured ring; the y ceiling rises to 61 so the
+//   waterline itself (a bot floating at y=60.2) is priced, not just below it.
 // The soft DEEP_WATER_COST (40) was measured too weak against a goal pull -- he
 // was mid gather_wood_for_base when the planner routed him through. A box that
 // prices its water near the unbreakable cap makes A* route the long way around
-// instead. It stops at y=60: the Base itself and its surface approaches sit at
-// y=63 and must stay cheap. Never 100 -- the pathfinder treats 100 as an
-// absolute wall, and a bot that is already inside must keep a free way out.
+// instead. It stops at y=61: the Base itself and its surface approaches sit at
+// y=63 (y=62 is the ground he stands on) and must stay cheap. Never 100 -- the
+// pathfinder treats 100 as an absolute wall, and a bot that is already inside
+// must keep a free way out.
 export const DEATH_WATER_COST = 99;
-export const DEATH_POCKET_BOX = { xMin: -45, xMax: -15, yMin: 48, yMax: 60, zMin: 60, zMax: 118 };
+export const DEATH_POCKET_BOX = { xMin: -45, xMax: -5, yMin: 48, yMax: 61, zMin: 60, zMax: 118 };
 export function inDeathPocket(pos) {
     if (!pos) return false;
     return pos.x >= DEATH_POCKET_BOX.xMin && pos.x <= DEATH_POCKET_BOX.xMax

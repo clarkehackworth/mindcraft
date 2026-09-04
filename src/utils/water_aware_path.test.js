@@ -66,6 +66,14 @@ console.log('ok: water-aware path cost (shallow cheap, deep expensive, free to e
     assert.ok(!inDeathPocket({ x: 50, y: 57, z: 89 }), 'east of the box is outside');
     assert.ok(!inDeathPocket({ x: -29, y: 57, z: 30 }), 'north of the box is outside');
     assert.ok(!inDeathPocket({ x: -29, y: 40, z: 89 }), 'below the box is outside');
+    // 2026-09-04 east-ring widen: the two east deaths that were OUTSIDE the old
+    // xMax=-15 are now inside, and the y=61 waterline itself is priced.
+    assert.ok(inDeathPocket({ x: -7.9, y: 58.2, z: 93.3 }), 'the east-ring drown (-7.9,58.2,93.3) is inside the widened box');
+    assert.ok(inDeathPocket({ x: -11.7, y: 60.2, z: 91.8 }), 'the east stuck waterline (-11.7,60.2,91.8) is inside the widened box');
+    assert.ok(inDeathPocket({ x: -14, y: 57, z: 90 }), 'x=-14 (just east of the old xMax=-15) is now inside');
+    assert.ok(inDeathPocket({ x: -29, y: 61, z: 89 }), 'the y=61 waterline under the Base is inside (priced)');
+    // The Base's standing ground (y=62) and surface (y=63) stay OUTSIDE the box.
+    assert.ok(!inDeathPocket({ x: -29, y: 62, z: 89 }), 'the Base standing ground y=62 is outside (still cheap)');
     // Water just outside the box still gets the soft deep cost, not the pocket price.
     const justNorth = { x: -29, y: 57, z: 58, offset: (dx, dy, dz) => ({ x: -29 + dx, y: 57 + dy, z: 58 + dz }) };
     const nbBot = { entity: { isInWater: false }, blockAt: (q) => ({ name: Math.round(q.y) >= 57 ? 'water' : 'stone', boundingBox: 'empty', position: q }) };
