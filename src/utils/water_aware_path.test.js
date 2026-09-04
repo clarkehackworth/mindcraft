@@ -85,13 +85,15 @@ console.log('ok: water-aware path cost (shallow cheap, deep expensive, free to e
     assert.equal(waterCost(wetOutside, p), DEATH_WATER_COST, 'wet outside the pocket: the pocket still prices near the cap');
 }
 
-// 11. The pocket price leaves a route: it is never the pathfinder's 100 wall.
+// 11. The pocket price leaves a route for a bot that can dig out: it is never
+// the pathfinder's 100 wall. (A tool-less bot gets the hard wall instead --
+// tested in the descent-veto section below.)
 {
     assert.ok(DEATH_WATER_COST < 100, 'pocket price is under the unbreakable cap');
     assert.ok(DEATH_WATER_COST > DEEP_WATER_COST, 'pocket price dominates the soft deep cost');
-    const m = installWaterAvoidance(fakeMovements(0), { entity: { isInWater: false }, blockAt: () => ({ name: 'water', boundingBox: 'empty', position: { x: -23, y: 57, z: 112 } }) });
+    const m = installWaterAvoidance(fakeMovements(0), { inventory: { items: () => [{ name: 'stone_pickaxe' }] }, entity: { isInWater: false }, blockAt: () => ({ name: 'water', boundingBox: 'empty', position: { x: -23, y: 57, z: 112 } }) });
     const pblock = { position: { x: -23, y: 57, z: 112, offset: () => ({ x: -23, y: 58, z: 112 }) } };
-    assert.equal(m.safeOrBreak(pblock), DEATH_WATER_COST, 'the installed hook prices pocket water at the pocket cost');
+    assert.equal(m.safeOrBreak(pblock), DEATH_WATER_COST, 'the installed hook prices pocket water at the pocket cost for a pickaxe bot');
 }
 
 // 12. Guards: inDeathPocket never throws on missing/odd input.
@@ -172,3 +174,75 @@ const deepBlock = { position: P(0) }; // a block whose feet are water, water abo
 }
 
 console.log('ok: installWaterAvoidance wires the soft cost idempotently, no-throw, under the 100 cap');
+
+// --- hasDigTool + the tool-less pocket wall: the cave-layer descent veto (starvation fix) ---
+import { hasDigTool } from './water_aware_path.js';
+
+// A fake bot with an inventory. The columnBot helper has no inventory, so the
+// tool-less cases use a bot whose inventory.items() returns [].
+function toolBot(items) {
+    return {
+        inventory: { items: () => items.map(n => ({ name: n })) },
+        entity: { position: { x: 0, y: 0, z: 0 } },
+        blockAt(q) {
+            // The exact starvation spot: cave-layer AIR inside the ring.
+            if (Math.round(q.y) === 54) return { name: 'air', boundingBox: 'empty', position: q };
+            return { name: 'stone', boundingBox: 'block', position: q };
+        }
+    };
+}
+const caveAir = { x: -26, y: 54, z: 82, offset: (dx, dy, dz) => ({ x: -26 + dx, y: 54 + dy, z: 82 + dz }) };
+
+// 1. The starvation spot (-26,54,82) is inside the ring.
+assert.ok(inDeathPocket(caveAir), 'the starvation spot is in the box');
+
+// 2. hasDigTool: a pickaxe counts, nothing else does -- a shovel does not
+//    clear the coal_ore/diorite the starvation trap was made of.
+assert.equal(hasDigTool(toolBot([])), false, 'no items: no dig tool');
+assert.equal(hasDigTool(toolBot(['stone_pickaxe'])), true, 'pickaxe: has a dig tool');
+assert.equal(hasDigTool(toolBot(['wooden_shovel'])), false, 'shovel only: no dig tool for the cave veto');
+assert.equal(hasDigTool(null), false, 'null bot: no dig tool, no throw');
+
+// 3. The installed wrapper turns the pocket's 99 into a hard 100 wall for a
+//    tool-less bot -- on cave AIR, the water cost's own blind spot (a fall
+//    into the pocket is never charged a water step).
+{
+    const pblock = { position: caveAir };
+    const mTool = installWaterAvoidance(fakeMovements(0), toolBot([]));
+    assert.equal(mTool.safeOrBreak(pblock), 100, 'tool-less: the pocket is an unbreakable wall, even on air');
+    // A pickaxe bot keeps the soft 99 (it can descend to mine and dig out).
+    const mPick = installWaterAvoidance(fakeMovements(0), toolBot(['stone_pickaxe']));
+    assert.equal(mPick.safeOrBreak(pblock), DEATH_WATER_COST, 'pickaxe: the pocket stays the soft near-wall');
+}
+
+// 4. The wall targets the pocket only: cave-layer air OUTSIDE the box is free.
+{
+    const outside = { x: -26, y: 54, z: 55, offset: (dx, dy, dz) => ({ x: -26 + dx, y: 54 + dy, z: 55 + dz }) };
+    const m = installWaterAvoidance(fakeMovements(0), toolBot([]));
+    assert.equal(m.safeOrBreak({ position: outside }), 0, 'tool-less, cave air outside the box: free');
+}
+
+// 5. A bot already INSIDE the pocket keeps a free exit, tool or no tool --
+//    waterCost returns 0 before the escalation can fire.
+{
+    const inPocket = toolBot([]);
+    inPocket.entity = { position: { x: -26, y: 54, z: 82 } };
+    const m = installWaterAvoidance(fakeMovements(0), inPocket);
+    assert.equal(m.safeOrBreak({ position: caveAir }), 0, 'inside the pocket: free exit even for a tool-less bot');
+}
+
+// 6. The wall is direct: 100 flat, never base + 99 (the additive version is
+//    exactly what clamped back to FREE -- the first draft's bug).
+{
+    const mCap = installWaterAvoidance(fakeMovements(80), toolBot([]));
+    assert.equal(mCap.safeOrBreak({ position: caveAir }), 100, 'the wall is 100 flat, not base + 99');
+}
+
+// 7. Guards: null bot / null pos never throw out of the tick path.
+{
+    const m = installWaterAvoidance(fakeMovements(5), toolBot([]));
+    assert.equal(m.safeOrBreak(null), 5, 'null block: base cost returned, no throw');
+    assert.equal(m.safeOrBreak({ position: null }), 5, 'block with no position: base cost, no throw');
+}
+
+console.log('ok: the tool-less pocket wall vetoes the cave-layer descent, a pickaxe lifts it, the inside-pocket exit stays free');

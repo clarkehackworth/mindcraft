@@ -34,6 +34,22 @@ export function inDeathPocket(pos) {
         && pos.z >= DEATH_POCKET_BOX.zMin && pos.z <= DEATH_POCKET_BOX.zMax;
 }
 
+// A pickaxe is the one thing that lets a bot dig OUT of the cave layer. The
+// 2026-09-03 starvation death: stuck at y=54 in a water/coal depression, bare
+// hands, no way out, starved. The water box prices the pocket at 99 (a strong
+// deterrent, but not a veto) for everyone -- that was still enough that a
+// tool-less bot got routed down. The wrapper upgrades that 99 to the 100
+// unbreakable wall while this is false, so a pickaxe-less route routes the
+// long way around; a bot carrying a pickaxe can still descend to mine and can
+// always dig itself out. (A shovel does not count: the trap was coal_ore and
+// diorite, which only a pickaxe clears.) Shared with the wrapper -- not a
+// separate cost, because waterCost already owns the pocket price.
+export function hasDigTool(bot) {
+    const items = bot && bot.inventory && typeof bot.inventory.items === 'function'
+        ? bot.inventory.items() : [];
+    return items.some(i => i && (i.name || '').includes('pickaxe'));
+}
+
 // Liquid names we treat as water for routing purposes (not lava -- lava has its
 // own, stronger avoidance in the pathfinder patch).
 function isWater(block) {
@@ -109,6 +125,14 @@ export function installWaterAvoidance(movements, bot) {
             } catch (err) {
                 extra = 0;
             }
+            // Starvation fix (2026-09-03, stuck at (-26,54,82) with no
+            // pickaxe): waterCost already priced the death pocket at 99 for
+            // everyone; upgrade that to the 100 unbreakable wall for a bot that
+            // cannot dig itself out, so it is never routed into a hole it
+            // cannot get out of. A pickaxe bot keeps the 99 (it can descend to
+            // mine and can always dig out), and a bot already INSIDE the pocket
+            // got 0 from waterCost itself -- the free exit is preserved.
+            if (extra === DEATH_WATER_COST && !hasDigTool(bot)) return 100;
             // Never push a traversable water block over the 100 'unbreakable' cap,
             // or the pathfinder would treat a wadable pool as a wall.
             if (extra && base + extra <= 100) return base + extra;
