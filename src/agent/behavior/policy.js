@@ -360,6 +360,11 @@ export const CONDITIONS = {
         desc: 'The bot is standing below this altitude. The goal loop writes its own mining code and nothing in the policy could see how deep that took it: soak 12 lost three lives in forty minutes at y=20, y=19 and y=-7, each one a respawn at camp followed by a walk back down to the corpse. Gate a go_to_surface rule on this.',
         fn: (agent, args) => agent.bot.entity.position.y < (args.y ?? 0)
     },
+    y_above: {
+        args: { y: 'number, altitude to compare feet against' },
+        desc: 'The bot is standing above this altitude. The mirror of y_below: the bot climbs exposed perches (tomb pillars, cliff edges) where a ranged hostile can shoot but a melee one cannot reach, and flee/move_away keep him at the same height, still exposed. Gate a descend rule on this so the bot gets off the perch before the arrow lands.',
+        fn: (agent, args) => agent.bot.entity.position.y > (args.y ?? 0)
+    },
     is_sheltered: {
         args: {},
         desc: 'A solid block sits two or three above the bot\'s feet -- it is under a roof (a capped dig_in foxhole, a house, a cave). Gate night-shelter and flee rules on "not is_sheltered" so a bot already under cover does not dig deeper, prompt for shelter it already has, or climb out of a safe hole to flee something that cannot reach it.',
@@ -541,6 +546,19 @@ export const ACTIONS = {
             return await skills.climbOut(agent.bot, a.blocks ?? 8);
         }
     },
+    descend_perch: {
+        cost: 'blocking', clears: ['y_above', 'ranged_hostile_nearby', 'hostile_nearby', 'entity_nearby'],
+        args: { range: 'number (default 8), how far to look for lower ground' },
+        // The action y_above was written to gate but that never existed: climb_out
+        // only goes UP, so a bot that climbed a tomb pillar to reach a grave had
+        // no way back down -- flee and move_away kept it at the same height, still
+        // exposed to the archers that live outside the walls. This walks it off the
+        // edge and falls to lower ground without breaking the perch, so the ranged
+        // hostile loses its clean shot. Not in RETREAT_ACTIONS: descending is real
+        // progress, not a step back, so the cowardice check must not fire on it.
+        desc: 'Get off a perch: descend to the nearest lower walkable ground without breaking the perch blocks. Use when a ranged hostile can shoot from below and you are perched above it.',
+        fn: async (agent, a) => await skills.getOffPerch(agent.bot, a.range ?? 8)
+    },
     search_block: {
         cost: 'blocking', clears: ['block_nearby', 'at_position', 'at_death_position'],
         args: { type: 'string block name', range: 'number (default 64, max 512)' },
@@ -590,6 +608,12 @@ export const ACTIONS = {
             // nothing at all -- "Picked up 0 item" -- and the bot began again
             // from nothing every time however quickly it walked back.
             const grave = await skills.recoverGrave(agent.bot, a.range ?? 16);
+            // Once the grave is actually opened the loot is inside, so the
+            // target that go_back_for_your_grave keeps re-arming no longer
+            // exists. Clearing it stops the 1,740-fire loop at its source.
+            // A failed trip keeps the place so the rule retries on the next
+            // idle window -- correct behavior.
+            if (grave && agent.memory_bank) agent.memory_bank.forgetPlace('last_grave_position');
             const loose = await skills.pickupNearbyItems(agent.bot, a.range ?? 8);
             return grave || loose;
         }

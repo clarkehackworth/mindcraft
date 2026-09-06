@@ -58,6 +58,7 @@ below started as "the bot died again" on that server.
 | 2026-09-04 | [Policy syntax regression: one bad rule silently disabled the whole survival layer](2026-09-04-policy-syntax-regression.md) | fixed + `policy_file_check.js` guard; cave-veto/night-shelter window restarts |
 | 2026-09-04 | [East-ring waterbox widen (A+B as geometry)](2026-09-04-east-ring-waterbox-widen.md) | shipped; watching east-ring descents + in-box drownings |
 | 2026-09-04 | [Night-wander dead zone: shelter widen + no-wander stay](2026-09-04-night-wander-dead-zone.md) | shipped; watching night position + night-wander deaths |
+| 2026-09-05 | [Descend perch: stop the grave-climb arrow-death loop](2026-09-05-descend-perch-grave-loop.md) | shipped; watching perch deaths + go_back_for_your_grave fires |
 
 `ARCHITECTURE.md` at the repo root was written alongside the behavior policy
 layer — the arbiter needed a written model of where it sits before it could be

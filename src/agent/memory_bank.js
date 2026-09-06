@@ -11,6 +11,10 @@ export class MemoryBank {
 		return this.memory[name];
 	}
 
+	forgetPlace(name) {
+		if (name in this.memory) delete this.memory[name];
+	}
+
 	getJson() {
 		return this.memory
 	}

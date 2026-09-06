@@ -23,3 +23,7 @@
   purposes `develop` **is** main/stable. `origin/stable` is the upstream
   mindcraft line (tagged v0.1.x) — never force-overwrite it; a real
   promotion is a merge/PR decided after the observation window holds.
+- **Fix bot problems in code or policy, not with manual world edits.**
+  Placing blocks, tp-rescues, or other RCON fiddles are rescue/observation
+  only. The durable fix is a rule, a pathfinding cost, or a behavior change
+  the bot can apply on its own.

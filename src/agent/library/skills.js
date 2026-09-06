@@ -2948,6 +2948,79 @@ export async function climbOut(bot, blocks=3) {
     return true;
 }
 
+export async function getOffPerch(bot, range = 8) {
+    /**
+     * Descend from a perch to lower walkable ground without breaking the perch
+     * blocks. The mirror of climbOut: climbOut pillars and digs UP, this walks
+     * off the edge and falls DOWN. A ranged hostile can shoot a bot perched on
+     * a tomb pillar but a melee one cannot reach it, and flee/move_away keep the
+     * bot at the same height -- still exposed. This is the action y_above was
+     * written to gate.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @param {number} range, how far to look for lower ground, default 8.
+     * @returns {Promise<boolean>} true only if the bot's feet actually fell.
+     **/
+    const start_y = Math.floor(bot.entity.position.y);
+    const feet = bot.entity.position.floored();
+    const isAir = (b) => b && (b.name === 'air' || b.name === 'cave_air');
+    const isSolid = (b) => b && b.name && b.name !== 'air' && b.name !== 'cave_air';
+
+    // Primary: the nearest standable surface strictly below the feet -- solid
+    // floor, air at the feet and head. The pathfinder walks the gap and falls
+    // the rest; the perch blocks are never broken, so a cap or build up there is
+    // preserved rather than dug through.
+    let target = null;
+    let best = Infinity;
+    for (let dx = -range; dx <= range; dx++) {
+        for (let dz = -range; dz <= range; dz++) {
+            if (dx === 0 && dz === 0) continue;
+            // Only the topmost stand in this column counts: the first standable
+            // surface hit scanning down is where the bot would actually land.
+            for (let dy = 0; dy >= -range; dy--) {
+                const base = feet.offset(dx, dy, dz);
+                if (isSolid(bot.blockAt(base.offset(0, -1, 0)))
+                    && isAir(bot.blockAt(base))
+                    && isAir(bot.blockAt(base.offset(0, 1, 0)))) {
+                    if (dy < 0) {
+                        const d = Math.hypot(dx, dz);
+                        if (d < best) { best = d; target = base; }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    // Fallback: no flat lower ground in reach (a ledge over a chasm). Walk into
+    // the first open drop-off off the edge so the bot tumbles down.
+    if (!target) {
+        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            const edge = feet.offset(dx, 0, dz);
+            if (isAir(bot.blockAt(edge)) && isAir(bot.blockAt(edge.offset(0, -1, 0)))) {
+                target = edge.offset(0, -3, 0);
+                break;
+            }
+        }
+    }
+
+    if (!target) {
+        log(bot, `getOffPerch: no lower ground within ${range} blocks -- already at the lowest point.`);
+        return false;
+    }
+
+    try {
+        await goToGoal(bot, new pf.goals.GoalNear(target.x, target.y, target.z, 1));
+    } catch (err) { /* handled by the height check below */ }
+
+    const fell = start_y - Math.floor(bot.entity.position.y);
+    if (fell < 1) {
+        log(bot, `getOffPerch: aimed for ${target.x},${target.y},${target.z} but the feet stayed at y=${start_y} -- no drop to take.`);
+        return false;
+    }
+    log(bot, `Descended ${fell} block${fell === 1 ? '' : 's'} off the perch (y=${start_y} -> y=${Math.floor(bot.entity.position.y)}).`);
+    return true;
+}
+
 export async function moveAway(bot, distance) {
     /**
      * Move away from current position in any direction.
