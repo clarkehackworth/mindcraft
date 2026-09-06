@@ -32,12 +32,46 @@ const SHALLOW_WATER_COST = 4;
 // pathfinder treats 100 as an absolute wall, and a bot that is already inside
 // must keep a free way out.
 export const DEATH_WATER_COST = 99;
+// The flooded cave ring around the verified Base (-29, 63, 89).
 export const DEATH_POCKET_BOX = { xMin: -45, xMax: -5, yMin: 48, yMax: 61, zMin: 60, zMax: 118 };
+// The near-spawn pit complex (documented 2026-08-25 pit-respawn-fix + 2026-09-06
+// drownings at (-7,44,11) and (-7,46,10)): a dry gravel pit at ~(-5,51,2) plus an
+// enclosed water pit at ~(5,55,-6), all at the origin. It sits OUTSIDE the cave
+// ring box (z -8..12 vs zMin=60, y 44..56 vs yMin=48), so it priced nothing and
+// the bot kept pathing back in (go_back_for_your_grave) to drown. A second, tight
+// box prices its water near the unbreakable cap so the pathfinder routes around
+// it. The y floor drops to 43 so the y=44/46 drown floors are covered; the z span
+// -8..12 keeps the surface approaches (the Base at z=89 and the spawn surface at
+// y=73) cheap. `hard` is set because this pit is an inescapable death trap (a
+// stone ceiling the bot cannot break: 'pathfinding & climbing FAIL'), not a
+// mineable cave layer -- a 99 near-wall is not enough, because the grave that
+// go_back_for_your_grave targets sits at the pit floor, so the only route to the
+// goal descends into the water and a strong goal pull routes straight through a
+// near-wall (the exact way the cave-ring bot still drowned at 99). Hard pockets
+// are an absolute 100 wall for a bot OUTSIDE them (no path at all: the goto
+// fails clean and the bot moves on); a bot already INSIDE keeps a free way out
+// because waterCost returns 0 before the escalation can fire.
+export const NEAR_SPAWN_PIT_BOX = { xMin: -9, xMax: 5, yMin: 43, yMax: 58, zMin: -8, zMax: 12, hard: true };
 export function inDeathPocket(pos) {
     if (!pos) return false;
-    return pos.x >= DEATH_POCKET_BOX.xMin && pos.x <= DEATH_POCKET_BOX.xMax
-        && pos.y >= DEATH_POCKET_BOX.yMin && pos.y <= DEATH_POCKET_BOX.yMax
-        && pos.z >= DEATH_POCKET_BOX.zMin && pos.z <= DEATH_POCKET_BOX.zMax;
+    return inBox(pos, DEATH_POCKET_BOX) || inBox(pos, NEAR_SPAWN_PIT_BOX);
+}
+
+// A pocket marked `hard` is an absolute death trap with no exit the bot can make
+// (the near-spawn pit: a stone ceiling the bot cannot break -- 'pathfinding &
+// climbing FAIL'), as opposed to a mineable cave layer. For a bot OUTSIDE a hard
+// pocket the pocket's water is an absolute 100 wall -- no path at all -- so
+// nothing, not even a strong goal whose target sits at the pit floor
+// (go_back_for_your_grave), can route into it. A bot already INSIDE keeps a free
+// way out: waterCost returns 0 before the hard escalation can fire.
+export function inHardPocket(pos) {
+    if (!pos) return false;
+    return [DEATH_POCKET_BOX, NEAR_SPAWN_PIT_BOX].some(box => box.hard && inBox(pos, box));
+}
+function inBox(pos, box) {
+    return pos.x >= box.xMin && pos.x <= box.xMax
+        && pos.y >= box.yMin && pos.y <= box.yMax
+        && pos.z >= box.zMin && pos.z <= box.zMax;
 }
 
 // A pickaxe is the one thing that lets a bot dig OUT of the cave layer. The
@@ -135,10 +169,20 @@ export function installWaterAvoidance(movements, bot) {
             // pickaxe): waterCost already priced the death pocket at 99 for
             // everyone; upgrade that to the 100 unbreakable wall for a bot that
             // cannot dig itself out, so it is never routed into a hole it
-            // cannot get out of. A pickaxe bot keeps the 99 (it can descend to
-            // mine and can always dig out), and a bot already INSIDE the pocket
-            // got 0 from waterCost itself -- the free exit is preserved.
-            if (extra === DEATH_WATER_COST && !hasDigTool(bot)) return 100;
+            // cannot get out of. A bot already INSIDE the pocket got 0 from
+            // waterCost itself -- the free exit is preserved.
+            if (extra === DEATH_WATER_COST) {
+                // Hard pockets (the near-spawn pit: an unbreakable-stone ceiling
+                // the bot cannot dig through) are an absolute wall for a bot
+                // OUTSIDE them -- a pickaxe does NOT help, and no path exists,
+                // so even a strong goal whose target sits at the pit floor
+                // (go_back_for_your_grave) cannot route in. This is what the
+                // 99 near-wall leaked: a goal pull routes straight through 99.
+                if (inHardPocket(block.position)) return 100;
+                // Soft cave ring: a pickaxe bot can descend to mine and can
+                // always dig itself out, so it keeps the 99, not a wall.
+                if (!hasDigTool(bot)) return 100;
+            }
             // Never push a traversable water block over the 100 'unbreakable' cap,
             // or the pathfinder would treat a wadable pool as a wall.
             if (extra && base + extra <= 100) return base + extra;

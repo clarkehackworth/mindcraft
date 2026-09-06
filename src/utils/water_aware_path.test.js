@@ -110,6 +110,21 @@ console.log('ok: water-aware path cost (shallow cheap, deep expensive, free to e
     assert.equal(inDeathPocket({ x: 1, y: 2 }), false, 'missing z safe');
 }
 
+// 13. The near-spawn pit complex (2026-09-06): two drownings at (-7,44,11) and
+//     (-7,46,10) at the origin pit, OUTSIDE the cave-ring box (z -8..12 vs zMin=60,
+//     y 44..46 vs yMin=48). The second box must cover them; the spawn surface
+//     (y=73) and the Base (z=89) must stay outside.
+{
+    assert.ok(inDeathPocket({ x: -7, y: 44, z: 11 }), 'drown (-7,44,11) is inside the near-spawn pit box');
+    assert.ok(inDeathPocket({ x: -7, y: 46, z: 10 }), 'drown (-7,46,10) is inside the near-spawn pit box');
+    assert.ok(inDeathPocket({ x: 5, y: 55, z: -6 }), 'the documented water pit (5,55,-6) is inside');
+    assert.ok(!inDeathPocket({ x: 2.5, y: 73, z: 2.5 }), 'spawn surface y=73 is outside (stays cheap)');
+    assert.ok(!inDeathPocket({ x: -29, y: 63, z: 89 }), 'the Base is outside both boxes');
+    assert.ok(!inDeathPocket({ x: -7, y: 30, z: 11 }), 'below the pit box (y=30) is outside');
+    // The cave-ring box still works independently.
+    assert.ok(inDeathPocket({ x: -23.5, y: 57.2, z: 112.5 }), 'cave-ring drown still inside');
+}
+
 console.log('ok: documented death pockets price near the unbreakable cap, bounded at the Base, free to escape');
 
 // --- installWaterAvoidance: the installer that wires the cost onto Movements ---
@@ -254,3 +269,58 @@ assert.equal(hasDigTool(null), false, 'null bot: no dig tool, no throw');
 }
 
 console.log('ok: the tool-less pocket wall vetoes the cave-layer descent, a pickaxe lifts it, the inside-pocket exit stays free');
+
+// --- Hard pockets (the near-spawn pit): an absolute 100 wall for a bot OUTSIDE them ---
+// Unlike the soft cave ring (a mineable layer a pickaxe bot can descend and dig
+// out of), the near-spawn pit is an unescapable death trap -- a stone ceiling the
+// bot cannot break ('pathfinding & climbing FAIL'). A 99 near-wall is not enough:
+// the grave that go_back_for_your_grave targets sits at the pit floor, so the only
+// route to the goal descends into the water, and a strong goal pull routes straight
+// through a 99 near-wall. The fix is to make the pit an absolute 100 wall for a
+// bot OUTSIDE it (no path at all: the goto fails clean, the bot moves on), while
+// a bot already INSIDE keeps a free way out (waterCost returns 0 first).
+import { inHardPocket } from './water_aware_path.js';
+
+// The exact pit-floor grave the bot was stuck on: (-6,47,11) / the drown floors
+// (-7,44,11) and (-7,46,10). All inside the hard box.
+const pitGrave = { x: -6, y: 47, z: 11, offset: (dx, dy, dz) => ({ x: -6 + dx, y: 47 + dy, z: 11 + dz }) };
+const pitWater = { x: -7, y: 46, z: 10, offset: (dx, dy, dz) => ({ x: -7 + dx, y: 46 + dy, z: 10 + dz }) };
+
+// 14a. The pit is a HARD pocket (the cave ring is not).
+assert.ok(inHardPocket({ x: -7, y: 46, z: 10 }), 'the near-spawn pit is a hard pocket');
+assert.ok(!inHardPocket({ x: -23.5, y: 57.2, z: 112.5 }), 'the cave ring is a soft pocket (mineable)');
+
+// 14b. A pickaxe bot OUTSIDE the pit gets the absolute 100 wall -- a pickaxe does
+//     NOT help against an unbreakable stone ceiling. (This is the key difference
+//     from the soft ring, where a pickaxe bot keeps the 99.)
+{
+    const mPick = installWaterAvoidance(fakeMovements(0), toolBot(['stone_pickaxe']));
+    assert.equal(mPick.safeOrBreak({ position: pitWater }), 100, 'pickaxe outside the hard pit: absolute 100 wall');
+}
+
+// 14c. A tool-less bot OUTSIDE the pit also gets 100 (no change in behavior).
+{
+    const mTool = installWaterAvoidance(fakeMovements(0), toolBot([]));
+    assert.equal(mTool.safeOrBreak({ position: pitWater }), 100, 'tool-less outside the hard pit: absolute 100 wall');
+}
+
+// 14d. A bot already INSIDE the pit keeps a free exit (waterCost returns 0 before
+//     the hard escalation fires) -- tool or no tool, so it can always path out.
+{
+    const inPit = toolBot([]);
+    inPit.entity = { position: { x: -7, y: 46, z: 10 } };
+    const m = installWaterAvoidance(fakeMovements(0), inPit);
+    assert.equal(m.safeOrBreak({ position: pitWater }), 0, 'inside the hard pit: free exit, tool-less');
+    const inPitPick = toolBot(['stone_pickaxe']);
+    inPitPick.entity = { position: { x: -6, y: 47, z: 11 } };
+    const m2 = installWaterAvoidance(fakeMovements(0), inPitPick);
+    assert.equal(m2.safeOrBreak({ position: pitWater }), 0, 'inside the hard pit: free exit, pickaxe');
+}
+
+// 14e. The wall is direct: 100 flat, not base + 99 (same invariant as the soft wall).
+{
+    const mCap = installWaterAvoidance(fakeMovements(80), toolBot(['stone_pickaxe']));
+    assert.equal(mCap.safeOrBreak({ position: pitWater }), 100, 'hard pit wall is 100 flat, not base + 99');
+}
+
+console.log('ok: the near-spawn pit is an absolute 100 wall for a bot outside it (pickaxe included), free exit preserved for a bot inside');
