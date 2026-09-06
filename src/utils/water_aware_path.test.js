@@ -361,3 +361,63 @@ assert.ok(inHardPocket({ x: -23.5, y: 57.2, z: 112.5 }), 'the cave ring is a har
 }
 
 console.log('ok: the near-spawn pit AND the cave ring (hard since 2026-09-06) are absolute 100 walls for a bot outside (pickaxe included), free exit preserved for a bot inside');
+
+// --- hardPocketEscapeTarget: the self-tp anchor for a bot stuck inside a ---
+// --- hard pocket (2026-09-06). A pure helper: returns {x,y,z} or null. ---
+import { hardPocketEscapeTarget } from './water_aware_path.js';
+
+// 15a. Bot inside the pit, anchor at the Base (outside both boxes) → target.
+{
+    const inPit = { x: -7, y: 46, z: 10 };
+    const base = { x: -29, y: 63, z: 89 };
+    const t = hardPocketEscapeTarget(inPit, base);
+    assert.ok(t !== null, 'pit + Base: returns a target');
+    assert.equal(t.x, -29, 'target x is the Base x');
+    assert.equal(t.y, 63, 'target y is the Base y');
+    assert.equal(t.z, 89, 'target z is the Base z');
+}
+
+// 15b. Bot inside the pit, anchor at the cave ring (in DEATH_POCKET_BOX) → null
+//     (tp'ing there re-traps).
+{
+    const inPit = { x: -7, y: 46, z: 10 };
+    const inRing = { x: -29, y: 56, z: 100 };
+    assert.equal(hardPocketEscapeTarget(inPit, inRing), null, 'anchor in the ring: null (re-trap)');
+}
+
+// 15c. Bot outside all pockets → null (moveAway is the right tool).
+{
+    const atBase = { x: -29, y: 63, z: 89 };
+    const nearBase = { x: -20, y: 63, z: 90 };
+    assert.equal(hardPocketEscapeTarget(atBase, nearBase), null, 'not in a hard pocket: null');
+}
+
+// 15d. Anchor within 8 blocks of the bot → null (tp is a no-op; moveAway works).
+//     (-7,46,13) is outside the pit box (zMax=12) and the ring (zMin=60), 3 blocks
+//     from the pit bot.
+{
+    const inPit = { x: -7, y: 46, z: 10 };
+    const nearPit = { x: -7, y: 46, z: 13 };
+    assert.equal(hardPocketEscapeTarget(inPit, nearPit), null, 'anchor 3 blocks away: null (too close)');
+}
+
+// 15e. Null / missing guards → null, never throws.
+{
+    assert.equal(hardPocketEscapeTarget(null, { x: -29, y: 63, z: 89 }), null, 'null pos safe');
+    assert.equal(hardPocketEscapeTarget({ x: -7, y: 46, z: 10 }, null), null, 'null anchor safe');
+    assert.equal(hardPocketEscapeTarget({ x: -7, y: 46, z: 10 }, { x: NaN, y: 63, z: 89 }), null, 'NaN anchor safe');
+    assert.doesNotThrow(() => hardPocketEscapeTarget(undefined, undefined), 'undefined/undefined does not throw');
+}
+
+// 15f. Bot in the cave ring (the other hard pocket), anchor at the Base → target.
+{
+    const inRing = { x: -29, y: 56, z: 100 };
+    const base = { x: -29, y: 63, z: 89 };
+    const t = hardPocketEscapeTarget(inRing, base);
+    assert.ok(t !== null, 'ring + Base: returns a target');
+    assert.equal(t.x, -29, 'target x');
+    assert.equal(t.y, 63, 'target y');
+    assert.equal(t.z, 89, 'target z');
+}
+
+console.log('ok: hardPocketEscapeTarget returns the Base when stuck in a hard pocket, null for re-traps / no-pockets / too-close / missing inputs');

@@ -85,6 +85,28 @@ export function inHardPocket(pos) {
     if (!pos) return false;
     return [DEATH_POCKET_BOX, NEAR_SPAWN_PIT_BOX].some(box => box.hard && inBox(pos, box));
 }
+// Where to self-teleport when the bot is stuck inside a hard pocket (an
+// inescapable pit with no breakable exit). Returns the anchor position
+// (typically the spawnpoint / Base) as a plain {x,y,z} for `bot.chat('/tp @s')`,
+// or null when self-tp would not help:
+//   - bot is NOT inside a hard pocket (normal stuck, moveAway works)
+//   - no valid anchor (spawnpoint not set / not a number)
+//   - anchor itself is inside ANY death pocket (tp'ing there just re-traps)
+//   - anchor is within 8 blocks of the bot (tp would be a no-op or a step
+//     sideways; moveAway is the right tool at that distance)
+// Pure: takes plain {x,y,z}, returns plain {x,y,z} or null. The caller in
+// agent.js owns the bot and the chat call.
+export function hardPocketEscapeTarget(pos, anchor) {
+    if (!pos || !anchor) return null;
+    if (!inHardPocket(pos)) return null;
+    const ax = Number(anchor.x), ay = Number(anchor.y), az = Number(anchor.z);
+    if (!Number.isFinite(ax) || !Number.isFinite(ay) || !Number.isFinite(az)) return null;
+    const a = { x: ax, y: ay, z: az };
+    if (inDeathPocket(a)) return null;
+    const dx = ax - pos.x, dy = ay - pos.y, dz = az - pos.z;
+    if (dx * dx + dy * dy + dz * dz < 64) return null; // < 8 blocks
+    return a;
+}
 function inBox(pos, box) {
     return pos.x >= box.xMin && pos.x <= box.xMax
         && pos.y >= box.yMin && pos.y <= box.yMax

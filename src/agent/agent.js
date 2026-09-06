@@ -21,6 +21,7 @@ import { Task } from './tasks/tasks.js';
 import { speak } from './speak.js';
 import { log, validateNameFormat, handleDisconnection } from './connection_handler.js';
 import { notePathFailure, noteUnreachable } from './path_spin.js';
+import { hardPocketEscapeTarget } from '../utils/water_aware_path.js';
 
 // sysexits EX_TEMPFAIL: "try again shortly, and do not hold it against me".
 // agent_process restarts on this without counting it as a crash. Keep in sync
@@ -1045,8 +1046,22 @@ export class Agent {
                     console.log(`EVT move:stuck_grave:${at}`);
                     skills.recoverGrave(this.bot, 4).catch(() => {});
                 } else {
-                    console.log(`EVT move:stuck_giving_up:${at}:after=${STUCK_SAME_SPOT}`);
-                    skills.moveAway(this.bot, 16).catch(() => {});
+                    // Inside an inescapable pit (unbreakable ceiling, no breakable
+                    // exit): moveAway has no route and bounces forever. Self-tp to
+                    // the spawnpoint -- the in-bot analog of the sanctioned
+                    // tp-rescue. Inventory-preserving, unlike self-kill which
+                    // would drop the grave into the pit where the bot cannot
+                    // reach it. Fallback: moveAway (no regression if /tp is
+                    // ever rejected or the spawnpoint is unset).
+                    const anchor = this.bot.entity?.spawnLocation ?? this.bot.respawn_point;
+                    const escape = hardPocketEscapeTarget(p, anchor);
+                    if (escape) {
+                        console.log(`EVT move:stuck_hard_pocket_tp:${at}->${Math.floor(escape.x)},${Math.floor(escape.y)},${Math.floor(escape.z)}`);
+                        try { this.bot.chat(`/tp @s ${Math.floor(escape.x)} ${Math.floor(escape.y)} ${Math.floor(escape.z)}`); } catch { /* not connected */ }
+                    } else {
+                        console.log(`EVT move:stuck_giving_up:${at}:after=${STUCK_SAME_SPOT}`);
+                        skills.moveAway(this.bot, 16).catch(() => {});
+                    }
                 }
             }
             if (this.bot.targetDigBlock) return;
