@@ -60,6 +60,7 @@ below started as "the bot died again" on that server.
 | 2026-09-04 | [Night-wander dead zone: shelter widen + no-wander stay](2026-09-04-night-wander-dead-zone.md) | shipped; watching night position + night-wander deaths |
 | 2026-09-05 | [Descend perch: stop the grave-climb arrow-death loop](2026-09-05-descend-perch-grave-loop.md) | shipped; watching perch deaths + go_back_for_your_grave fires |
 | 2026-09-06 | [Near-spawn pit: make the death trap an absolute wall](2026-09-06-near-spawn-pit-hard-wall.md) | shipped; watching origin-pit drownings + go_back_for_your_grave fires into the pit |
+| 2026-09-06 | [Cave ring: promote the death pocket to a hard wall](2026-09-06-cave-ring-hard-wall.md) | shipped; watching in-ring drownings + go_back_for_your_grave routing into the ring |
 
 `ARCHITECTURE.md` at the repo root was written alongside the behavior policy
 layer — the arbiter needed a written model of where it sits before it could be
