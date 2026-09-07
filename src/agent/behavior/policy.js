@@ -2265,6 +2265,26 @@ function restoreDeclaredPacing(policy, profiles) {
 }
 export const restoreInterruptsForTest = restoreDeclaredPacing;
 
+// Deterministic merge for profiles that all carry rules. Base rules in order,
+// then each attribute's rules appended; a same-named rule from a later profile
+// replaces the earlier one in place (keeping its slot in the priority walk).
+// Goals concatenate in the same order. No LLM, no latency, no field loss.
+export function mergeProfiles(base, attributes) {
+    const rules = [...(base.policy?.rules ?? [])];
+    const modes = { ...(base.policy?.modes ?? {}) };
+    for (const a of attributes) {
+        for (const r of a.policy?.rules ?? []) {
+            const i = rules.findIndex(x => x.name === r.name);
+            if (i >= 0) rules[i] = r; else rules.push(r);
+        }
+        Object.assign(modes, a.policy?.modes ?? {});
+    }
+    const goals = [base.goal, ...attributes.map(a => a.goal)].filter(g => g?.trim());
+    const policy = { modes, rules };
+    if (goals.length) policy.goal = goals.join(' ');
+    return policy;
+}
+
 // Returns the state with a freshly generated "active" layer. It does NOT
 // install it -- every caller already has its own install-and-save path, and
 // installing here would mean a failed save still changed the running agent.
@@ -2285,6 +2305,15 @@ export async function generatePolicy(agent, baseName, attributeNames = []) {
         // Nothing to reconcile, so nothing to pay an LLM call for.
         policy = { ...base.policy };
         if (base.goal) policy.goal = base.goal;
+    } else if (base.policy && attributes.every(a => a.policy)) {
+        // Every profile ships rules, so the merge is bookkeeping, not judgment:
+        // the LLM merge took 7-30 minutes, dropped "interrupts", rewrote
+        // cooldowns and truncated at the token cap, and every conflict it was
+        // asked to referee was between two profiles the same person wrote.
+        // Resolve those at authoring time; the validator says where.
+        policy = mergeProfiles({ ...base, name: baseName }, attributes);
+        const err = validatePolicy(policy);
+        if (err) throw new Error(`Profiles "${baseName}" + ${attributeNames.join(', ')} do not merge cleanly -- fix the profile, not the merge: ${err}`);
     } else {
         policy = await compilePolicy(agent, buildMergeInstructions({ ...base, name: baseName }, attributes));
         restoreDeclaredPacing(policy, [base, ...attributes]);

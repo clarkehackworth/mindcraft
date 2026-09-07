@@ -224,38 +224,6 @@
         "cooldown": 180
       },
       {
-        "name": "build_a_furnace_for_cooking",
-        "description": "No furnace in reach and cobblestone in the bag: make one and put it down where you stand. Two named actions -- the LLM turn this replaced only ever said the same two things. Interrupts on purpose: one shot, in place, and no meat gets cooked until it exists. The is_idle gate came off with it: interrupt priority and an is_idle trigger cancel out, which is how the first pass at this audit left eight rules exactly as starved as before.",
-        "interrupts": "all",
-        "when": {
-          "all": [
-            {
-              "cond": "has_item",
-              "item": "cobblestone",
-              "count": 8
-            },
-            {
-              "not": {
-                "cond": "block_nearby",
-                "name": "furnace",
-                "range": 24
-              }
-            }
-          ]
-        },
-        "do": [
-          {
-            "act": "craft",
-            "item": "furnace"
-          },
-          {
-            "act": "place",
-            "block": "furnace"
-          }
-        ],
-        "cooldown": 300
-      },
-      {
         "name": "remember_the_berry_patch",
         "description": "Standing at a bush, write the spot down. Finding a patch is what costs -- a 128-block search, or the LLM turn that decided where to look -- and until now that cost was paid again every time stock ran low, because nothing survived the walk home. One free tick here turns the last expensive discovery into a permanent route for walk_the_berry_route. Bushes regrow, so the address stays good. Interrupts on purpose: it costs one tick and only ever fires once, and an idle gate meant the bot walked past patches without recording them.",
         "interrupts": "all",

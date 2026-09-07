@@ -34,6 +34,10 @@
 #     tools/live_test.sh deploy [files...]       push changed files to container, restart agent
 #   Observe:
 #     tools/live_test.sh watch <pattern> [since] tail the agent log for a pattern
+#     tools/live_test.sh scorecard [since]       one table: deaths/paid/noPath/fires (default 6h)
+#     tools/live_test.sh incidents [n]           latest per-death incident files, one line each
+#     tools/live_test.sh incident <file>         one incident in full
+#     tools/live_test.sh brain <model|default>   point the bot at another litellm route + restart
 #   Scenarios: freeze | wood | raider [mob] | hunger | night
 #
 # ponytail: bash + rcon-cli + one small socket client, no framework. Everything
@@ -44,7 +48,8 @@ set -euo pipefail
 HOST=${MC_HOST:-docker.lan}
 MC=${MC_CONTAINER:-minecraft-prominence2}
 BOT_CONTAINER=${BOT_CONTAINER:-mindcraft}
-PLAYER=${MC_PLAYER:-clarkhackworth}
+PLAYER=${MC_PLAYER:-clarke_hackworth}
+AGENT=${AGENT_NAME:-Andy}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SNAPDIR=${SNAPDIR:-/tmp/live_test_snapshots}
 
@@ -54,15 +59,17 @@ rcon() { ssh "$HOST" "docker exec $MC rcon-cli \"$*\"" 2>&1; }
 # with a ':items[0-9]+$' anchor and printed an empty section from the day it
 # landed -- an empty section reads as "no deaths had items", which is the
 # opposite of what it meant. Strip it once here so no caller has to know.
-botlog() { ssh "$HOST" "docker logs --since ${2:-2m} $BOT_CONTAINER 2>&1" | tr -d '\r' | grep -E "$1" || true; }
-
-# Mindserver auth token: env wins, else pull it from the container (SETTINGS_JSON
-# env overrides /app/settings.js, so check both, env first).
-token() {
-    if [ -n "${MINDSERVER_TOKEN:-}" ]; then echo "$MINDSERVER_TOKEN"; return; fi
-    ssh "$HOST" "docker exec $BOT_CONTAINER sh -c 'printenv SETTINGS_JSON; cat /app/settings.js' 2>/dev/null" \
-        | grep -o '"mindserver_auth_token"[: ]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/'
-}
+# `docker logs --since` returns nothing on the docker.lan daemon (2026-09-07:
+# 0 lines for 10m/2h, hangs on an absolute stamp), and `--tail N` with N
+# larger than the file falls into the same forward read and stops at
+# 2026-09-06T13:30. `--tail 120000` reads backwards from the end and is fine
+# (4s). So: tail a bounded count, keep lines newer than the window by their
+# own timestamp, strip the stamp. Window: anything `date -d` takes after a
+# minus sign -- 30m, 2h, 1d. Recreating the container (not restart) would
+# start a fresh log file; add `logging: options: max-size` in compose then.
+since_iso() { date -u -d "-$(echo "${1:-30m}" | sed -E 's/([0-9]+)m$/\1 min/; s/([0-9]+)h$/\1 hour/; s/([0-9]+)d$/\1 day/; s/([0-9]+)s$/\1 sec/')" +%FT%TZ; }
+rawlog() { ssh "$HOST" "docker logs -t --tail ${LOG_TAIL:-120000} $BOT_CONTAINER 2>&1" | tr -d '\r' | awk -v s="$(since_iso "$1")" '$1 >= s' | cut -d' ' -f2-; }
+botlog() { rawlog "${2:-2m}" | grep -E "$1" || true; }
 
 # Talk to the agent over the mindserver socket -- instant and structured, and
 # !commands sent this way bypass the LLM entirely (no 30s wait, no API cost).
@@ -287,6 +294,10 @@ deploy)
     done
     echo "deploying: ${files[*]}"
     tar -C "$ROOT" -cz "${files[@]}" | ssh "$HOST" "docker exec -i $BOT_CONTAINER tar xz -C /app"
+    # Stamp the deploy so incidents and soak samples say which code produced them.
+    sha="$(git -C "$ROOT" rev-parse --short HEAD)$(git -C "$ROOT" diff --quiet HEAD -- || echo -dirty)"
+    printf '%s\n' "$sha" | ssh "$HOST" "docker exec -i $BOT_CONTAINER sh -c 'cat > /app/DEPLOY_SHA'"
+    echo "stamped DEPLOY_SHA=$sha"
     drive restart || { echo "socket restart failed; restarting container"; ssh "$HOST" "docker restart $BOT_CONTAINER"; }
     ;;
 
@@ -513,5 +524,53 @@ pit)
     ;;
 
 watch) shift; botlog "$1" "${2:-5m}" ;;
+
+# One table per window: everything the devlog entries have ever tallied by
+# hand. Run it before and after a deploy and compare the two.
+scorecard)
+    since=${2:-6h}
+    log=$(rawlog "$since")
+    c() { printf '%s' "$log" | grep -acE "$1" || true; }
+    echo "window=$since  deploy=$(ssh "$HOST" "docker exec $BOT_CONTAINER cat /app/DEPLOY_SHA 2>/dev/null" || echo unknown)"
+    printf 'deaths=%s  paid_turns=%s  noPath=%s  path_partial=%s  self_writes=%s  rule_fires=%s  goals_reached=%s  errors=%s\n' \
+        "$(c 'EVT death:death')" "$(c 'Awaiting .* api response')" "$(c 'noPath')" \
+        "$(printf '%s' "$log" | grep -oE 'move:path:partial(:n=[0-9]+)?' | awk -F'n=' '{s+=($2==""?1:$2)} END{print s+0}')" \
+        "$(c 'rule:fire:self')" "$(c 'EVT rule:fire')" "$(c 'move:goal_reached')" "$(c 'unhandled|fatal|Error:')"
+    echo "-- deaths by cause / night / armed:"
+    printf '%s' "$log" | grep -oE 'EVT death:death[^ ]+' | sed -E 's/EVT death:(death\.[a-zA-Z.]+):[-0-9,]+:([a-z]+):([a-z]+):items[0-9]+/\1 \2 \3/' | sort | uniq -c | sort -rn
+    echo "-- top rule fires:"
+    printf '%s' "$log" | grep -oE 'EVT rule:fire:[a-z_:0-9]+' | sort | uniq -c | sort -rn | head -12
+    ;;
+
+# Per-death incident files written by the agent (item 2). `incidents` lists the
+# latest N one per line; `incident <file>` prints one in full.
+incidents)
+    n=${2:-10}; dir=${INCIDENT_DIR:-/tmp/andy-incidents}; mkdir -p "$dir"
+    ssh "$HOST" "docker exec $BOT_CONTAINER sh -c 'cd /app/bots/$AGENT/incidents 2>/dev/null && ls -t | head -n $n | tar c -T -'" 2>/dev/null | tar x -C "$dir" 2>/dev/null || true
+    [ -n "$(ls -A "$dir")" ] || { echo "no incidents yet (none since the incident writer was deployed)"; exit 0; }
+    for f in $(ls -t "$dir" | head -n "$n"); do
+        node -e 'const i=JSON.parse(require("fs").readFileSync(process.argv[1]));
+            console.log(process.argv[1].split("/").pop().replace(".json",""), i.deploy??"", i.cause, i.pos.join(","), i.night?"night":"day", i.armed?"armed":"unarmed",
+              "food="+i.food, "action="+(i.action??"-"), i.prompt_in_flight?"PROMPT-IN-FLIGHT":"", "near="+(i.nearby.slice(0,3).map(e=>e.name+"@"+e.d).join(" ")||"-"))' "$dir/$f"
+    done
+    echo "(full files in $dir; \`incident <name>\` prints one)"
+    ;;
+incident)
+    ssh "$HOST" "docker exec $BOT_CONTAINER cat /app/bots/$AGENT/incidents/${2:?file}.json"
+    ;;
+
+# Swap the bot's brain without editing JSON by hand: `brain claude-haiku-4-5`
+# points chat + code models at that litellm route (keeps url/keys), `brain
+# default` goes back to the local model. llama.cpp-only params are dropped
+# for anything that is not "default".
+brain)
+    model=${2:?model name as litellm knows it}
+    ssh "$HOST" "docker exec -i $BOT_CONTAINER node -e '
+        const fs=require(\"fs\");const f=\"/app/profiles/litellm.json\";const p=JSON.parse(fs.readFileSync(f));
+        for (const k of [\"model\",\"code_model\"]) { if (!p[k]) continue; p[k].model=\"$model\";
+          if (\"$model\"!==\"default\") delete p[k].params?.chat_template_kwargs; else (p[k].params??={}).chat_template_kwargs={enable_thinking:false}; }
+        fs.writeFileSync(f, JSON.stringify(p,null,4)); console.log(\"brain ->\", p.model.model);'"
+    drive restart || ssh "$HOST" "docker restart $BOT_CONTAINER"
+    ;;
 *) sed -n '2,36p' "$0" ;;
 esac
