@@ -4,6 +4,7 @@ import pf from 'mineflayer-pathfinder';
 import Vec3 from 'vec3';
 import settings from "../../../settings.js";
 import { isUnreachable } from '../path_spin.js';
+import { fleeTargetFor } from '../../utils/flee_target.js';
 import { action_context } from '../action_manager.js';
 
 // How many blocks collectBlocks may break before it stops to pick the drops up,
@@ -3157,10 +3158,25 @@ export async function avoidEnemies(bot, distance=16, timeout_ms=FLEE_TIMEOUT_MS)
             gave_up = true;
             break;
         }
-        const follow = new pf.goals.GoalFollow(enemy, distance+1); // move a little further away
-        const inverted_goal = new pf.goals.GoalInvert(follow);
+        // Run TOWARD a concrete, walkable point instead of away from the mob.
+        // GoalInvert negates the heuristic so A* cannot bound the search (see
+        // the note above), and "away from something overhead" resolves to DOWN
+        // -- straight into a hard pocket's floor. The 2026-09-07 check-in pinned
+        // the bot at (-6,46,10) in the near-spawn pit with a drowned 22 blocks
+        // up: frozen at=, spin_abort, and an identical
+        // unreachable:GoalInvert:-6,68,5 every cooldown, while dig_in refused.
+        // A concrete target HAS coordinates, so the spin backstop records it as
+        // unreachable and isUnreachable refuses it on the next pass -- the old
+        // GoalInvert was invisible to that memo by construction and re-fired
+        // forever. fleeTargetFor holds y level and drops any point that lands in
+        // a hard pocket, so the escape aims OUT of the pit, not along its floor.
+        const escapes = fleeTargetFor(bot.entity.position, enemy.position, distance+1);
+        const open = escapes.find(t => !isUnreachable(bot, t.x, t.y, t.z));
+        const goal = open
+            ? new pf.goals.GoalNear(open.x, open.y, open.z, 2)
+            : new pf.goals.GoalInvert(new pf.goals.GoalFollow(enemy, distance+1));
         bot.pathfinder.setMovements(new pf.Movements(bot));
-        bot.pathfinder.setGoal(inverted_goal, true);
+        bot.pathfinder.setGoal(goal, true);
         await new Promise(resolve => setTimeout(resolve, 500));
         enemy = world.getNearestEntityWhere(bot, entity => mc.isHostile(entity), distance);
         if (bot.interrupt_code) {
