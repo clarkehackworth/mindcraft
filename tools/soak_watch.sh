@@ -16,7 +16,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 HOST=${MC_HOST:-docker.lan}
 MC=${MC_CONTAINER:-minecraft-prominence2}
 BOT=${BOT_CONTAINER:-mindcraft}
-PLAYER=${MC_PLAYER:-clarke_hackworth}
+PLAYER=${MC_PLAYER:-clark_hackworth}
 WINDOW=${SOAK_WINDOW:-30m}
 
 # `scorecard [log]`: one row per deployed sha -- samples, deaths, paid turns,
