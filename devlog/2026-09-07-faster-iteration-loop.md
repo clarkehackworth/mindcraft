@@ -102,7 +102,7 @@ defaulted `MC_PLAYER` to `clarkhackworth`. Every rcon primitive (`pos`, `tp`,
 `give`, `damage`, `heal`, the scenario setups, and the soak sample's
 hp/food/y) was addressing a player that does not exist and returning empty.
 Default corrected; `pos` and the soak sample now return real values.
-Since the A/B split the accounts are: Andy = `clark_hackworth` (harness
+Since the A/B split the accounts are: Andy = `clarkhackworth` (harness
 default), AndyB = `clarke_hackworth` (`MC_PLAYER=clarke_hackworth`). Andy's
 first login had been made with the `clarke_` account by mistake; its cache
 (`~/.minecraft/nmp-cache/ab5a00_*`, sha1("Andy")[:6]) was cleared to re-login.

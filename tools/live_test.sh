@@ -51,7 +51,7 @@ set -euo pipefail
 HOST=${MC_HOST:-docker.lan}
 MC=${MC_CONTAINER:-minecraft-prominence2}
 BOT_CONTAINER=${BOT_CONTAINER:-mindcraft}
-PLAYER=${MC_PLAYER:-clark_hackworth}
+PLAYER=${MC_PLAYER:-clarkhackworth}
 AGENT=${AGENT_NAME:-Andy}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SNAPDIR=${SNAPDIR:-/tmp/live_test_snapshots}
