@@ -70,7 +70,12 @@ sample of the live log was 44% `move:path:partial` lines, enough that
    `scorecard`/`rules`/`incidents`/soak samples read, `MC_PLAYER=<gamertag>`
    its rcon target. Runtime agents do not survive a container recreate.
    `spawn` is re-runnable: an existing agent is restarted, which re-issues the
-   code.
+   code. The `create-agent` socket path keeps only keys present in
+   `settings_spec.json`, which lacked `mod_data`, `view_distance`,
+   `exploration_radius` and `block_place_delay`: AndyB came up without the
+   mod data pack (registry warnings, viewer drawing trapdoors for stone) and
+   with `radius=undefined`. Added to the spec; the mindserver reads it at
+   start, so a container restart is needed after changing it.
 
 7. **Brain switch.** `live_test.sh brain <litellm-route>` rewrites the
    container's `profiles/litellm.json` chat and code models and restarts;
