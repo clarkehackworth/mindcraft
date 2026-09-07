@@ -63,6 +63,7 @@ below started as "the bot died again" on that server.
 | 2026-09-06 | [Cave ring: promote the death pocket to a hard wall](2026-09-06-cave-ring-hard-wall.md) | shipped; watching in-ring drownings + go_back_for_your_grave routing into the ring |
 | 2026-09-06 | [Hard-pocket self-tp: a bot already inside an inescapable pit escapes on its own](2026-09-06-hard-pocket-self-tp.md) | shipped; watching `stuck_hard_pocket_tp` fires + pit/ring soft-sticks |
 | 2026-09-07 | [Flee fallback: run toward a concrete out-of-pocket point](2026-09-07-flee-fallback-out-of-pit.md) | shipped; watching the `unreachable:GoalInvert` spin signature + near-spawn-pit pins |
+| 2026-09-07 | [path_stuck gate on go_back_for_your_grave](2026-09-07-path-stuck-grave-gate.md) | shipped |
 
 `ARCHITECTURE.md` at the repo root was written alongside the behavior policy
 layer — the arbiter needed a written model of where it sits before it could be

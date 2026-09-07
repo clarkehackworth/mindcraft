@@ -707,6 +707,12 @@
                 "cond": "hostile_nearby",
                 "range": 16
               }
+            },
+            {
+              "not": {
+                "cond": "path_stuck",
+                "count": 10
+              }
             }
           ]
         },
