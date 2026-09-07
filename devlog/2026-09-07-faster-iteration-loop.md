@@ -53,10 +53,24 @@ sample of the live log was 44% `move:path:partial` lines, enough that
    deaths/h and paid/h. `live_test.sh scorecard [since]` is the one-shot
    version straight from docker logs.
 
-6. **Two-bot A/B: blocked.** The server runs `online-mode=true`, so a second
-   agent needs a second Microsoft account (profile + login), or the server
-   switched to offline mode. Mindcraft itself needs nothing more than a second
-   entry in `settings.profiles`. Decide which and it is a ten-minute job.
+6. **Two-bot A/B.** `live_test.sh spawn <name>` creates a second agent in
+   the running container over the mindserver socket (`drive.js create`), from
+   a copy of `profiles/litellm.json` with the container's live settings, and
+   prints the Microsoft device-code link from its log. The auth cache is keyed
+   by agent name, so the login must use a **different Microsoft account** than
+   Andy's (`clarke_hackworth` is Andy). Both agents get `!startConversation`
+   and `!endConversation` blocked (AndyB via its settings, Andy via
+   `bots/Andy/settings.json` overrides) because on first spawn Andy spent its
+   first minute briefing AndyB about being stuck. Blocking the command alone
+   was not enough: AndyB's relayed login error opened a conversation on
+   Andy's side and every later command Andy issued went to AndyB. With
+   `!startConversation` blocked, `receiveFromBot` now drops inbound bot
+   messages too (`conversation_isolation.test.js`). `init_agent.js` now prefixes
+   every log line with `[Name]`; `AGENT_NAME=<name>` selects whose lines
+   `scorecard`/`rules`/`incidents`/soak samples read, `MC_PLAYER=<gamertag>`
+   its rcon target. Runtime agents do not survive a container recreate.
+   `spawn` is re-runnable: an existing agent is restarted, which re-issues the
+   code.
 
 7. **Brain switch.** `live_test.sh brain <litellm-route>` rewrites the
    container's `profiles/litellm.json` chat and code models and restarts;

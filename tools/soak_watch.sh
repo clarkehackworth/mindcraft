@@ -52,7 +52,9 @@ fi
 q() { ssh "$HOST" "docker exec $MC rcon-cli \"$*\"" 2>/dev/null | grep -oE '\-?[0-9]+\.?[0-9]*' | tail -1; }
 # tail + own-timestamp filter: `docker logs --since` returns nothing on this daemon (see live_test.sh rawlog)
 since=$(date -u -d "-$(echo "$WINDOW" | sed -E 's/([0-9]+)m$/\1 min/; s/([0-9]+)h$/\1 hour/')" +%FT%TZ)
-log=$(ssh "$HOST" "docker logs -t --tail 120000 $BOT 2>&1" | tr -d '\r' | awk -v s="$since" '$1 >= s' | cut -d' ' -f2-)
+AGENT=${AGENT_NAME:-Andy}
+log=$(ssh "$HOST" "docker logs -t --tail 120000 $BOT 2>&1" | tr -d '\r' \
+    | awk -v s="$since" -v a="[$AGENT]" '$1 >= s { if ($2 ~ /^\[[A-Za-z0-9_]+\]$/) { if ($2 != a) next; $2 = "" } print }' | cut -d' ' -f2- | sed 's/^ //')
 sha=$(ssh "$HOST" "docker exec $BOT cat /app/DEPLOY_SHA 2>/dev/null" || true)
 c() { printf '%s' "$log" | grep -acE "$1" || true; }
 

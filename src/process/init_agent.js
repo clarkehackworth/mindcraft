@@ -37,6 +37,14 @@ const argv = yargs(args)
     })
     .argv;
 
+// Agent processes inherit the host's stdio, so two agents' lines interleave in
+// docker logs with nothing to tell them apart. Prefix every line with the
+// agent's name; live_test.sh rawlog filters on it (AGENT_NAME).
+for (const level of ['log', 'warn', 'error']) {
+    const orig = console[level].bind(console);
+    console[level] = (...args) => orig(`[${argv.name}]`, ...args);
+}
+
 (async () => {
     try {
         console.log('Connecting to MindServer');

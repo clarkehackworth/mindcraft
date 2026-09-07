@@ -38,6 +38,9 @@
 #     tools/live_test.sh incidents [n]           latest per-death incident files, one line each
 #     tools/live_test.sh incident <file>         one incident in full
 #     tools/live_test.sh brain <model|default>   point the bot at another litellm route + restart
+#     tools/live_test.sh spawn <name>            second agent for A/B (prints the MS login code)
+#     AGENT_NAME=<name> tools/live_test.sh destroy  remove a runtime-spawned agent
+#   Env: AGENT_NAME (default Andy) selects whose log lines / incidents; MC_PLAYER its gamertag
 #   Scenarios: freeze | wood | raider [mob] | hunger | night
 #
 # ponytail: bash + rcon-cli + one small socket client, no framework. Everything
@@ -68,13 +71,25 @@ rcon() { ssh "$HOST" "docker exec $MC rcon-cli \"$*\"" 2>&1; }
 # minus sign -- 30m, 2h, 1d. Recreating the container (not restart) would
 # start a fresh log file; add `logging: options: max-size` in compose then.
 since_iso() { date -u -d "-$(echo "${1:-30m}" | sed -E 's/([0-9]+)m$/\1 min/; s/([0-9]+)h$/\1 hour/; s/([0-9]+)d$/\1 day/; s/([0-9]+)s$/\1 sec/')" +%FT%TZ; }
-rawlog() { ssh "$HOST" "docker logs -t --tail ${LOG_TAIL:-120000} $BOT_CONTAINER 2>&1" | tr -d '\r' | awk -v s="$(since_iso "$1")" '$1 >= s' | cut -d' ' -f2-; }
+# Lines carry "[Name] " when init_agent.js wrote them (2026-09-07+); keep only
+# $AGENT's and strip the tag. Untagged lines (host process, older logs) pass.
+rawlog() { ssh "$HOST" "docker logs -t --tail ${LOG_TAIL:-120000} $BOT_CONTAINER 2>&1" | tr -d '\r' \
+    | awk -v s="$(since_iso "$1")" -v a="[$AGENT]" '$1 >= s { if ($2 ~ /^\[[A-Za-z0-9_]+\]$/) { if ($2 != a) next; $2 = "" } print }' \
+    | cut -d' ' -f2- | sed 's/^ //'; }
 botlog() { rawlog "${2:-2m}" | grep -E "$1" || true; }
+
+# Mindserver auth token: env wins, else pull it from the container (SETTINGS_JSON
+# env overrides /app/settings.js, so check both, env first).
+token() {
+    if [ -n "${MINDSERVER_TOKEN:-}" ]; then echo "$MINDSERVER_TOKEN"; return; fi
+    ssh "$HOST" "docker exec $BOT_CONTAINER sh -c 'printenv SETTINGS_JSON; cat /app/settings.js' 2>/dev/null" \
+        | grep -o '"mindserver_auth_token"[: ]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/'
+}
 
 # Talk to the agent over the mindserver socket -- instant and structured, and
 # !commands sent this way bypass the LLM entirely (no 30s wait, no API cost).
 drive() {
-    MINDSERVER_TOKEN="$(token)" MINDSERVER_URL="${MINDSERVER_URL:-http://$HOST:8080}" \
+    AGENT="$AGENT" MINDSERVER_TOKEN="$(token)" MINDSERVER_URL="${MINDSERVER_URL:-http://$HOST:8080}" \
         node "$ROOT/tools/drive.js" "$@"
 }
 
@@ -169,7 +184,7 @@ restore)
 # --- mindserver socket --------------------------------------------------------
 say)     shift; drive say "$@" ;;
 evt)     shift; drive listen "${1:?pattern}" "${2:-90}" ;;
-restart|stop|start|policy) drive "$1" ;;
+restart|stop|start|destroy|policy) drive "$1" ;;
 # A busy agent starves the merge behind its goal-loop LLM calls until the
 # relay's timeout (600s, now 1800s) -- quiesce it first. And !stop leaves self-prompting
 # alive, so the bot can !policy mid-merge, bump the revision, and get the
@@ -557,6 +572,36 @@ incidents)
     ;;
 incident)
     ssh "$HOST" "docker exec $BOT_CONTAINER cat /app/bots/$AGENT/incidents/${2:?file}.json"
+    ;;
+
+# Second agent in the same container for A/B runs: copies profiles/litellm.json
+# to litellm_<name>.json with the new name, sends create-agent over the socket
+# with the container's own settings, then prints the Microsoft device-code line
+# from the log. Log in with a DIFFERENT Microsoft account: the cache is keyed by
+# agent name, and one account cannot be online twice. Runtime agents do not
+# survive a container recreate (add the profile to SETTINGS_JSON.profiles then).
+# Afterwards: AGENT_NAME=<name> MC_PLAYER=<its gamertag> tools/live_test.sh scorecard
+spawn)
+    name=${2:?agent name (3-16 alnum/underscore)}
+    tmp=$(mktemp)
+    ssh "$HOST" "docker exec $BOT_CONTAINER node --input-type=module -e '
+        import s from \"/app/settings.js\"; import fs from \"fs\";
+        const live = { ...s, ...JSON.parse(process.env.SETTINGS_JSON || \"{}\") }; // settings.js alone is the repo default, not what Andy runs
+        const p = JSON.parse(fs.readFileSync(\"/app/profiles/litellm.json\")); p.name = \"$name\";
+        fs.writeFileSync(\"/app/profiles/litellm_$name.json\", JSON.stringify(p, null, 4));
+        // A/B bots must not talk to each other: Andy spent its first minute briefing AndyB on being stuck.
+        live.blocked_actions = [...new Set([...(live.blocked_actions ?? []), \"!startConversation\", \"!endConversation\"])];
+        console.log(JSON.stringify({ ...live, profile: p }));'" > "$tmp"
+    # Re-runnable: an agent that already exists is restarted instead, which
+    # re-issues the device code (the first one expires with spawn_timeout).
+    drive create "$tmp" || AGENT=$name drive restart; rm -f "$tmp"
+    echo "waiting for the login prompt (up to 60s)..."
+    for _ in $(seq 12); do
+        code=$(AGENT=$name rawlog 3m | grep -oE 'microsoft\.com/link\?otc=[A-Z0-9]+' | tail -1 || true)
+        [ -n "$code" ] && { echo "LOGIN: http://$code  (use a different Microsoft account than Andy's)"; exit 0; }
+        sleep 5
+    done
+    echo "no device code seen yet -- check: tools/live_test.sh watch 'microsoft|LoginGuard|error' 5m"
     ;;
 
 # Swap the bot's brain without editing JSON by hand: `brain claude-haiku-4-5`
