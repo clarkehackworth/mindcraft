@@ -128,8 +128,9 @@ const REACH = 4.5; // blocks; vanilla interaction range is ~4.5 from the eyes
 // reach, else walk to it, else make one right here (4 planks) rather than
 // wait on a table behind a wall. Returns the block or null (already logged).
 export async function tableWithinReach(bot, range = 16) {
+    if (!bot.entity?.position) return null; // dead or not spawned: nothing to reach from
     const nearest = () => world.getNearestBlock(bot, 'crafting_table', range);
-    const inReach = (t) => t && bot.entity.position.distanceTo(t.position) <= REACH;
+    const inReach = (t) => !!t?.position && !!bot.entity?.position && bot.entity.position.distanceTo(t.position) <= REACH;
     let table = nearest();
     if (inReach(table)) return table;
     if (table) {
@@ -149,6 +150,7 @@ export async function tableWithinReach(bot, range = 16) {
     // cannot go where an entity stands: live, every attempt was "Failed to
     // place crafting_table at <own position>: blockUpdate did not fire". Use
     // a neighbouring block with solid ground under it.
+    if (!bot.entity?.position) return null; // died while walking or crafting the table
     const feet = bot.entity.position.floored();
     const spots = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]]
         .map(([dx, dz]) => feet.offset(dx, 0, dz))
@@ -3833,6 +3835,7 @@ function isFreeSpace(block) {
 // order of distance is the difference between escaping and bobbing.
 const ESCAPE_CANDIDATES = 3;
 function dryLandings(bot) {
+    if (!bot.entity?.position) return null; // died while walking or crafting the table
     const feet = bot.entity.position.floored();
     const found = [];
     for (let dx = -ESCAPE_RADIUS; dx <= ESCAPE_RADIUS; dx++) {
