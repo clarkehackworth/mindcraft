@@ -51,6 +51,7 @@ const DEFAULTS = { hp: 20, food: 20, y: 70, oxygen: 20, night: false, idle: fals
 // and the base+attributes stack.
 const COMPOSES = {
     survive_upgrade: mergeProfiles(loadProfile('survive_upgrade'), []),
+    survive_upgrade_b: mergeProfiles(loadProfile('survive_upgrade_b'), []),
     'stayin_alive+food_gathering+mining+leveling_up':
         mergeProfiles(loadProfile('stayin_alive'), ['food_gathering', 'mining', 'leveling_up'].map(loadProfile)),
 };
@@ -79,6 +80,21 @@ const SCENARIOS = {
     // chillager cluster: an illager in daylight is ranged and does not burn
     ranged_raider_by_day: [{ ranged_dist: 12, hostile_dist: 12 }, 'flee_ranged_raiders'],
 };
+
+// Candidate-only expectations: [compose, facts, first, never]
+const CANDIDATE = [
+    // Andy died gathering wood at night with a kobold at one block
+    ['survive_upgrade_b', { night: true, idle: true, blocks: { log: 10 } }, null, ['gather_wood_for_base', 'hunt_sheep_for_wool', 'mine_coal_ore']],
+    // by day on bare stone nothing went looking for trees
+    ['survive_upgrade_b', { idle: true }, 'go_find_trees'],
+    ['survive_upgrade', { idle: true, blocks: { log: 10 } }, 'gather_wood_for_base'],
+];
+for (const [compose, facts, first, never = []] of CANDIDATE)
+    test(`candidate [${compose}]: ${JSON.stringify(facts)}`, () => {
+        const fired = firing(COMPOSES[compose], facts);
+        if (first) assert.equal(fired[0], first, `fired: ${fired.join(', ') || '(nothing)'}`);
+        for (const n of never) assert.ok(!fired.includes(n), `${n} fired: ${fired.join(', ')}`);
+    });
 
 for (const [compose, policy] of Object.entries(COMPOSES))
     for (const [name, [facts, first, never = []]] of Object.entries(SCENARIOS))
