@@ -83,11 +83,15 @@ const SCENARIOS = {
 
 // Candidate-only expectations: [compose, facts, first, never]
 const CANDIDATE = [
-    // Andy died gathering wood at night with a kobold at one block
-    ['survive_upgrade_b', { night: true, idle: true, blocks: { log: 10 } }, null, ['gather_wood_for_base', 'hunt_sheep_for_wool', 'mine_coal_ore']],
-    // by day on bare stone nothing went looking for trees
-    ['survive_upgrade_b', { idle: true }, 'go_find_trees'],
+    // A/B 1, promoted 2026-09-08: night gate + go_find_trees now hold on the base too
+    ['survive_upgrade', { night: true, idle: true, blocks: { log: 10 } }, null, ['gather_wood_for_base', 'hunt_sheep_for_wool', 'mine_coal_ore']],
+    ['survive_upgrade', { idle: true }, 'go_find_trees'],
     ['survive_upgrade', { idle: true, blocks: { log: 10 } }, 'gather_wood_for_base'],
+    // A/B 2: respawned into the night on the spawn tile, zombie adjacent -- the base has no free reflex here
+    ['survive_upgrade_b', { night: true, respawn_dist: 2, hostile_dist: 1, attacked_s: 1 }, 'respawned_into_the_night'],
+    ['survive_upgrade', { night: true, respawn_dist: 2, hostile_dist: 1, attacked_s: 1 }, null, ['dig_in_when_hunted', 'dig_in_for_the_night', 'respawned_into_the_night']],
+    // twelve blocks off the tile the ordinary dig_in takes over
+    ['survive_upgrade_b', { night: true, respawn_dist: 12, hostile_dist: 6 }, 'dig_in_when_hunted', ['respawned_into_the_night']],
 ];
 for (const [compose, facts, first, never = []] of CANDIDATE)
     test(`candidate [${compose}]: ${JSON.stringify(facts)}`, () => {

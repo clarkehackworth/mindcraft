@@ -1,6 +1,6 @@
 # A/B candidate 1: night-gate the work rules, go find trees
 
-**Status:** running on AndyB from 2026-09-08 ~02:25 UTC. Control: Andy on
+**Status:** PROMOTED 2026-09-08 ~11:50 UTC after 550 minutes (see checks below); folded into `survive_upgrade.json`, Andy regenerated. Was running on AndyB from 2026-09-08 ~02:25 UTC. Control: Andy on
 `survive_upgrade`. Candidate: AndyB on `survive_upgrade_b`.
 
 ## Why

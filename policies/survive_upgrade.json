@@ -24,7 +24,8 @@
     "Cook raw meat at a furnace before storing it, and bank the surplus in the base chests so there is always food to come home to.",
     "Being unarmed is never a reason to stop feeding yourself. Foraging, baking, cooking and going out to look for food all happen whether or not there is a weapon in the bag -- an agent that cannot get wood must still be able to eat.",
     "A base in a barren area starves you slowly. When no berry bushes, crops or animals live within reach of the base, ranging out to find them IS the job: explore until you find a berry patch, a herd, or ground fit for a farm, !rememberHere the spot, and haul the harvest home. If you ever hold seeds, till ground near water at the base and plant them -- a farm is the only food source that comes to you.",
-    "Remember the places that pay off. The moment a berry patch or the base chest is in sight, remember_here it under a fixed name (\"berries\", \"pantry\") -- finding it was the expensive part, and a remembered spot makes every later trip a free goto_place instead of another 128-block search or another LLM turn. Gate the remembering on \"not place_known\" so it happens once, and gate the walking on place_known so the rule stays quiet until there is somewhere to go."
+    "Remember the places that pay off. The moment a berry patch or the base chest is in sight, remember_here it under a fixed name (\"berries\", \"pantry\") -- finding it was the expensive part, and a remembered spot makes every later trip a free goto_place instead of another 128-block search or another LLM turn. Gate the remembering on \"not place_known\" so it happens once, and gate the walking on place_known so the rule stays quiet until there is somewhere to go.",
+    "2026-09-08 promoted A/B candidate 1: night gate on travelling work rules; go_find_trees (devlog 2026-09-08-ab-night-gate-find-trees)"
   ],
   "goal": "Stay alive indefinitely, keep a self-sustaining food surplus at your base, and work your way up the gear ladder from wood to stone to iron to diamond. Keep a bed and stocked chests, keep food, shelter and the best weapon and armour you have made between you and every way this world can end you. Actively farm, forage, hunt and remember productive spots, and mine coal, iron and diamond with a pickaxe good enough for the job, light what you dig, and haul the ore and harvest home to the base chests. Spend better gear the moment you can craft it -- wear it, do not bank it. Work the land within your exploration radius; your base stays where it is. Be at camp when night falls, and spend the night working the things camp is for rather than waiting in a hole for morning.",
   "policy": {
@@ -1071,7 +1072,7 @@
       },
       {
         "name": "hunt_sheep_for_wool",
-        "description": "Hunt sheep for wool if no wool and no bed and animals nearby and idle.",
+        "description": "Hunt sheep for wool if no wool and no bed and animals nearby and idle. Gated off at night (A/B 1): Andy died gathering wood in the dark with a kobold one block away while the shelter rule sat behind a paid prompt.",
         "when": {
           "all": [
             {
@@ -1101,6 +1102,12 @@
             },
             {
               "cond": "is_idle"
+            },
+            {
+              "not": {
+                "cond": "is_night",
+                "lead": 1500
+              }
             }
           ]
         },
@@ -1291,7 +1298,7 @@
       },
       {
         "name": "gather_wood_for_base",
-        "description": "Gather wood for base if logs nearby and not many logs in inventory.",
+        "description": "Gather wood for base if logs nearby and not many logs in inventory. Gated off at night (A/B 1): Andy died gathering wood in the dark with a kobold one block away while the shelter rule sat behind a paid prompt.",
         "when": {
           "all": [
             {
@@ -1304,6 +1311,12 @@
                 "cond": "has_item",
                 "item": "log",
                 "count": 16
+              }
+            },
+            {
+              "not": {
+                "cond": "is_night",
+                "lead": 1500
               }
             }
           ]
@@ -1318,6 +1331,51 @@
         "interrupts": "idle",
         "cooldown": 60,
         "pinned": false
+      },
+      {
+        "name": "go_find_trees",
+        "description": "Both bots sat on stone and ruins with no log within sight all day: gather_wood_for_base needs a log within 24 and nothing went looking. By day, with no wood in the bag and none in reach, search wider and bring back a stack.",
+        "interrupts": "idle",
+        "cooldown": 300,
+        "when": {
+          "all": [
+            {
+              "not": {
+                "cond": "block_nearby",
+                "name": "log",
+                "range": 16
+              }
+            },
+            {
+              "not": {
+                "cond": "has_item",
+                "item": "log",
+                "count": 4
+              }
+            },
+            {
+              "not": {
+                "cond": "is_night",
+                "lead": 1500
+              }
+            },
+            {
+              "cond": "is_idle"
+            }
+          ]
+        },
+        "do": [
+          {
+            "act": "search_block",
+            "type": "log",
+            "range": 160
+          },
+          {
+            "act": "collect",
+            "type": "log",
+            "num": 8
+          }
+        ]
       },
       {
         "name": "build_storage_chests",
@@ -1360,7 +1418,7 @@
       },
       {
         "name": "expand_storage_room",
-        "description": "Expand storage room if chest nearby and wood available and idle.",
+        "description": "Expand storage room if chest nearby and wood available and idle. Gated off at night (A/B 1): Andy died gathering wood in the dark with a kobold one block away while the shelter rule sat behind a paid prompt.",
         "when": {
           "all": [
             {
@@ -1375,6 +1433,12 @@
             },
             {
               "cond": "is_idle"
+            },
+            {
+              "not": {
+                "cond": "is_night",
+                "lead": 1500
+              }
             }
           ]
         },
@@ -1995,7 +2059,7 @@
       },
       {
         "name": "stock_the_pantry",
-        "description": "Stock the pantry if pantry known and surplus food available.",
+        "description": "Stock the pantry if pantry known and surplus food available. Gated off at night (A/B 1): Andy died gathering wood in the dark with a kobold one block away while the shelter rule sat behind a paid prompt.",
         "when": {
           "all": [
             {
@@ -2025,6 +2089,12 @@
                   "count": 48
                 }
               ]
+            },
+            {
+              "not": {
+                "cond": "is_night",
+                "lead": 1500
+              }
             }
           ]
         },
@@ -2061,7 +2131,7 @@
       },
       {
         "name": "walk_the_berry_route",
-        "description": "Walk the berry route if berries low and patch known and not nearby and idle.",
+        "description": "Walk the berry route if berries low and patch known and not nearby and idle. Gated off at night (A/B 1): Andy died gathering wood in the dark with a kobold one block away while the shelter rule sat behind a paid prompt.",
         "when": {
           "all": [
             {
@@ -2084,6 +2154,12 @@
             },
             {
               "cond": "is_idle"
+            },
+            {
+              "not": {
+                "cond": "is_night",
+                "lead": 1500
+              }
             }
           ]
         },
@@ -2105,7 +2181,7 @@
       },
       {
         "name": "berry_run_while_stocked_low",
-        "description": "Berry run while stocked low if berries low and idle.",
+        "description": "Berry run while stocked low if berries low and idle. Gated off at night (A/B 1): Andy died gathering wood in the dark with a kobold one block away while the shelter rule sat behind a paid prompt.",
         "when": {
           "all": [
             {
@@ -2117,6 +2193,12 @@
             },
             {
               "cond": "is_idle"
+            },
+            {
+              "not": {
+                "cond": "is_night",
+                "lead": 1500
+              }
             }
           ]
         },
@@ -2138,7 +2220,7 @@
       },
       {
         "name": "hunt_for_the_larder",
-        "description": "Hunt for the larder if meat stock low and animals nearby and idle.",
+        "description": "Hunt for the larder if meat stock low and animals nearby and idle. Gated off at night (A/B 1): Andy died gathering wood in the dark with a kobold one block away while the shelter rule sat behind a paid prompt.",
         "when": {
           "all": [
             {
@@ -2178,6 +2260,12 @@
             },
             {
               "cond": "is_idle"
+            },
+            {
+              "not": {
+                "cond": "is_night",
+                "lead": 1500
+              }
             }
           ]
         },
@@ -2199,7 +2287,7 @@
       },
       {
         "name": "search_out_berries",
-        "description": "Search out berries if hungry and no food and no berry bush nearby and idle.",
+        "description": "Search out berries if hungry and no food and no berry bush nearby and idle. Gated off at night (A/B 1): Andy died gathering wood in the dark with a kobold one block away while the shelter rule sat behind a paid prompt.",
         "when": {
           "all": [
             {
@@ -2220,6 +2308,12 @@
             },
             {
               "cond": "is_idle"
+            },
+            {
+              "not": {
+                "cond": "is_night",
+                "lead": 1500
+              }
             }
           ]
         },
@@ -2241,7 +2335,7 @@
       },
       {
         "name": "search_out_game",
-        "description": "Search out game if hungrier and no food and no animals nearby and idle.",
+        "description": "Search out game if hungrier and no food and no animals nearby and idle. Gated off at night (A/B 1): Andy died gathering wood in the dark with a kobold one block away while the shelter rule sat behind a paid prompt.",
         "when": {
           "all": [
             {
@@ -2261,6 +2355,12 @@
             },
             {
               "cond": "is_idle"
+            },
+            {
+              "not": {
+                "cond": "is_night",
+                "lead": 1500
+              }
             }
           ]
         },
@@ -2276,7 +2376,7 @@
       },
       {
         "name": "go_find_food_when_none_in_reach",
-        "description": "Go find food when none in reach if hungry and no food and no resources nearby and idle.",
+        "description": "Go find food when none in reach if hungry and no food and no resources nearby and idle. Gated off at night (A/B 1): Andy died gathering wood in the dark with a kobold one block away while the shelter rule sat behind a paid prompt.",
         "when": {
           "all": [
             {
@@ -2323,6 +2423,12 @@
                 "cond": "block_nearby",
                 "name": "wheat",
                 "range": 24
+              }
+            },
+            {
+              "not": {
+                "cond": "is_night",
+                "lead": 1500
               }
             }
           ]
@@ -2601,7 +2707,7 @@
       },
       {
         "name": "go_get_the_next_tier",
-        "description": "Idle with a working pickaxe and no iron yet: the next tier is underground, not here.",
+        "description": "Idle with a working pickaxe and no iron yet: the next tier is underground, not here. Gated off at night (A/B 1): Andy died gathering wood in the dark with a kobold one block away while the shelter rule sat behind a paid prompt.",
         "interrupts": "idle",
         "when": {
           "all": [
@@ -2619,6 +2725,12 @@
                 "item": "iron_ingot",
                 "count": 3
               }
+            },
+            {
+              "not": {
+                "cond": "is_night",
+                "lead": 1500
+              }
             }
           ]
         },
@@ -2633,7 +2745,7 @@
       },
       {
         "name": "mine_diamond_ore",
-        "description": "Diamond first, always -- it is the rarest thing you will walk past.",
+        "description": "Diamond first, always -- it is the rarest thing you will walk past. Gated off at night (A/B 1): Andy died gathering wood in the dark with a kobold one block away while the shelter rule sat behind a paid prompt.",
         "interrupts": "idle",
         "when": {
           "all": [
@@ -2646,6 +2758,12 @@
               "cond": "has_item",
               "item": "iron_pickaxe",
               "count": 1
+            },
+            {
+              "not": {
+                "cond": "is_night",
+                "lead": 1500
+              }
             }
           ]
         },
@@ -2661,7 +2779,7 @@
       },
       {
         "name": "mine_iron_ore",
-        "description": "Iron is armour, tools and buckets. Take every vein you find.",
+        "description": "Iron is armour, tools and buckets. Take every vein you find. Gated off at night (A/B 1): Andy died gathering wood in the dark with a kobold one block away while the shelter rule sat behind a paid prompt.",
         "interrupts": "idle",
         "when": {
           "all": [
@@ -2674,6 +2792,12 @@
               "cond": "has_item",
               "item": "stone_pickaxe",
               "count": 1
+            },
+            {
+              "not": {
+                "cond": "is_night",
+                "lead": 1500
+              }
             }
           ]
         },
@@ -2688,7 +2812,7 @@
       },
       {
         "name": "mine_coal_ore",
-        "description": "Coal is torches and furnace fuel, and torches are what keep the tunnel safe.",
+        "description": "Coal is torches and furnace fuel, and torches are what keep the tunnel safe. Gated off at night (A/B 1): Andy died gathering wood in the dark with a kobold one block away while the shelter rule sat behind a paid prompt.",
         "interrupts": "idle",
         "when": {
           "all": [
@@ -2702,6 +2826,12 @@
                 "cond": "has_item",
                 "item": "coal",
                 "count": 48
+              }
+            },
+            {
+              "not": {
+                "cond": "is_night",
+                "lead": 1500
               }
             }
           ]
@@ -2717,7 +2847,7 @@
       },
       {
         "name": "keep_stone_stocked",
-        "description": "Cobblestone is furnaces, tools and a wall between you and whatever is down there.",
+        "description": "Cobblestone is furnaces, tools and a wall between you and whatever is down there. Gated off at night (A/B 1): Andy died gathering wood in the dark with a kobold one block away while the shelter rule sat behind a paid prompt.",
         "interrupts": "idle",
         "when": {
           "all": [
@@ -2731,6 +2861,12 @@
                 "cond": "has_item",
                 "item": "cobblestone",
                 "count": 64
+              }
+            },
+            {
+              "not": {
+                "cond": "is_night",
+                "lead": 1500
               }
             }
           ]
@@ -2802,7 +2938,7 @@
       },
       {
         "name": "go_find_ore",
-        "description": "Nothing worth mining in sight: go look for a vein rather than standing around.",
+        "description": "Nothing worth mining in sight: go look for a vein rather than standing around. Gated off at night (A/B 1): Andy died gathering wood in the dark with a kobold one block away while the shelter rule sat behind a paid prompt.",
         "interrupts": "idle",
         "when": {
           "all": [
@@ -2820,6 +2956,12 @@
               "cond": "has_item",
               "item": "stone_pickaxe",
               "count": 1
+            },
+            {
+              "not": {
+                "cond": "is_night",
+                "lead": 1500
+              }
             }
           ]
         },
@@ -2859,7 +3001,7 @@
       },
       {
         "name": "haul_ore_to_base",
-        "description": "Carry the ore home instead of losing the lot to one bad fall.",
+        "description": "Carry the ore home instead of losing the lot to one bad fall. Gated off at night (A/B 1): Andy died gathering wood in the dark with a kobold one block away while the shelter rule sat behind a paid prompt.",
         "interrupts": "idle",
         "when": {
           "all": [
@@ -2872,6 +3014,12 @@
               "cond": "has_item",
               "item": "cobblestone",
               "count": 64
+            },
+            {
+              "not": {
+                "cond": "is_night",
+                "lead": 1500
+              }
             }
           ]
         },

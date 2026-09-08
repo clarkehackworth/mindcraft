@@ -66,7 +66,8 @@ below started as "the bot died again" on that server.
 | 2026-09-07 | [path_stuck gate on go_back_for_your_grave](2026-09-07-path-stuck-grave-gate.md) | shipped |
 | 2026-09-07 | [Faster iteration: deterministic merge, incidents, fixtures, scorecards](2026-09-07-faster-iteration-loop.md) | shipped; A/B bot needs 2nd account |
 | 2026-09-08 | [Crafting: the bot clicked the table from 12 blocks away](2026-09-08-crafting-table-reach.md) | shipped |
-| 2026-09-08 | [A/B 1: night-gate work rules + go_find_trees](2026-09-08-ab-night-gate-find-trees.md) | running on AndyB |
+| 2026-09-08 | [A/B 1: night-gate work rules + go_find_trees](2026-09-08-ab-night-gate-find-trees.md) | promoted 2026-09-08 |
+| 2026-09-08 | [A/B 2: respawned into the night](2026-09-08-ab-respawned-into-the-night.md) | running on AndyB |
 
 `ARCHITECTURE.md` at the repo root was written alongside the behavior policy
 layer — the arbiter needed a written model of where it sits before it could be
