@@ -87,3 +87,20 @@ assert.equal(await tableCraft(fakeBot(dead), RECIPE, 1, {}), 0, 'a dead table re
 assert.ok(dead.slots.slice(1, 10).every(s => !s), 'stuck ingredients are withdrawn, not stranded');
 
 console.log('ok: tableCraft trusts only the server, retries ignored takes, never fabricates results');
+
+// Out of reach: return null at once instead of waiting 2x20s on a windowOpen
+// the server will never send (it ignores far-away interactions silently).
+{
+    const { openWithRetry } = await import('./skills.js');
+    const far = { name: 'crafting_table', position: { x: 12, y: 0, z: 0 } };
+    const bot = { entity: { position: { distanceTo: (p) => Math.hypot(p.x, p.y, p.z) } }, output: '' };
+    let opened = 0;
+    const t0 = Date.now();
+    const w = await openWithRetry(bot, far, async () => { opened++; return {}; });
+    assert.equal(w, null, 'no window from 12 blocks away');
+    assert.equal(opened, 0, 'did not even try to open');
+    assert.ok(Date.now() - t0 < 1000, 'returned immediately');
+    const near = { name: 'crafting_table', position: { x: 3, y: 0, z: 0 } };
+    assert.ok(await openWithRetry(bot, near, async () => ({})), 'in reach opens');
+    console.log('openWithRetry reach guard: ok');
+}

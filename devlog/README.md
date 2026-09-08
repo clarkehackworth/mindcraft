@@ -51,6 +51,7 @@ below started as "the bot died again" on that server.
 | 2026-09-01 | [Arm gate: threat level, not presence](2026-09-01-hostile-gate-threat-level.md) | shipped, watching arm fires + Crafted |
 | 2026-09-02 | [Collect retry for transient pathfinder interrupts](2026-09-02-collect-retry-transient-interrupt.md) | shipped, watching Crafted count |
 | 2026-09-07 | [Faster iteration: deterministic merge, incidents, fixtures, scorecards](2026-09-07-faster-iteration-loop.md) | shipped; A/B bot needs 2nd account |
+| 2026-09-08 | [Crafting: the bot clicked the table from 12 blocks away](2026-09-08-crafting-table-reach.md) | shipped |
 
 `ARCHITECTURE.md` at the repo root was written alongside the behavior policy
 layer — the arbiter needed a written model of where it sits before it could be
