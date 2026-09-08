@@ -152,13 +152,20 @@ export async function tableWithinReach(bot, range = 16) {
     // a neighbouring block with solid ground under it.
     if (!bot.entity?.position) return null; // died while walking or crafting the table
     const feet = bot.entity.position.floored();
-    const spots = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]]
-        .map(([dx, dz]) => feet.offset(dx, 0, dz))
-        .filter(q => {
-            const top = bot.blockAt(q), floor = bot.blockAt(q.offset(0, -1, 0));
-            // mod-registry blocks may carry no boundingBox; only rule out what is plainly not ground
-            return top?.name === 'air' && floor && !/^(air|cave_air|void_air|water|lava)$/.test(floor.name) && floor.boundingBox !== 'empty';
-        });
+    // Any air block with ground under it within two blocks, nearest first,
+    // not the two the bot occupies. The four side neighbours alone were not
+    // enough: AndyB sat in a one-wide tunnel ("water/stone stone/stone") and
+    // never re-armed after its wooden pickaxe wore out.
+    const spots = [];
+    for (let dy = 1; dy >= -1; dy--) for (let dx = -2; dx <= 2; dx++) for (let dz = -2; dz <= 2; dz++) {
+        if (dx === 0 && dz === 0 && dy >= 0) continue;
+        const q = feet.offset(dx, dy, dz);
+        const top = bot.blockAt(q), floor = bot.blockAt(q.offset(0, -1, 0));
+        // mod-registry blocks may carry no boundingBox; only rule out what is plainly not ground
+        if (top?.name === 'air' && floor && !/^(air|cave_air|void_air|water|lava)$/.test(floor.name) && floor.boundingBox !== 'empty')
+            spots.push(q);
+    }
+    spots.sort((a, b) => a.distanceTo(feet) - b.distanceTo(feet));
     for (const q of spots) {
         if (!await placeBlock(bot, 'crafting_table', q.x, q.y, q.z)) continue;
         for (let i = 0; i < 10; i++) { // the placed block takes a moment to show up in the world cache
@@ -168,7 +175,7 @@ export async function tableWithinReach(bot, range = 16) {
         }
     }
     const around = [[1, 0], [-1, 0], [0, 1], [0, -1]].map(([dx, dz]) => { const q = feet.offset(dx, 0, dz); return `${bot.blockAt(q)?.name ?? 'null'}/${bot.blockAt(q.offset(0, -1, 0))?.name ?? 'null'}`; }).join(' ');
-    log(bot, spots.length ? `Could not place a crafting table on any of the ${spots.length} free blocks beside you.` : `No free block with solid ground beside you to put a crafting table on (E W S N top/floor: ${around}; standing on ${bot.blockAt(feet.offset(0, -1, 0))?.name ?? 'null'}).`);
+    log(bot, spots.length ? `Could not place a crafting table on any of the ${spots.length} free blocks within two of you.` : `No free block with solid ground within two blocks to put a crafting table on (E W S N top/floor: ${around}; standing on ${bot.blockAt(feet.offset(0, -1, 0))?.name ?? 'null'}). Dig one out or step into the open first.`);
     return null;
 }
 

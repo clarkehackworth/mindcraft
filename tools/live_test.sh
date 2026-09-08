@@ -560,7 +560,7 @@ scorecard)
 # Per-death incident files written by the agent (item 2). `incidents` lists the
 # latest N one per line; `incident <file>` prints one in full.
 incidents)
-    n=${2:-10}; dir=${INCIDENT_DIR:-/tmp/andy-incidents}; mkdir -p "$dir"
+    n=${2:-10}; dir=${INCIDENT_DIR:-/tmp/incidents-$AGENT}; mkdir -p "$dir"  # per agent: a shared dir mixed Andy's deaths into AndyB's list
     ssh "$HOST" "docker exec $BOT_CONTAINER sh -c 'cd /app/bots/$AGENT/incidents 2>/dev/null && ls -t | head -n $n | tar c -T -'" 2>/dev/null | tar x -C "$dir" 2>/dev/null || true
     [ -n "$(ls -A "$dir")" ] || { echo "no incidents yet (none since the incident writer was deployed)"; exit 0; }
     for f in $(ls -t "$dir" | head -n "$n"); do

@@ -35,3 +35,19 @@ fires first on B; on the control, wood still fires with logs nearby.
 over the same window, at least two hours, ideally three day/night cycles.
 Win = fewer deaths/h with paid/h not worse, and AndyB holding logs/tools at
 dusk. Promote by folding into `survive_upgrade.json` and regen Andy.
+
+## Interim, 85 minutes in (03:48 UTC)
+
+| agent | deaths | paid turns | noPath | goals | inventory at check |
+|---|---|---|---|---|---|
+| Andy (control) | 1 (drown, day) | 69 | 8 | 20 | sand, dirt |
+| AndyB (candidate) | 0 | 57 | 5 | 61 | 36 cobblestone, 7 coal, 19 torches, planks, table |
+
+`go_find_trees` fired four times and found logs every time. AndyB crafted a
+wooden pickaxe and shovel at 02:42, mined the cobblestone and coal with the
+pickaxe, and the pickaxe **wore out**: that is where the "vanishing tools"
+went, both tonight and earlier. Every re-arm after that failed: the table 20
+blocks away was unreachable and the bot stood in a one-wide, water-edged
+tunnel with no air block beside it for a new one. `tableWithinReach` now
+searches any air block with a floor within two blocks (deployed, this commit).
+Too early to promote; the night gate has one dusk behind it.
