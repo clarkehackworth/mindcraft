@@ -81,3 +81,36 @@ next blocker, not wood.
 paid turns. Not decisive over one window with this much variance. Keep it
 running through another full day/night pair before promoting, and treat
 food (starving into water) as candidate 2.
+
+## Check at 550 minutes (11:35 UTC), about seven dusks in
+
+Full window since 02:25:
+
+| agent | deaths | deaths/h | night unarmed | drown | starve | paid turns | paid/h | noPath | goals |
+|---|---|---|---|---|---|---|---|---|---|
+| Andy (control) | 29 | 3.2 | 21 | 2 | 0 | 744 | 81 | 466 | 515 |
+| AndyB (candidate) | 14 | 1.5 | 6 | 4 | 1 | 453 | 49 | 188 | 1188 |
+
+Since the previous check (327 min): Andy 23 deaths / 516 paid / 195 goals;
+AndyB 10 deaths / 204 paid / 884 goals.
+
+What the incident files show:
+
+- **Both bots get spawn-camped at night.** Andy died four times in fifteen
+  seconds at 08:51 on its own spawnpoint (-2,63,64), and AndyB five times in
+  eight minutes at 09:20-09:28. Respawning into the same night with nothing
+  in hand, next to whatever killed you, is the dominant death mode for both.
+  The candidate does not address it; it just dies there less often because
+  it spends more of the day with tools and torches.
+- **AndyB's day deaths are drownings while armed** at y=39-53 (614,39,67;
+  634,40,53; 597,53,-67): it goes after ore through flooded caves. One
+  starvation at 08:42, food=0.
+- Andy never leaves the flooded village around its base; 21 of 29 deaths are
+  night, unarmed, to mobs within 60 blocks of home.
+
+**Verdict:** the candidate halves deaths per hour, cuts paid turns per hour
+by 40%, and more than doubles goals reached, consistently across two checks
+and seven dusks. Recommend promoting. Next candidates, in order: (2) night
+respawn -- do not stand on the spawnpoint at night; move the spawnpoint or
+dig in immediately on respawn; (3) food before it hits single digits;
+(4) no ore runs through water.
