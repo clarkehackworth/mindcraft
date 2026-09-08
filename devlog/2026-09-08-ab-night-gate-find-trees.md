@@ -51,3 +51,33 @@ blocks away was unreachable and the bot stood in a one-wide, water-edged
 tunnel with no air block beside it for a new one. `tableWithinReach` now
 searches any air block with a floor within two blocks (deployed, this commit).
 Too early to promote; the night gate has one dusk behind it.
+
+## Check at 223 minutes (06:08 UTC), three dusks in
+
+| agent | deaths | night | armed at death | paid turns | noPath | goals | inventory at check |
+|---|---|---|---|---|---|---|---|
+| Andy (control) | 6 | 5 | 2 | 228 | 50 | 320 | empty (died 06:08) |
+| AndyB (candidate) | 4 | 3 | 2 | 249 | 71 | 308 | 17 logs, table, sticks, planks |
+
+Deaths per hour: Andy 1.6, AndyB 1.1. Paid turns per hour: Andy 61, AndyB 67.
+
+AndyB's crafting chain now works end to end: wooden pickaxe and shovel at
+02:42, then after the wider table placement landed, a full stone set (axe,
+pickaxe, sword) at 03:56. It lost that set five minutes later drowning at
+food=4, re-armed with a wooden sword at 04:17, and died again at 05:24
+(drown, food=6) and 05:29 (zombie at 0.6, night, unarmed). Two wooden
+pickaxe crafts at 04:26 and 04:42 still hit "never produced the result".
+
+Night deaths on the candidate: 04:04 with `dig_in_when_hunted` running and a
+zombie at 1.1 blocks; 05:29 under `cowardice`. The gate keeps the work rules
+out of the dark, but the free shelter reflexes still lose to a mob that is
+already adjacent. Andy died three times in 65 seconds at 03:59-04:00 to
+zombies at its own base.
+
+Two of AndyB's four deaths were drownings at food 4 and 6: hunger is now the
+next blocker, not wood.
+
+**Verdict so far:** fewer deaths, more progress per death, slightly more
+paid turns. Not decisive over one window with this much variance. Keep it
+running through another full day/night pair before promoting, and treat
+food (starving into water) as candidate 2.
