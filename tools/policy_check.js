@@ -1,6 +1,6 @@
 // Self-check for the behavior policy layer. Run: node tools/policy_check.js
 import assert from 'assert';
-import { validatePolicy, evalCondition, Rule, describePolicy } from '../src/agent/behavior/policy.js';
+import { validatePolicy, evalCondition, Rule, describePolicy, mergeProfiles, loadProfile } from '../src/agent/behavior/policy.js';
 
 const fakeAgent = {
     bot: { health: 5, food: 20, interrupt_code: false, time: { timeOfDay: 14000 }, entity: { position: { distanceTo: () => 2 } } },
@@ -56,5 +56,11 @@ assert.deepEqual(ran, ['policy:flee_test', 'chat:hi']);
 // describe
 assert.ok(describePolicy(good).includes('self_defense=off'));
 assert.ok(describePolicy(good).includes('panic_eat'));
+
+// the shipped profiles must merge deterministically (no LLM regen)
+for (const attrs of [['food_gathering'], ['food_gathering', 'mining'], ['food_gathering', 'mining', 'leveling_up']]) {
+    const err = validatePolicy(mergeProfiles(loadProfile('stayin_alive'), attrs.map(loadProfile)));
+    assert.equal(err, null, `stayin_alive + ${attrs.join('+')}: ${err}`);
+}
 
 console.log('policy_check: all assertions passed');

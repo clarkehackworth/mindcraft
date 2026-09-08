@@ -1,3 +1,4 @@
+import fs from 'fs';
 import { History } from './history.js';
 import { Coder } from './coder.js';
 import { VisionInterpreter } from './vision/vision_interpreter.js';
@@ -444,6 +445,41 @@ export class Agent {
     // guard's error branch, and the runtime 'end'/'kicked' events. They used to
     // take different exits -- one process.exit, one cleanKill -- which is why
     // the runtime disconnects never got the save the login path had.
+    // One file per death under bots/<name>/incidents/: what it was, where,
+    // what it carried, what was near, whether an LLM turn was in flight, and
+    // the last 60s of EVT lines. Read these instead of grepping the soak log.
+    _writeIncident(cause, message, pos, items, armed) {
+        try {
+            const now = Date.now();
+            const ring = console._evt_ring ?? [];
+            const lastAwait = ring.filter(r => r[1].startsWith('Awaiting')).pop();
+            const lastRecv = ring.filter(r => r[1] === 'Received.').pop();
+            const nearby = Object.values(this.bot.entities ?? {})
+                .filter(e => e !== this.bot.entity && e.position && e.position.distanceTo(pos) <= 32)
+                .map(e => ({ name: e.name ?? e.username ?? e.type, d: +e.position.distanceTo(pos).toFixed(1) }))
+                .sort((a, b) => a.d - b.d).slice(0, 20);
+            const incident = {
+                ts: new Date(now).toISOString(), cause, message,
+                pos: [Math.floor(pos.x), Math.floor(pos.y), Math.floor(pos.z)],
+                night: this.bot.time.timeOfDay >= 13000, time_of_day: this.bot.time.timeOfDay,
+                armed, held: this.bot.heldItem?.name ?? null,
+                food: this.bot.food, oxygen: this.bot.oxygenLevel,
+                inventory: items.map(i => `${i.name}x${i.count}`),
+                nearby,
+                action: this.actions?.currentActionLabel || null,
+                prompt_in_flight: !!lastAwait && (!lastRecv || lastAwait[0] > lastRecv[0]),
+                self_prompt: this.self_prompter?.state ?? null,
+                deploy: (() => { try { return fs.readFileSync('./DEPLOY_SHA', 'utf8').trim(); } catch { return null; } })(),
+                recent: ring.filter(r => now - r[0] <= 60000).map(r => `${((r[0] - now) / 1000).toFixed(1)}s ${r[1]}`),
+            };
+            const dir = `./bots/${this.name}/incidents`;
+            fs.mkdirSync(dir, { recursive: true });
+            const file = `${dir}/${new Date(now).toISOString().replace(/[:.]/g, '-')}.json`;
+            fs.writeFileSync(file, JSON.stringify(incident, null, 1));
+            console.log(`EVT death:incident:${file}`);
+        } catch (e) { console.warn('incident dump failed:', e.message); }
+    }
+
     _handleDisconnect(reason, code = 1) {
         if (this._disconnectHandled) return;
         this._disconnectHandled = true;
@@ -914,7 +950,17 @@ export class Agent {
                 // not where it is stuck.
                 const p = this.bot.entity?.position;
                 const at = p ? `${Math.floor(p.x)},${Math.floor(p.y)},${Math.floor(p.z)}` : '?';
-                console.log(`EVT move:path:${r.status}:visited=${r.visitedNodes?.length ?? r.visitedNodes ?? '?'}:at=${at}`);
+                // "partial" arrives ~12/sec during a spin and was 44% of the
+                // whole log, enough that `docker logs --since 24h` timed out.
+                // One line per 10s carrying the count keeps the tally exact.
+                if (r.status === 'partial') {
+                    this._partial_n = (this._partial_n ?? 0) + 1;
+                    if (Date.now() - (this._partial_t ?? 0) >= 10000) {
+                        console.log(`EVT move:path:partial:n=${this._partial_n}:visited=${r.visitedNodes?.length ?? r.visitedNodes ?? '?'}:at=${at}`);
+                        this._partial_t = Date.now(); this._partial_n = 0;
+                    }
+                } else
+                    console.log(`EVT move:path:${r.status}:visited=${r.visitedNodes?.length ?? r.visitedNodes ?? '?'}:at=${at}`);
                 // Failing in the same block over and over is a different problem
                 // from failing a lot: one is terrain the bot cannot cross, the
                 // other is bad luck. A soak burned 6281 pathfinds on a single
@@ -1102,6 +1148,21 @@ export class Agent {
         // supervisor. disconnect.timeout arrives here, and it was the single
         // most common way this agent died.
         this.bot.on('end', (reason) => this._handleDisconnect(reason));
+        // Last ~300 EVT / LLM-turn lines with timestamps, so a death can be
+        // written out with the minute that led to it instead of being pieced
+        // together from four greps over a multi-hour log.
+        if (!console._evt_ring) {
+            console._evt_ring = [];
+            const orig = console.log.bind(console);
+            console.log = (...args) => {
+                const s = typeof args[0] === 'string' ? args[0] : '';
+                if (s.startsWith('EVT ') || s.startsWith('Awaiting ') || s === 'Received.' || s.startsWith('Agent died')) {
+                    console._evt_ring.push([Date.now(), s]);
+                    if (console._evt_ring.length > 300) console._evt_ring.shift();
+                }
+                orig(...args);
+            };
+        }
         this.bot.on('death', () => {
             this.last_death_time = Date.now();
             this.alive_ms_before = 0;
@@ -1168,6 +1229,7 @@ export class Agent {
                         `:oxy=${seen.map(s => s.oxygen).join(',') || 'none'}`);
                 }
                 try { sendOutputToServer(this.name, evt); } catch (_) {}
+                this._writeIncident(jsonMsg.translate, message, death_pos, items, armed);
                 this.memory_bank.rememberPlace('last_death_position', death_pos.x, death_pos.y, death_pos.z);
                 // A separate place for the deaths worth walking back to. YIGD
                 // only leaves a grave when there was something to put in it, so

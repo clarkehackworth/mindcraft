@@ -23,13 +23,21 @@
         "type": "string",
         "description": "The authentication method to use",
         "default": "offline",
-        "options": ["offline", "microsoft"]
+        "options": [
+            "offline",
+            "microsoft"
+        ]
     },
     "base_profile": {
         "type": "string",
         "description": "Allowed values: survival, assistant, creative, god_mode. Each has fine tuned settings for different game modes.",
         "default": "survival",
-        "options": ["survival", "assistant", "creative", "god_mode"]
+        "options": [
+            "survival",
+            "assistant",
+            "creative",
+            "god_mode"
+        ]
     },
     "load_memory": {
         "type": "boolean",
@@ -64,7 +72,12 @@
     "blocked_actions": {
         "type": "array",
         "description": "List of actions that are blocked",
-        "default": ["!checkBlueprint", "!checkBlueprintLevel", "!getBlueprint", "!getBlueprintLevel"]
+        "default": [
+            "!checkBlueprint",
+            "!checkBlueprintLevel",
+            "!getBlueprint",
+            "!getBlueprintLevel"
+        ]
     },
     "relevant_docs_count": {
         "type": "number",
@@ -100,7 +113,11 @@
         "type": "string",
         "description": "Whether to show \"full\" command syntax, \"shortened\" command syntax, or \"none\"",
         "default": "full",
-        "options": ["full", "shortened", "none"]
+        "options": [
+            "full",
+            "shortened",
+            "none"
+        ]
     },
     "chat_ingame": {
         "type": "boolean",
@@ -141,6 +158,30 @@
         "type": "string",
         "description": "How to report packets the protocol library cannot parse. Modded servers send packets with no vanilla schema, which can never be parsed; they are dropped safely regardless, so this only controls noise. 'summary' logs the first then a periodic count. Note that 'summary' and 'off' also silence decompression warnings, which would indicate real stream corruption.",
         "default": "full",
-        "options": ["full", "summary", "off"]
+        "options": [
+            "full",
+            "summary",
+            "off"
+        ]
+    },
+    "block_place_delay": {
+        "type": "number",
+        "description": "Delay between placed blocks in ms (newAction); avoids kicks for placing too fast.",
+        "default": 0
+    },
+    "view_distance": {
+        "type": "string",
+        "description": "Client view distance: \"normal\", \"tiny\", or a chunk count.",
+        "default": "normal"
+    },
+    "exploration_radius": {
+        "type": "number",
+        "description": "Blocks from home the bot may roam before come_home rules pull it back.",
+        "default": 128
+    },
+    "mod_data": {
+        "type": "string",
+        "description": "Directory of mod data packs (block/item registries dumped from the modded server). Without it block ids past vanilla render as garbage and the viewer shows trapdoors for stone.",
+        "default": "./mod_data"
     }
 }

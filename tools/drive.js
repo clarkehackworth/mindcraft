@@ -13,6 +13,7 @@
 //      AGENT (default Andy), FROM (default clarkhackworth)
 
 import { io } from 'socket.io-client';
+import { readFileSync } from 'fs';
 
 const URL = process.env.MINDSERVER_URL || 'http://docker.lan:8080';
 const AGENT = process.env.AGENT || 'Andy';
@@ -23,7 +24,7 @@ const FROM = process.env.FROM || 'ADMIN';
 const [cmd, ...rest] = process.argv.slice(2);
 
 function die(msg, code = 1) { console.error(msg); process.exit(code); }
-if (!cmd) die('usage: drive.js say|listen|restart|stop|start ...');
+if (!cmd) die('usage: drive.js say|listen|policy|regen|lock|unlock|clearlayer|create|destroy|restart|stop|start ...');
 
 const socket = io(URL, { auth: { token: process.env.MINDSERVER_TOKEN || null } });
 socket.on('connect_error', e => die(`cannot connect to ${URL}: ${e.message}`));
@@ -105,7 +106,19 @@ socket.on('connect', () => {
             });
             break;
         }
-        case 'restart': case 'stop': case 'start':
+        case 'create': {
+            // settings JSON with a "profile" object inside; see live_test.sh spawn
+            const [file] = rest;
+            if (!file) die('usage: drive.js create <settings.json>');
+            const settings = JSON.parse(readFileSync(file, 'utf8'));
+            socket.emit('create-agent', settings, res => {
+                console.log(res.success ? `created ${settings.profile.name}` : `create failed: ${res.error}`);
+                process.exitCode = res.success ? 0 : 1;
+                socket.close();
+            });
+            break;
+        }
+        case 'restart': case 'stop': case 'start': case 'destroy':
             socket.emit(`${cmd}-agent`, AGENT);
             console.log(`${cmd} sent to ${AGENT}`);
             setTimeout(() => process.exit(0), 500);

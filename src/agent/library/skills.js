@@ -122,13 +122,70 @@ export async function equipHighestAttack(bot) {
 // of retrying. Live: "Rule 'active:build_a_furnace_for_cooking' step craft
 // failed: sleep is not defined". Module scope, where both callers can see it.
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+const REACH = 4.5; // blocks; vanilla interaction range is ~4.5 from the eyes
+
+// A crafting table the bot can actually use: the nearest one if it is in
+// reach, else walk to it, else make one right here (4 planks) rather than
+// wait on a table behind a wall. Returns the block or null (already logged).
+export async function tableWithinReach(bot, range = 16) {
+    const nearest = () => world.getNearestBlock(bot, 'crafting_table', range);
+    const inReach = (t) => t && bot.entity.position.distanceTo(t.position) <= REACH;
+    let table = nearest();
+    if (inReach(table)) return table;
+    if (table) {
+        await goToNearestBlock(bot, 'crafting_table', 3, range);
+        table = nearest();
+        if (inReach(table)) return table;
+    }
+    const counts = world.getInventoryCounts(bot);
+    const canMake = counts['crafting_table'] > 0 || !!mc.getCraftableRawRecipe('crafting_table', counts);
+    if (!canMake) {
+        log(bot, table ? `The crafting table at ${table.position} is out of reach and the walk there failed; no planks to make one here.`
+                       : `No crafting table within ${range} blocks and no planks to make one.`);
+        return null;
+    }
+    if (!(counts['crafting_table'] > 0) && !await craftRecipe(bot, 'crafting_table', 1)) return null;
+    // getNearestFreeSpace hands back the bot's own feet first, and a block
+    // cannot go where an entity stands: live, every attempt was "Failed to
+    // place crafting_table at <own position>: blockUpdate did not fire". Use
+    // a neighbouring block with solid ground under it.
+    const feet = bot.entity.position.floored();
+    const spots = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]]
+        .map(([dx, dz]) => feet.offset(dx, 0, dz))
+        .filter(q => {
+            const top = bot.blockAt(q), floor = bot.blockAt(q.offset(0, -1, 0));
+            // mod-registry blocks may carry no boundingBox; only rule out what is plainly not ground
+            return top?.name === 'air' && floor && !/^(air|cave_air|void_air|water|lava)$/.test(floor.name) && floor.boundingBox !== 'empty';
+        });
+    for (const q of spots) {
+        if (!await placeBlock(bot, 'crafting_table', q.x, q.y, q.z)) continue;
+        for (let i = 0; i < 10; i++) { // the placed block takes a moment to show up in the world cache
+            table = nearest();
+            if (inReach(table)) return table;
+            await sleep(200);
+        }
+    }
+    const around = [[1, 0], [-1, 0], [0, 1], [0, -1]].map(([dx, dz]) => { const q = feet.offset(dx, 0, dz); return `${bot.blockAt(q)?.name ?? 'null'}/${bot.blockAt(q.offset(0, -1, 0))?.name ?? 'null'}`; }).join(' ');
+    log(bot, spots.length ? `Could not place a crafting table on any of the ${spots.length} free blocks beside you.` : `No free block with solid ground beside you to put a crafting table on (E W S N top/floor: ${around}; standing on ${bot.blockAt(feet.offset(0, -1, 0))?.name ?? 'null'}).`);
+    return null;
+}
 
 // mineflayer waits 20 seconds for the server's windowOpen packet and then
 // throws; 23 of those in one session, each a 20-second stall ending in a stack
 // trace whose real cause is mundane -- the block drifted out of reach after the
 // pathfind, or a mod replaced its menu. One retry covers the race; after that,
 // say something the model can act on instead of throwing.
-async function openWithRetry(bot, block, open) {
+export async function openWithRetry(bot, block, open) {
+    // The server ignores an interaction from beyond reach and sends nothing
+    // back, so mineflayer waits its full 20s for a windowOpen that will never
+    // come -- twice. Live: every "the crafting_table never opened" was a
+    // right-click from 12 blocks away after the walk there failed. Say so.
+    const dist = bot.entity?.position?.distanceTo(block.position) ?? 0;
+    console.log(`EVT craft:open:block=${block.name}:at=${block.position}:dist=${dist.toFixed(1)}`);
+    if (dist > REACH) {
+        log(bot, `The ${block.name} at ${block.position} is ${dist.toFixed(1)} blocks away, out of reach.`);
+        return null;
+    }
     for (let attempt = 0; attempt < 2; attempt++) {
         try { return await open(block); }
         catch (err) {
@@ -206,14 +263,14 @@ export async function tableCraft(bot, recipe, count, craftingTable) {
                 await sleep(200);
                 offered = !!window.slots[0];
             }
-            if (!offered) break;
+            if (!offered) { console.log(`EVT craft:fail:not_offered:${bot.registry?.items?.[recipe.result?.id]?.name ?? "?"}`); break; }
             let took = false;
             for (let attempt = 0; attempt < 5 && !took; attempt++) {
                 try { await bot.clickWindow(0, 0, 1); } catch {} // shift-click result to inventory
                 await sleep(350); // an ignored take is re-asserted by the next sync tick
                 if (!window.slots[0] && gridEmpty(window)) took = true;
             }
-            if (!took) break;
+            if (!took) { console.log(`EVT craft:fail:not_taken:${bot.registry?.items?.[recipe.result?.id]?.name ?? "?"}`); break; }
             done++;
         }
         // Withdraw anything left in the grid so nothing is stranded in the table.
@@ -447,27 +504,11 @@ export async function craftRecipe(bot, itemName, num=1, expanding=new Set()) {
         // result slot judge whether the recipe is real.
         const modded = mc.getCraftableRawRecipe(itemName, world.getInventoryCounts(bot));
         if (modded) {
-            let table = craftingTable;
-            if (modded.needsTable && !table) {
-                if (world.getInventoryCounts(bot)['crafting_table'] > 0) {
-                    const p = bot.entity.position;
-                    await placeBlock(bot, 'crafting_table', p.x, p.y, p.z);
-                    for (let i = 0; i < 10 && !table; i++) {
-                        table = world.getNearestBlock(bot, 'crafting_table', craftingTableRange);
-                        if (!table) await new Promise(r => setTimeout(r, 200));
-                    }
-                } else if (mc.getCraftableRawRecipe('crafting_table', world.getInventoryCounts(bot)) && itemName !== 'crafting_table') {
-                    // The table itself is 2x2-craftable from the same modded planks.
-                    if (await craftRecipe(bot, 'crafting_table', 1))
-                        return await craftRecipe(bot, itemName, num);
-                }
-                if (!table) {
-                    log(bot, `Crafting ${itemName} needs a crafting table and there is none within ${craftingTableRange} blocks.`);
-                    return false;
-                }
+            let table = null;
+            if (modded.needsTable) {
+                table = await tableWithinReach(bot, craftingTableRange);
+                if (!table) return false;
             }
-            if (table && bot.entity.position.distanceTo(table.position) > 4)
-                await goToNearestBlock(bot, 'crafting_table', 4, craftingTableRange);
             const before = world.getInventoryCounts(bot)[itemName] ?? 0;
             const done = await tableCraft(bot, modded.recipe, num, modded.needsTable ? table : null);
             if (done > 0) {
@@ -497,8 +538,9 @@ export async function craftRecipe(bot, itemName, num=1, expanding=new Set()) {
         return false;
     }
 
-    if (craftingTable && bot.entity.position.distanceTo(craftingTable.position) > 4) {
-        await goToNearestBlock(bot, 'crafting_table', 4, craftingTableRange);
+    if (craftingTable) {
+        craftingTable = await tableWithinReach(bot, craftingTableRange);
+        if (!craftingTable) return false;
     }
 
     const recipe = recipes[0];
@@ -1655,7 +1697,7 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
             return true;
         }
     } catch (err) {
-        log(bot, `Failed to place ${blockType} at ${target_dest}.`);
+        log(bot, `Failed to place ${blockType} at ${target_dest}: ${err?.message ?? err}`);
         return false;
     }
 }

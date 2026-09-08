@@ -173,6 +173,11 @@ class ConversationManager {
             console.warn(`${agent.name} received a bot message from itself; ignoring.`);
             return;
         }
+        // Two A/B agents in one container must not talk. Blocking
+        // !startConversation only closed the outbound door: AndyB's login error
+        // was relayed here, Andy answered, and from then on every command Andy
+        // issued went to AndyB as conversation. Closed at both ends now.
+        if (settings.blocked_actions?.includes('!startConversation')) return;
         const convo = this._getConvo(sender);
 
         if (convo.ignore_until_start && !received.start)

@@ -451,3 +451,25 @@ test('a goal has to be a non-empty string to survive validation', () => {
     assert.match(validatePolicy({ rules: [], goal: '' }), /non-empty string/);
     assert.match(validatePolicy({ rules: [], goal: { text: 'no' } }), /non-empty string/);
 });
+
+test('profiles that all carry rules merge without an LLM: base order, attribute override by name, goals joined', async () => {
+    const base = { modes: { hunting: true }, rules: [{ ...rule('flee', 'is_night'), pinned: true }, rule('eat', 'hunger_below')] };
+    const attr = { modes: { hunting: false }, rules: [{ ...rule('eat', 'hunger_below'), cooldown: 99 }, rule('mine', 'is_idle')] };
+    saveProfile('det_base', { source: ['live'], policy: base, kind: 'base', goal: 'Survive.' });
+    saveProfile('det_attr', { source: ['dig'], policy: attr, kind: 'attribute', goal: 'Mine iron.' });
+    const agent = { name: 'Gen', prompter: { get chat_model() { throw new Error('the LLM was called'); } } };
+    const state = await generatePolicy(agent, 'det_base', ['det_attr']);
+    const p = state.layers.active.policy;
+    assert.deepEqual(p.rules.map(r => r.name), ['flee', 'eat', 'mine'], 'base order kept, override in place, new rules appended');
+    assert.equal(p.rules[1].cooldown, 99, 'the attribute version of a same-named rule wins');
+    assert.equal(p.modes.hunting, false);
+    assert.equal(p.goal, 'Survive. Mine iron.');
+});
+
+test('profiles that do not merge cleanly fail loudly at the profile, not silently at the merge', async () => {
+    const twin = (name, value) => ({ name, when: { cond: 'hunger_below', value }, do: [{ act: 'say', message: 'hungry' }] });
+    saveProfile('dup_base', { source: ['a'], policy: { modes: {}, rules: [twin('run', 16)] }, kind: 'base' });
+    saveProfile('dup_attr', { source: ['b'], policy: { modes: {}, rules: [twin('scarper', 24)] }, kind: 'attribute' });
+    const agent = { name: 'Gen', prompter: { get chat_model() { throw new Error('the LLM was called'); } } };
+    await assert.rejects(() => generatePolicy(agent, 'dup_base', ['dup_attr']), /do not merge cleanly/);
+});
