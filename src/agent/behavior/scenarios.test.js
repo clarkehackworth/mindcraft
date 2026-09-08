@@ -35,6 +35,7 @@ const F = {
     is_freezing: f => !!f.freezing,
     can_dig_down: f => f.can_dig ?? true,
     y_below: (f, a) => f.y < (a.y ?? 0),
+    y_above: (f, a) => f.y > (a.y ?? 0),
     is_sheltered: f => !!f.sheltered,
     is_idle: f => !!f.idle,
     always: () => true,
