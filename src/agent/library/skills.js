@@ -1022,7 +1022,11 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
     // agent's CPU. Phase one narrows to the right block type on integers; phase
     // two builds Blocks only for those candidates, since safeToBreak needs one.
     const block_ids = world.getBlockIdsByName(bot, blocktypes);
-    const isExcluded = (block) => exclude?.some(p =>
+    // Blocks this call already failed on (no path, dig aborted): the nearest
+    // log up a cliff used to be re-picked on every retry, so "Collected 0 log"
+    // with four NoPath lines while a reachable log stood ten blocks off.
+    const failed = new Set();
+    const isExcluded = (block) => failed.has(block.position.toString()) || exclude?.some(p =>
         block.position.x === p.x && block.position.y === p.y && block.position.z === p.z);
     const isCollectable = (block) => isLiquid
         ? block.metadata === 0                                   // source blocks only
@@ -1124,6 +1128,7 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
             // the bottom of the loop never ran, because `continue` skips it.
             if (bot.interrupt_code) break;
             log(bot, `Failed to collect ${blockType}: ${err}.`);
+            if (blocks[0]) failed.add(blocks[0].position.toString());
             continue;
         }
         
