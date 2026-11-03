@@ -1,0 +1,59 @@
+# Parallel A/B bench: one offline-mode vanilla 1.20.1 server + one mindcraft
+# container running several candidate bots at once. No Microsoft accounts, so
+# candidates scale with CPU instead of with logins. Prominence stays the
+# validation target; this is for screening policies in parallel.
+#
+#   scp -r tools/ab-server jeff@docker.lan:~/ab-server
+#   ssh jeff@docker.lan 'cd ~/ab-server && MINDSERVER_TOKEN=x OPENAI_API_KEY=x docker compose up -d'
+#   AGENT_NAME=CandA BOT_CONTAINER=mindcraft-ab MC=mc-ab tools/live_test.sh scorecard 1h
+#
+# Bots: each profile in PROFILES is one candidate; regen its policy with
+#   AGENT_NAME=CandA BOT_CONTAINER=mindcraft-ab tools/live_test.sh regen <policy>
+# ponytail: vanilla, not the 443-mod pack -- mod-specific deaths (chillager,
+# graveyard) still need the real server. Add the modpack here only if screening
+# on vanilla keeps passing things Prominence kills.
+services:
+  mc-ab:
+    image: itzg/minecraft-server:java17
+    container_name: mc-ab
+    environment:
+      EULA: "TRUE"
+      VERSION: "1.20.1"
+      TYPE: VANILLA
+      ONLINE_MODE: "FALSE"
+      DIFFICULTY: hard
+      MODE: survival
+      SPAWN_PROTECTION: "0"
+      ENABLE_RCON: "TRUE"
+      RCON_PASSWORD: ab
+      VIEW_DISTANCE: "8"
+      MEMORY: 3G
+      # same seed every run so candidate deaths are comparable
+      SEED: "20260911"
+    volumes:
+      - mc_ab_data:/data
+    ports:
+      - "25566:25565"
+  mindcraft-ab:
+    image: mindcraft:moddata
+    container_name: mindcraft-ab
+    depends_on: [mc-ab]
+    environment:
+      TZ: America/Chicago
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY}
+      NODE_OPTIONS: --dns-result-order=ipv4first
+      # Offline auth: the bot name is the login. One profile per candidate.
+      SETTINGS_JSON: |
+        {"host":"mc-ab","port":25565,"auth":"offline","minecraft_version":"1.20.1",
+         "profiles":["./profiles/ab/CandA.json","./profiles/ab/CandB.json","./profiles/ab/CandC.json"],
+         "base_profile":"survival","load_memory":false,"allow_insecure_coding":true,
+         "mindserver_auth_token":"${MINDSERVER_TOKEN:?set MINDSERVER_TOKEN}","mindserver_port":8080,
+         "spawn_timeout":120,"max_messages":15,"init_message":"Set a goal to survive on your own forever."}
+    volumes:
+      - ./profiles:/app/profiles/ab:ro
+      - mindcraft_ab_data:/app/bots
+    ports:
+      - "8081:8080"
+volumes:
+  mc_ab_data:
+  mindcraft_ab_data:

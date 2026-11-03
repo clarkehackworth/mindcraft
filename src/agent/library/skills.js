@@ -2667,8 +2667,10 @@ export function isBreathing(bot) {
         // No bar to read (server never sent one): fall back to the block answer
         // -- the head says air, so answer breathing.
         if (oxygen === undefined) return true;
-        // A negative reading is a broken packet, not an empty bar: no
-        // information, fall back to the block answer.
+        // Negative: below-zero while drowning, or stale -1 while floating with
+        // the head in air (both seen 2026-09-11). headSubmerged above already
+        // answered the first case; a head in air with the body in water is
+        // breathing, so the stale case must not loop surface() for 45s.
         if (oxygen < 0) return true;
         // Low now = still losing air = not breathing. Refilled (above the
         // 'low air' line) = breathing. Same 12 line lowAirPersists uses, so the
@@ -2779,7 +2781,11 @@ export function lowAirPersists(bot, air=12, min_samples=AIR_MIN_SAMPLES) {
     // No air bar to consult -- the honest state for a bot that has not been
     // losing air, since nothing is sent while the value holds steady. The head
     // block already said we are under, so count how long it has said it.
-    if (oxygen === undefined) {
+    // Negative: the bar went below zero while drowning (ice-lid pen read -6,
+    // -18) OR it is stale at -1 on a bot floating with its head in air. The
+    // number cannot tell those apart; the head block can. Treat it like "no
+    // bar" and count submerged samples.
+    if (oxygen === undefined || oxygen < 0) {
         const seen = bot._air_history ?? [];
         return seen.filter(s => s.submerged).length >= SUBMERGED_MIN_SAMPLES;
     }
@@ -2790,9 +2796,6 @@ export function lowAirPersists(bot, air=12, min_samples=AIR_MIN_SAMPLES) {
     // every cycle preempting the self-prompt loop with an interrupts:all mode.
     // He did that instead of anything else for minutes at a stretch.
     //
-    // A real drowning on this server reports exactly 0 -- measured 26 times
-    // against 2 of these. Empty is 0; below empty is a broken packet.
-    if (oxygen < 0) return false;
     // Low NOW, not merely low recently: without this the verdict outlives the
     // emergency by a whole window, which had surface() dispatched at oxygen=20.
     if (oxygen > air) return false;
@@ -2800,7 +2803,7 @@ export function lowAirPersists(bot, air=12, min_samples=AIR_MIN_SAMPLES) {
     return seen.filter(s => s.oxygen !== undefined && s.oxygen <= air).length >= min_samples;
 }
 
-export async function surface(bot, timeout_seconds=20) {
+export async function surface(bot, timeout_seconds=45) {
     /**
      * Swim straight up until the bot's head is out of water. Abandons any
      * pathfinder goal first -- drowning outranks wherever it was going.
@@ -2851,6 +2854,37 @@ export async function surface(bot, timeout_seconds=20) {
     let slide_heading = -1;
     let slide_until = 0;
     const SLIDE_YAWS = [-Math.PI / 2, 0, Math.PI / 2, Math.PI];
+    // "Surfaced with 0/20 air left" was logged 1,396 times in one 120k-line
+    // window and the bot drowned anyway: a bob at the waterline flips
+    // isInWater false for a tick, the head block reads air, and the old code
+    // called that surfaced. Success now needs the dry reading to HOLD for
+    // DRY_CONFIRM_MS straight. A bob cannot do that; land can. The stuck-at-0
+    // oxygen bar is deliberately not consulted, so this cannot loop forever on
+    // dry land the way an oxygen>12 requirement would.
+    const DRY_CONFIRM_MS = 1500;
+    let dry_since = 0;
+    // Breathing at the surface of open water is not saved: the pathfinder
+    // reset "stuck:on=water" for a full minute before each drowning death
+    // while keep_out_of_water fired into it. So the shore is reached on raw
+    // controls: look at the nearest solid block with air above it and hold
+    // forward+jump until the body leaves the water. Re-aimed every 2s.
+    let shore_until = 0;
+    const aimAtShore = () => {
+        const here = bot.entity.position;
+        const cands = bot.findBlocks({
+            matching: b => b && b.boundingBox === 'block' && b.name !== 'water',
+            maxDistance: 12, count: 200,
+        }).filter(p => {
+            const above = bot.blockAt(p.offset(0, 1, 0));
+            return above && above.name === 'air' && p.y >= Math.floor(here.y) - 1 && p.y <= Math.floor(here.y) + 1;
+        });
+        if (!cands.length) return false;
+        cands.sort((a, b) => a.distanceTo(here) - b.distanceTo(here));
+        const t = cands[0].offset(0.5, 1, 0.5);
+        bot.lookAt(t, true);
+        bot.setControlState('forward', true);
+        return true;
+    };
     // setGoal(null), not just stop(). stop() is cooperative -- it raises a flag
     // that lands when the bot reaches its next node, and a bot pinned underwater
     // may never reach one, so the goal outlives the emergency and every watchdog
@@ -2877,10 +2911,20 @@ export async function surface(bot, timeout_seconds=20) {
                 // and keep trying -- the bot might dig through a ceiling.
                 if (bot.entity?.isInWater === true) {
                     ever_breathed_in_water = true;
+                    dry_since = 0;
+                    if (Date.now() >= shore_until) {
+                        shore_until = Date.now() + 2000;
+                        if (aimAtShore()) log(bot, 'Breathing in open water; swimming for the shore.');
+                    }
                 } else {
-                    log(bot, `Surfaced with ${bot.oxygenLevel}/20 air left.`);
-                    return true;
+                    if (!dry_since) dry_since = Date.now();
+                    if (Date.now() - dry_since >= DRY_CONFIRM_MS) {
+                        log(bot, `Surfaced with ${bot.oxygenLevel}/20 air left.`);
+                        return true;
+                    }
                 }
+            } else {
+                dry_since = 0;
             }
             // Pinned under a solid ceiling: swimming up does nothing, dig it out.
             const ceiling = bot.blockAt(bot.entity.position.offset(0, eye + 1, 0));
@@ -2899,9 +2943,31 @@ export async function surface(bot, timeout_seconds=20) {
                     // protectedDig: a goal change elsewhere would otherwise
                     // cancel this, and during a drowning the rules fire about
                     // once a second.
-                    try { await protectedDig(bot, ceiling); dig_error = null; }
+                    const t0 = Date.now();
+                    // One dig must not outlive the rescue budget. A cobweb ran
+                    // 116s of a 45s budget and a plank ceiling 94s: bot.dig()
+                    // resolves when the SERVER says the block broke, and under
+                    // water with the wrong tool that can be never. Losing the
+                    // dig costs one attempt; overrunning costs the whole rescue.
+                    // Capped at 8s, not at the whole remaining budget: with the
+                    // full 45s one refusing block (ice, a barrier, planks with
+                    // the wrong tool) consumes the entire rescue and the
+                    // sideways search never runs. 8s breaks anything breakable
+                    // by hand and gives up on anything that will not break.
+                    const left = Math.min(8000, Math.max(1000, start + timeout_seconds * 1000 - Date.now()));
+                    try {
+                        await Promise.race([
+                            protectedDig(bot, ceiling),
+                            new Promise((_, rej) => setTimeout(() => rej(new Error(`dig exceeded ${left}ms`)), left)),
+                        ]);
+                        dig_error = null;
+                    }
                     catch (err) { dig_error = String(err).slice(0, 60); }
                     finally { bot.setControlState('jump', true); }
+                    // What a ceiling dig actually did, server-side: the block name
+                    // after the dig and how long it took. 'ice' still there after
+                    // a completed dig means the server refused it.
+                    console.log(`EVT surface:dig:${blocked_by}:${Date.now() - t0}ms:${dig_error ? 'err:' + String(dig_error).slice(0, 40) : 'ok'}:now=${bot.blockAt(ceiling.position)?.name}:inwater=${bot.entity?.isInWater}:onground=${bot.entity?.onGround}:y=${bot.entity.position.y.toFixed(1)}`);
                 } else if (bot.entity?.isInWater === true) {
                     // Undiggable AND underwater: holding jump in place drowns
                     // the bot. Swim sideways out instead -- one ~1.5s forward

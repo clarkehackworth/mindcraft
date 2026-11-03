@@ -3,6 +3,8 @@
 // before the loop stops waiting on it. Both exist so a single stuck turn cannot
 // leave the agent with no goal driver for the rest of the process's life.
 import * as world from './library/world.js';
+// Hostile this close and the loop does not spend a turn (see startLoop).
+const COMBAT_RANGE = 8;
 const STOP_WAIT_MS = 30 * 1000;
 const TURN_TIMEOUT_MS = 5 * 60 * 1000;
 // How long the no-command strike-out pauses the loop before update() resumes it.
@@ -54,6 +56,38 @@ export class SelfPrompter {
 
     describePlan() {
         return this.plan.map((s, i) => `${i + 1}. [${s.done ? 'x' : ' '}] ${s.step}`).join('\n');
+    }
+
+    // What the model kept paying a turn to ask for: !stats 123x, !nearbyBlocks
+    // 58x, !inventory 18x in one window, plus ~110 dropped duplicates -- a third
+    // of all paid turns. It is free to compute, so it rides along every turn.
+    // Imported at call time and through index.js, not statically and not
+    // queries.js first. commands/index.js reads `queryList` at module scope
+    // (commandList = queryList.concat(actionsList)) while queries.js imports
+    // index.js for getCommandDocs -- a pre-existing cycle that only resolves
+    // when index.js loads first, which is what every other entry point does.
+    // Importing queries.js directly made that cycle fail with "Cannot access
+    // 'queryList' before initialization" for anything that reached
+    // self_prompter first, which is every test that imports it.
+    async contextLine() {
+        const { getCommand } = await import('./commands/index.js');
+        // perform() output is 'HEADER\n- line\n- line'. Drop the header by what
+        // it looks like (a bare ALL_CAPS token) rather than by position: the
+        // positional slice(1) left "STATS; Position: ..." and "NEARBY_BLOCKS,
+        // snow (x160)" in the live prompt, so some outputs do not put the
+        // header alone on line one.
+        const q = name => String(getCommand(name)?.perform(this.agent) ?? '')
+            .split('\n')
+            .map(l => l.replace(/^-\s*/, '').replace(/^[A-Z][A-Z_]{3,}[,:]?\s*/, '').trim())
+            .filter(Boolean);
+        try {
+            const stats = q('!stats').join('; ');
+            const ents = q('!entities').join('; ');
+            const blocks = q('!nearbyBlocks').slice(0, 20).join(', ');
+            return `\nCurrent state (do not ask for it): ${stats}\nNearby entities: ${ents || 'none'}\nNearby blocks: ${blocks || 'none'}.`;
+        } catch (e) {
+            return '';
+        }
     }
 
     // Authoritative inventory for the self-prompt turn. The model's own memory
@@ -140,13 +174,25 @@ export class SelfPrompter {
         let no_command_count = 0;
         const MAX_NO_COMMAND = 3;
         while (!this.interrupt) {
+            // No paid turns in melee. 6 of 13 deaths in one window had a
+            // prompt in flight with a zombie at 1 block: the bot was waiting on
+            // the proxy while being hit. Reflexes (modes + rules) run without
+            // the loop; the loop just sits out until the hostile is gone.
+            const threat = this.agent.hostileWithin?.(COMBAT_RANGE);
+            const b = this.agent.bot;
+            const submerged = b?.entity?.isInWater === true && !(b.oxygenLevel > 12);
+            if (threat || submerged) {
+                console.log(`EVT selfprompt:held:${threat ? 'hostile:' + threat.name : 'drowning'}`);
+                await new Promise(r => setTimeout(r, 2000));
+                continue;
+            }
             const done = this.standing_prompt && this.standing_prompt !== this.prompt
                 ? ` If you have already accomplished it, use !endGoal -- you will go back to your standing goal, not stop working.`
                 : ` If you have already accomplished it, use !endGoal rather than inventing more work.`;
             const plan_txt = this.plan.length
                 ? `\nYour plan:\n${this.describePlan()}\nWork the first unchecked step. Use !completeStep when a step is done, !setPlan to revise the plan.`
                 : `\nIf this goal takes more than a couple of actions, first write the steps down with !setPlan("step 1; step 2; ...") -- the plan is re-shown every turn, so it survives interruptions that the conversation history does not.`;
-            const inventory_txt = this.inventoryLine();
+            const inventory_txt = this.inventoryLine() + await this.contextLine();
             const msg = `You are self-prompting with the goal: '${this.prompt}'.${done}${plan_txt}${inventory_txt} Your next response MUST contain a command with this syntax: !commandName. Respond:`;
             
             // One turn must not be able to end the loop permanently. Whatever

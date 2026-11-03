@@ -83,6 +83,19 @@ const SCENARIOS = {
 
 // Candidate-only expectations: [compose, facts, first, never]
 const CANDIDATE = [
+    // 2026-09-11: lifesaver rules that never fired in 120k log lines. Each is
+    // pinned here so "never fires" is a test failure, not a scorecard surprise.
+    ...['survive_upgrade', 'survive_upgrade_b'].flatMap(c => [
+        [c, { hp: 6, hostile_dist: 5 }, 'flee_when_hurt'],
+        [c, { hp: 6 }, null, ['flee_when_hurt']],                       // no hostile: no flee loop
+        [c, { blocks: { lava: 2 } }, 'steer_clear_of_lava'],
+        [c, { hp: 10, has_food: true, y: 55 }, 'surface_when_hurt_underground'],
+        [c, { night: true, inv: { bed: 1 } }, 'sleep_at_night'],
+        [c, { oxygen: 4 }, 'surface_when_drowning'],
+        // leash: 400 blocks out, go_find_trees must not take the idle slot
+        [c, { idle: true, home_dist: 200 }, 'come_home_when_far', ['go_find_trees']],
+        [c, { idle: true, home_dist: 50 }, 'go_find_trees'],
+    ]),
     // A/B 1, promoted 2026-09-08: night gate + go_find_trees now hold on the base too
     ['survive_upgrade', { night: true, idle: true, blocks: { log: 10 } }, null, ['gather_wood_for_base', 'hunt_sheep_for_wool', 'mine_coal_ore']],
     ['survive_upgrade', { idle: true }, 'go_find_trees'],

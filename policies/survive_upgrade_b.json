@@ -150,7 +150,7 @@
       },
       {
         "name": "flee_when_hurt",
-        "description": "Get clear and eat back the health lost when hurt and you have food.",
+        "description": "Get clear when hurt and something hostile is close, then eat if you can. Was gated on has_food and never fired in 120k log lines: the bot is foodless most of its life and died at 6 hp with a zombie adjacent instead. Hostile gate stops it re-firing on an empty bag.",
         "when": {
           "all": [
             {
@@ -158,7 +158,8 @@
               "pct": 40
             },
             {
-              "cond": "has_food"
+              "cond": "hostile_nearby",
+              "range": 12
             }
           ]
         },
@@ -637,17 +638,10 @@
       },
       {
         "name": "come_home_when_far",
-        "description": "Come home when far and idle.",
+        "description": "Hard leash: past 128 blocks walk home, interrupting whatever the bot is doing. The idle-gated version starved behind go_find_trees (idle goes to the first taker) while the bot drifted 400 blocks out.",
         "when": {
-          "all": [
-            {
-              "cond": "far_from_home",
-              "range": 96
-            },
-            {
-              "cond": "is_idle"
-            }
-          ]
+          "cond": "far_from_home",
+          "range": 128
         },
         "do": [
           {
@@ -656,7 +650,7 @@
             "closeness": 8
           }
         ],
-        "interrupts": "idle",
+        "interrupts": "all",
         "cooldown": 120,
         "pinned": false
       },
@@ -1372,7 +1366,7 @@
       },
       {
         "name": "go_find_trees",
-        "description": "Both bots sat on stone and ruins with no log within sight all day: gather_wood_for_base needs a log within 24 and nothing went looking. By day, with no wood in the bag and none in reach, search wider and bring back a stack.",
+        "description": "Both bots sat on stone and ruins with no log within sight all day: gather_wood_for_base needs a log within 24 and nothing went looking. By day, with no wood in the bag and none in reach, search wider and bring back a stack. Leashed (2026-09-11): the 160-block search walked AndyB 400 blocks out to a lake and 4 of 5 deaths were drownings there.",
         "interrupts": "idle",
         "cooldown": 300,
         "when": {
@@ -1399,6 +1393,12 @@
             },
             {
               "cond": "is_idle"
+            },
+            {
+              "not": {
+                "cond": "far_from_home",
+                "range": 96
+              }
             }
           ]
         },

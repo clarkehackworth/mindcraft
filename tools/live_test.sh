@@ -34,14 +34,16 @@
 #     tools/live_test.sh deploy [files...]       push changed files to container, restart agent
 #   Observe:
 #     tools/live_test.sh watch <pattern> [since] tail the agent log for a pattern
-#     tools/live_test.sh scorecard [since]       one table: deaths/paid/noPath/fires (default 6h)
+#     tools/live_test.sh scorecard [since]       one table: deaths/paid/noPath/fires + never-fired rules; appends devlog/scorecard.csv
+#     tools/live_test.sh gate                    water+pit+night in ~10 min, PASS/FAIL each; run before a soak
 #     tools/live_test.sh incidents [n]           latest per-death incident files, one line each
 #     tools/live_test.sh incident <file>         one incident in full
 #     tools/live_test.sh brain <model|default>   point the bot at another litellm route + restart
 #     tools/live_test.sh spawn <name>            second agent for A/B (prints the MS login code)
 #     AGENT_NAME=<name> tools/live_test.sh destroy  remove a runtime-spawned agent
 #   Env: AGENT_NAME (default Andy) selects whose log lines / incidents; MC_PLAYER its gamertag
-#   Scenarios: freeze | wood | raider [mob] | hunger | night
+#   Scenarios: freeze | wood | raider [mob] | hunger | night | water | pit | drown
+#   Fixture from a death: node tools/incident_to_fixture.js /tmp/incidents-Andy/<ts>.json
 #
 # ponytail: bash + rcon-cli + one small socket client, no framework. Everything
 # here is one server command and an assertion; a harness would be more code
@@ -468,8 +470,12 @@ water)
     # tested is surface(), which swims straight up, and a sealed lid tests
     # drowning to death instead.
     echo "penning the bot in water at $X $Y $Z for ${SECS}s"
+    # A well, not a tower: the column goes DOWN into the terrain from ground
+    # level, so the sides are rock and the only way out is up. The tower
+    # version (Y..Y+DEPTH in open air) spilled and the bot walked out sideways
+    # with Air pinned at 300 -- the 2026-09-11 gate run proved nothing.
     for dy in $(seq 0 $((DEPTH-1))); do for dx in -1 0 1; do for dz in -1 0 1; do
-        rcon "setblock $((X+dx)) $((Y+dy)) $((Z+dz)) water replace" >/dev/null
+        rcon "setblock $((X+dx)) $((Y-dy)) $((Z+dz)) water replace" >/dev/null
     done; done; done
     # Poll the server only -- one ssh per sample. Reading the agent log inside
     # the loop cost 80s an iteration, which is slower than the 15s of air being
@@ -481,18 +487,30 @@ water)
     # this loop yanked it back to the bottom, so it drowned no matter how well
     # the rescue worked. What is being measured is escape, so it has to be
     # allowed to escape.
-    rcon "tp $PLAYER $X $((Y+1)) $Z" >/dev/null
+    rcon "tp $PLAYER $X $((Y-DEPTH+1)) $Z" >/dev/null
+    # LID=ice seals the well the way a frozen lake does. Every 2026-09-11
+    # drowning was under a snowy-plains lake with the head submerged 30+
+    # samples straight: an ice sheet overhead, and hand-digging ice underwater
+    # takes about as long as the air lasts. Open water the bot just swims out of.
+    LID=${4:-ice}
+    if [ "$LID" != none ]; then sleep 1; for dx in -1 0 1; do for dz in -1 0 1; do
+        rcon "setblock $((X+dx)) $((Y+1)) $((Z+dz)) $LID replace" >/dev/null
+    done; done; fi
+    min_air=300
     for i in $(seq 1 $((SECS/5))); do
         # set -e is on and a grep with no match exits 1, which silently killed
         # this whole loop the first time. Every probe here has to swallow it.
         air=$(rcon "data get entity $PLAYER Air" | grep -oE '\-?[0-9]+s?$' | tr -d s || true)
         printf "  %3ds  %6s\n" $((i*5)) "${air:-?}"
+        [ -n "$air" ] && [ "$air" -lt "$min_air" ] && min_air=$air
         sleep 5
     done
-    echo "-- draining the pen"
+    echo "-- draining the pen (min Air seen: $min_air)"
+    for dx in -1 0 1; do for dz in -1 0 1; do rcon "setblock $((X+dx)) $((Y+1)) $((Z+dz)) air replace" >/dev/null; done; done
     for dy in $(seq 0 $((DEPTH-1))); do for dx in -1 0 1; do for dz in -1 0 1; do
-        rcon "setblock $((X+dx)) $((Y+dy)) $((Z+dz)) air replace" >/dev/null
+        rcon "setblock $((X+dx)) $((Y-dy)) $((Z+dz)) $([ $dy -eq 0 ] && echo air || echo stone) replace" >/dev/null
     done; done; done
+    [ "$min_air" -gt 250 ] && echo "INCONCLUSIVE: Air never dropped; the hazard did not happen"
     echo "-- surfaces during the run (want: air actually low each time):"
     botlog "Surfaced with|EVT selfpres:drown" "$((SECS/60+2))m" || echo "   none"
     ;;
@@ -542,6 +560,70 @@ watch) shift; botlog "$1" "${2:-5m}" ;;
 
 # One table per window: everything the devlog entries have ever tallied by
 # hand. Run it before and after a deploy and compare the two.
+drown)
+    # Drop the bot under REAL water and watch it get out. Replaces the rcon
+    # water pen in the gate: blocks placed by rcon are never sent to this
+    # client, so `selfpres:drown` logged wet=0/27 and above=air through a
+    # server-side ice lid and the dig branch could not run. The pen measured
+    # the harness, not the bot. DROWN_SPOT is a real frozen lake on this map;
+    # override it for another world.
+    read -r X Y Z <<<"${DROWN_SPOT:--24 57 76}"
+    rcon "effect give $PLAYER minecraft:instant_health 1 10 true" >/dev/null
+    rcon "time set day" >/dev/null
+    # Confirm the drop point IS water before using it. Escaping in under a
+    # second leaves the air bar untouched, so "air never dropped" cannot tell a
+    # fast rescue from a dry spot -- only the block can.
+    if rcon "execute if block $X $Y $Z minecraft:water" | grep -q Test; then wet_spot=1; else wet_spot=0; fi
+    echo "dropping the bot under real water at $X $Y $Z (block is water: $wet_spot)"
+    rcon "tp $PLAYER $X $Y $Z" >/dev/null
+    echo "  t  server_Air (300 = full, 0 = drowning)"
+    min_air=300
+    # Sample every second, not every five: air refills to full in about a
+    # second, so a 5s cadence reads 300 for a bot that actually went under and
+    # got out -- which is exactly the outcome the gate must not call a no-op.
+    moved=0
+    for i in $(seq 1 ${2:-70}); do
+        sleep 1
+        air=$(rcon "data get entity $PLAYER Air" | grep -oE '[-0-9]+s?$' | tr -d s || true)
+        [ -n "${air:-}" ] && [ "$air" -lt "$min_air" ] && min_air=$air
+        [ $((i % 5)) -eq 0 ] && printf "  %3ds  %6s\n" "$i" "${air:-?}"
+        at=$(rcon "data get entity $PLAYER Pos" | grep -oE '[-0-9]+\.[0-9]+d' | head -1 | grep -oE '^[-0-9]+' || true)
+        [ -n "${at:-}" ] && [ "$at" != "$X" ] && moved=1
+    done
+    echo "-- left the drop point: $moved"
+    echo "-- min Air seen: $min_air"
+    [ "$wet_spot" -eq 0 ] && echo "INCONCLUSIVE: DROWN_SPOT is not a water block"
+    echo "-- rescues during the run:"
+    botlog "Surfaced with|swimming for the shore|Could not reach the surface" 3m || echo "  none"
+    ;;
+gate)
+    # Pre-deploy gate: the three killer classes, ~10 min, PASS/FAIL per scenario.
+    # A scenario passes when the bot did not die during it and its rescue
+    # marker showed up in the log. Run after `deploy`, before starting a soak.
+    fails=0
+    check() { # name marker-regex
+        mins=$(( ($(date +%s) - start) / 60 + 2 ))
+        # 'EVT death:death' is the one line per death; 'EVT death:' also matches
+        # the incident/grave/trace lines and counted one death as four.
+        d=$(botlog "EVT death:death" "${mins}m" | wc -l); m=$(botlog "$2" "${mins}m" | wc -l)
+        if [ "$d" -eq 0 ] && [ "$m" -gt 0 ]; then echo "GATE $1: PASS (marker x$m)"; else echo "GATE $1: FAIL (deaths=$d marker=$m)"; fails=$((fails+1)); fi
+        rcon "effect give $PLAYER minecraft:instant_health 1 10 true" >/dev/null; rcon "time set day" >/dev/null; sleep 5
+    }
+    # Drowning passes on SURVIVAL, not on a marker: if the bot gets out before
+    # air goes critical the rescue never fires, and that is the best outcome,
+    # not a failure. Below 240 server Air (oxygen 12/20) the rescue is engaged;
+    # above it the hazard never happened and the run says nothing.
+    start=$(date +%s); dlog=$(mktemp); "$0" drown > "$dlog" 2>&1 || true; cat "$dlog"
+    dmin=$(grep -oE 'min Air seen: [-0-9]+' "$dlog" | grep -oE '[-0-9]+$' || echo 300)
+    dmins=$(( ($(date +%s) - start) / 60 + 2 )); dd=$(botlog "EVT death:death" "${dmins}m" | wc -l)
+    if [ "$dd" -gt 0 ]; then echo "GATE drown: FAIL (deaths=$dd, min Air $dmin)"; fails=$((fails+1))
+    elif grep -q INCONCLUSIVE "$dlog"; then echo "GATE drown: INCONCLUSIVE (drop point is not water)"; fails=$((fails+1))
+    else echo "GATE drown: PASS (survived under water, min Air $dmin)"; fi
+    rcon "effect give $PLAYER minecraft:instant_health 1 10 true" >/dev/null; rcon "time set day" >/dev/null; sleep 5
+    start=$(date +%s); "$0" pit 120 3;  check pit 'climb_out_of_the_deep|goal_reached|Surfaced'
+    start=$(date +%s); "$0" night;      check night 'rule:fire:[a-z]+:(dig_in_for_the_night|wait_out_the_night_under_cover|sleep_at_night|dig_in_when_hunted)'
+    echo "GATE: $fails failure(s)"; exit $fails
+    ;;
 scorecard)
     since=${2:-6h}
     log=$(rawlog "$since")
@@ -555,6 +637,21 @@ scorecard)
     printf '%s' "$log" | grep -oE 'EVT death:death[^ ]+' | sed -E 's/EVT death:(death\.[a-zA-Z.]+):[-0-9,]+:([a-z]+):([a-z]+):items[0-9]+/\1 \2 \3/' | sort | uniq -c | sort -rn
     echo "-- top rule fires:"
     printf '%s' "$log" | grep -oE 'EVT rule:fire:[a-z_:0-9]+' | sort | uniq -c | sort -rn | head -12
+    # Rules that never fired in the window. A lifesaver at zero after 6h is a
+    # bug and belongs on the first screen, not in a log dump. POLICY defaults
+    # to the compose each agent runs.
+    policy=${POLICY:-$([ "$AGENT" = AndyB ] && echo survive_upgrade_b || echo survive_upgrade)}
+    fired=$(printf '%s' "$log" | grep -oE 'EVT rule:fire:active:[a-z_0-9]+' | sed 's/.*://' | sort -u)
+    never=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1])).policy.rules.map(r=>r.name).join("\n"))' "$(dirname "$0")/../policies/$policy.json" | grep -vxF -f <(printf '%s\n' "$fired") | paste -sd' ')
+    echo "-- never fired ($policy): $(printf '%s' "$never" | wc -w)"
+    echo "   $never"
+    # One CSV row per run so the trend is a file, not devlog prose.
+    tier=$(printf '%s' "$log" | grep -oE 'Crafted [0-9]+ (wooden|stone|iron|diamond)_pickaxe' | awk '{print $3}' | sed 's/_pickaxe//' | awk 'BEGIN{r["wooden"]=1;r["stone"]=2;r["iron"]=3;r["diamond"]=4} {if(r[$1]>b){b=r[$1];t=$1}} END{print t?t:"none"}')
+    iron=$(printf '%s' "$log" | grep -oE 'got [0-9]+ iron_ingot' | awk '{s+=$2} END{print s+0}')
+    csv="$(dirname "$0")/../devlog/scorecard.csv"
+    [ -f "$csv" ] || echo "ts,agent,window,deploy,deaths,paid_turns,noPath,best_pickaxe,iron_ingots,never_fired" > "$csv"
+    echo "$(date -u +%FT%TZ),$AGENT,$since,$(ssh "$HOST" "docker exec $BOT_CONTAINER cat /app/DEPLOY_SHA 2>/dev/null" || echo unknown),$(c 'EVT death:death'),$(c 'Awaiting .* api response'),$(c 'noPath'),$tier,$iron,$(printf '%s' "$never" | wc -w)" >> "$csv"
+    echo "-- appended to $csv"
     ;;
 
 # Per-death incident files written by the agent (item 2). `incidents` lists the

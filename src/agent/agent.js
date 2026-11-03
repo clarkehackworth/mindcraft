@@ -1243,14 +1243,30 @@ export class Agent {
                 // only that kind updates this. last_death_position keeps meaning
                 // "where I died most recently", which is what the rules that
                 // avoid the spot want.
-                if (items.length > 0)
+                // A grave under water is a second drowning waiting to happen:
+                // the one at -24,57,76 (frozen lake) pulled the bot back in three
+                // times on 2026-09-11. Drowned, or died standing in water: no grave.
+                const grave_wet = /drown/i.test(message) ||
+                    (death_pos && this.bot.blockAt(death_pos)?.name === 'water');
+                if (grave_wet) console.log('EVT death:grave_in_water:skipped');
+                if (items.length > 0 && !grave_wet)
                     this.memory_bank.rememberPlace('last_grave_position', death_pos.x, death_pos.y, death_pos.z);
                 let death_pos_text = null;
                 if (death_pos) {
                     death_pos_text = `x: ${death_pos.x.toFixed(2)}, y: ${death_pos.y.toFixed(2)}, z: ${death_pos.z.toFixed(2)}`;
                 }
                 let dimention = this.bot.game.dimension;
-                this.handleMessage('system', `You died at position ${death_pos_text || "unknown"} in the ${dimention} dimension with the final message: '${message}'. Your place of death is saved as 'last_death_position'. Whatever killed you is probably still there and your gear is on the ground next to it, so do NOT go back until you are armed and it is daytime -- returning unarmed is how you die twice. Previous actions were stopped and you have respawned. If something about this death will keep happening -- the same mob, the same hazard, running out of food or air -- use !policy to write yourself a standing rule that prevents it, and pin it so the job you are given cannot crowd it out. A rule is worth writing only if it would have saved you here.`);
+                // The death prompt fired the instant the bot respawned, and when
+                // it respawned into the same zombie the reply arrived after the
+                // next death (two deaths 15s apart, both PROMPT-IN-FLIGHT).
+                // Hold it until nothing hostile is within 8, up to 30s.
+                (async () => {
+                    for (let i = 0; i < 15 && this.hostileWithin(8); i++) {
+                        if (i === 0) console.log('EVT deathprompt:held:hostile');
+                        await new Promise(r => setTimeout(r, 2000));
+                    }
+                    this.handleMessage('system', `You died at position ${death_pos_text || "unknown"} in the ${dimention} dimension with the final message: '${message}'. Your place of death is saved as 'last_death_position'. Whatever killed you is probably still there and your gear is on the ground next to it, so do NOT go back until you are armed and it is daytime -- returning unarmed is how you die twice. Previous actions were stopped and you have respawned. If something about this death will keep happening -- the same mob, the same hazard, running out of food or air -- use !policy to write yourself a standing rule that prevents it, and pin it so the job you are given cannot crowd it out. A rule is worth writing only if it would have saved you here.`);
+                })();
             }
         });
         this.bot.on('idle', () => {
@@ -1349,6 +1365,14 @@ export class Agent {
     // never seen one. Wall clock since the death would count the hours the bot
     // spent offline as time it survived, which is not what "alive for" means.
     // alive_ms_before carries the earlier sessions through memory.json.
+    // Nearest hostile within range, or null. Used by the self-prompt loop and
+    // the death prompt to keep paid turns out of melee.
+    hostileWithin(range) {
+        if (!this.bot?.entity) return null;
+        try { return getNearestEntityWhere(this.bot, e => isHostile(e), range) ?? null; }
+        catch (e) { return null; }
+    }
+
     aliveMs() {
         if (!this.last_death_time) return null;
         return (this.alive_ms_before ?? 0) + (this.alive_mark ? Date.now() - this.alive_mark : 0);

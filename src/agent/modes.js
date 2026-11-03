@@ -451,7 +451,41 @@ function logEvt(agentName, line) {
     try { sendOutputToServer(agentName, line); } catch (_) {}
 }
 
+// How long an urgent mode's fire is protected from non-urgent preemption.
+// Longer than surface()'s 45s budget, so one rescue runs start to finish; short
+// enough that a wedged urgent mode cannot own the bot for good.
+const URGENT_HOLD_MS = 60000;
+
+/**
+ * Should `mode` stand down because an urgent mode is mid-fire?
+ *
+ * The drowning rescue was restarted about twelve times in thirty seconds, most
+ * attempts dying "interrupted after 0s". Every policy rule carries
+ * interrupts:'all', the arbiter loop offers a turn to every entry ahead of the
+ * active one, and execute() -> runAction() -> stop() cancels whatever is
+ * running. So keep_out_of_water, go_back_for_your_grave and go_find_trees each
+ * took the wheel from a bot that was underwater with one air unit left.
+ *
+ * Urgent modes still preempt each other -- that is what the pause below is for.
+ * Only the non-urgent are asked to wait.
+ *
+ * @returns {object|null} the urgent mode being protected, or null to proceed.
+ */
+export function urgentHolder(mode, entries, now = Date.now()) {
+    if (isUrgentMode(mode)) return null;
+    return entries.find(e =>
+        e.active && e !== mode && isUrgentMode(e) &&
+        now - (e.active_at ?? 0) < URGENT_HOLD_MS) ?? null;
+}
+
 async function execute(mode, agent, func, timeout=2) {
+    try {
+        const holder = urgentHolder(mode, agent.bot.modes?._entries?.() ?? []);
+        if (holder) {
+            logEvt(agent.name, `EVT mode:yield:${mode.name}:to:${holder.name}`);
+            return { message: `yielded to ${holder.name}`, interrupted: false };
+        }
+    } catch (_) {}
     logEvt(agent.name, `EVT mode:fire:${mode.name}`);
     // Pause whoever was mid-fire the moment a real fire preempts it, here
     // where every fire passes -- the arbiter loop AND the reflex tick. Letting
@@ -469,6 +503,7 @@ async function execute(mode, agent, func, timeout=2) {
         agent.self_prompter.stopLoop(mode.interrupts.includes('all'));
     let interrupted_action = agent.actions.currentActionLabel;
     mode.active = true;
+    mode.active_at = Date.now(); // urgentHolder's clock; see URGENT_HOLD_MS
     let code_return = await agent.actions.runAction(`mode:${mode.name}`, async () => {
         await func();
     }, { timeout, urgent: isUrgentMode(mode) });
